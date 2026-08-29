@@ -153,6 +153,9 @@ final class ArchViewController: UIViewController {
     private let requestLabel = UILabel()
     private var pointsBodyLabel: UILabel?
 
+    // Supporter views revealed only once a help request arrives (or demo starts).
+    private var supporterActiveViews: [UIView] = []
+
     // MARK: - Notification screen views
 
     private let notificationScreen = UIView()
@@ -313,6 +316,8 @@ final class ArchViewController: UIViewController {
         for chip in modeChipLabels { chip.text = help.mode.text }
         requestLabel.text = "近くに[\(help.kind.text)]を\n求めている求援者がいます"
         pointsBodyLabel?.text = help.kind.actionPoints
+        setSupporterActive(true)
+        if latestDistance != nil { phase = .ready }
         impactGenerator.impactOccurred()
     }
 
@@ -334,7 +339,10 @@ final class ArchViewController: UIViewController {
             if role == .requester && helpSent {
                 requesterDistanceLabel.text = "サポーターが向かっています  あと \(formatMeters(d))"
             }
-            if phase == .searching { phase = .ready }
+            // The supporter stays in the waiting state until a request arrives.
+            if phase == .searching, role == .requester || activeHelp != nil || isDemo {
+                phase = .ready
+            }
         }
 
         switch phase {
@@ -416,6 +424,7 @@ final class ArchViewController: UIViewController {
         if isDemo { stopDemo(); return }
         isDemo = true
         demoDistance = 7.4
+        setSupporterActive(true)
         demoButton.setTitle("デモ停止", for: .normal)
         statusLabel.text = "デモモード(シミュレーション)"
         demoTimer?.invalidate()
@@ -438,6 +447,7 @@ final class ArchViewController: UIViewController {
         demoTimer = nil
         demoButton.setTitle("デモモード", for: .normal)
         demoDistance = 7.4
+        if activeHelp == nil { setSupporterActive(false) }
         if supportsUWB {
             statusLabel.text = connectedPeer == nil ? "近くの求援者を探しています…" : nil
             if connectedPeer == nil { phase = .searching }
@@ -612,13 +622,13 @@ final class ArchViewController: UIViewController {
         // Bell.
         let bellCircle = UIView()
         bellCircle.backgroundColor = cardColor
-        bellCircle.layer.cornerRadius = 54
+        bellCircle.layer.cornerRadius = 41
         let bell = UIImageView(image: UIImage(systemName: "bell.fill"))
         bell.tintColor = alertRed
         bell.contentMode = .scaleAspectFit
         bellRing.layer.borderColor = accentBlue.withAlphaComponent(0.5).cgColor
         bellRing.layer.borderWidth = 1.5
-        bellRing.layer.cornerRadius = 88
+        bellRing.layer.cornerRadius = 64
         for v in [bellRing, bellCircle, bell] {
             notificationScreen.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -633,7 +643,7 @@ final class ArchViewController: UIViewController {
 
         distanceLabel.text = "— m"
         distanceLabel.textColor = .white
-        distanceLabel.font = .systemFont(ofSize: 44, weight: .bold)
+        distanceLabel.font = .systemFont(ofSize: 38, weight: .bold)
         distanceLabel.textAlignment = .center
 
         distanceCaption.text = "相手までの距離"
@@ -714,19 +724,19 @@ final class ArchViewController: UIViewController {
             signChip.bottomAnchor.constraint(equalTo: helpCard.bottomAnchor, constant: -12),
 
             bellRing.centerXAnchor.constraint(equalTo: notificationScreen.centerXAnchor),
-            bellRing.topAnchor.constraint(equalTo: helpCard.bottomAnchor, constant: 28),
-            bellRing.widthAnchor.constraint(equalToConstant: 176),
-            bellRing.heightAnchor.constraint(equalToConstant: 176),
+            bellRing.topAnchor.constraint(equalTo: helpCard.bottomAnchor, constant: 14),
+            bellRing.widthAnchor.constraint(equalToConstant: 128),
+            bellRing.heightAnchor.constraint(equalToConstant: 128),
             bellCircle.centerXAnchor.constraint(equalTo: bellRing.centerXAnchor),
             bellCircle.centerYAnchor.constraint(equalTo: bellRing.centerYAnchor),
-            bellCircle.widthAnchor.constraint(equalToConstant: 108),
-            bellCircle.heightAnchor.constraint(equalToConstant: 108),
+            bellCircle.widthAnchor.constraint(equalToConstant: 82),
+            bellCircle.heightAnchor.constraint(equalToConstant: 82),
             bell.centerXAnchor.constraint(equalTo: bellCircle.centerXAnchor),
             bell.centerYAnchor.constraint(equalTo: bellCircle.centerYAnchor),
-            bell.widthAnchor.constraint(equalToConstant: 48),
-            bell.heightAnchor.constraint(equalToConstant: 48),
+            bell.widthAnchor.constraint(equalToConstant: 36),
+            bell.heightAnchor.constraint(equalToConstant: 36),
 
-            requestLabel.topAnchor.constraint(equalTo: bellRing.bottomAnchor, constant: 18),
+            requestLabel.topAnchor.constraint(equalTo: bellRing.bottomAnchor, constant: 12),
             requestLabel.centerXAnchor.constraint(equalTo: notificationScreen.centerXAnchor),
             requestLabel.leadingAnchor.constraint(greaterThanOrEqualTo: safe.leadingAnchor, constant: 16),
 
@@ -761,6 +771,16 @@ final class ArchViewController: UIViewController {
             self.bellRing.transform = CGAffineTransform(scaleX: 1.06, y: 1.06)
             self.bellRing.alpha = 0.5
         }
+
+        // Until a help request arrives, the supporter screen only waits.
+        supporterActiveViews = [helpCard, requestLabel, distanceLabel, distanceCaption, startButton, pointsCard, contactCard]
+        setSupporterActive(false)
+    }
+
+    // Waiting state: bell + status only. Active state: the full Arch notification.
+    private func setSupporterActive(_ active: Bool) {
+        supporterActiveViews.forEach { $0.isHidden = !active }
+        statusLabel.text = active ? nil : "近くの求援者を待ち受けています…"
     }
 
     // MARK: - UI construction: AR screen
@@ -1119,6 +1139,7 @@ final class ArchViewController: UIViewController {
         latestWorldTransform = nil
 
         phase = .searching
+        setSupporterActive(false)
         notificationScreen.isHidden = true
         requesterScreen.isHidden = true
         arScreen.isHidden = true
