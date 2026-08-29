@@ -593,7 +593,7 @@ final class ArchViewController: UIViewController {
 
         let safe = notificationScreen.safeAreaLayoutGuide
 
-        // Back chevron.
+        // Back chevron (fixed, outside the scrolling area).
         let back = UIButton(type: .system)
         back.setImage(UIImage(systemName: "chevron.left"), for: .normal)
         back.tintColor = .white
@@ -603,15 +603,25 @@ final class ArchViewController: UIViewController {
         notificationScreen.addSubview(back)
         back.translatesAutoresizingMaskIntoConstraints = false
 
+        // Everything below the header scrolls.
+        let scroll = UIScrollView()
+        scroll.showsVerticalScrollIndicator = true
+        scroll.alwaysBounceVertical = true
+        notificationScreen.addSubview(scroll)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let content = UIView()
+        scroll.addSubview(content)
+        content.translatesAutoresizingMaskIntoConstraints = false
+
         // "サポーター" chip.
         let roleChip = chip(text: "サポーター", textColor: .white, bg: accentBlue)
-        notificationScreen.addSubview(roleChip)
+        content.addSubview(roleChip)
 
         // Help card.
         let helpCard = UIView()
         helpCard.backgroundColor = cardColor
         helpCard.layer.cornerRadius = 14
-        notificationScreen.addSubview(helpCard)
+        content.addSubview(helpCard)
         helpCard.translatesAutoresizingMaskIntoConstraints = false
 
         let helpChip = chip(text: "ヘルプ", textColor: .white, bg: accentBlue.withAlphaComponent(0.85), small: true)
@@ -639,7 +649,7 @@ final class ArchViewController: UIViewController {
         bellRing.layer.borderWidth = 1.5
         bellRing.layer.cornerRadius = 64
         for v in [bellRing, bellCircle, bell] {
-            notificationScreen.addSubview(v)
+            content.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
 
@@ -666,7 +676,7 @@ final class ArchViewController: UIViewController {
         statusLabel.numberOfLines = 2
 
         for v in [requestLabel, distanceLabel, distanceCaption, statusLabel] {
-            notificationScreen.addSubview(v)
+            content.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
 
@@ -681,7 +691,7 @@ final class ArchViewController: UIViewController {
         conf.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 24, bottom: 14, trailing: 24)
         startButton.configuration = conf
         startButton.addTarget(self, action: #selector(startGuidanceTapped), for: .touchUpInside)
-        notificationScreen.addSubview(startButton)
+        content.addSubview(startButton)
         startButton.translatesAutoresizingMaskIntoConstraints = false
 
         // Accordions.
@@ -691,7 +701,7 @@ final class ArchViewController: UIViewController {
         if let b = lastAccordionBody { pointsBodyLabels.append(b) }
         let contactCard = contactAccordion()
         for v in [pointsCard, contactCard] {
-            notificationScreen.addSubview(v)
+            content.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
 
@@ -717,12 +727,23 @@ final class ArchViewController: UIViewController {
             back.widthAnchor.constraint(equalToConstant: 44),
             back.heightAnchor.constraint(equalToConstant: 44),
 
-            roleChip.topAnchor.constraint(equalTo: back.bottomAnchor, constant: 16),
-            roleChip.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 20),
+            scroll.topAnchor.constraint(equalTo: back.bottomAnchor, constant: 8),
+            scroll.leadingAnchor.constraint(equalTo: notificationScreen.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: notificationScreen.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: demoButton.topAnchor, constant: -4),
+
+            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
+
+            roleChip.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
+            roleChip.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
 
             helpCard.topAnchor.constraint(equalTo: roleChip.bottomAnchor, constant: 10),
-            helpCard.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
-            helpCard.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -16),
+            helpCard.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            helpCard.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
 
             helpChip.topAnchor.constraint(equalTo: helpCard.topAnchor, constant: 12),
             helpChip.leadingAnchor.constraint(equalTo: helpCard.leadingAnchor, constant: 12),
@@ -732,7 +753,7 @@ final class ArchViewController: UIViewController {
             signChip.leadingAnchor.constraint(equalTo: helpCard.leadingAnchor, constant: 12),
             signChip.bottomAnchor.constraint(equalTo: helpCard.bottomAnchor, constant: -12),
 
-            bellRing.centerXAnchor.constraint(equalTo: notificationScreen.centerXAnchor),
+            bellRing.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             bellRing.topAnchor.constraint(equalTo: helpCard.bottomAnchor, constant: 14),
             bellRing.widthAnchor.constraint(equalToConstant: 128),
             bellRing.heightAnchor.constraint(equalToConstant: 128),
@@ -746,28 +767,29 @@ final class ArchViewController: UIViewController {
             bell.heightAnchor.constraint(equalToConstant: 36),
 
             requestLabel.topAnchor.constraint(equalTo: bellRing.bottomAnchor, constant: 12),
-            requestLabel.centerXAnchor.constraint(equalTo: notificationScreen.centerXAnchor),
-            requestLabel.leadingAnchor.constraint(greaterThanOrEqualTo: safe.leadingAnchor, constant: 16),
+            requestLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            requestLabel.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
 
             distanceLabel.topAnchor.constraint(equalTo: requestLabel.bottomAnchor, constant: 10),
-            distanceLabel.centerXAnchor.constraint(equalTo: notificationScreen.centerXAnchor),
+            distanceLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             distanceCaption.topAnchor.constraint(equalTo: distanceLabel.bottomAnchor, constant: 2),
-            distanceCaption.centerXAnchor.constraint(equalTo: notificationScreen.centerXAnchor),
+            distanceCaption.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             statusLabel.topAnchor.constraint(equalTo: distanceCaption.bottomAnchor, constant: 6),
-            statusLabel.centerXAnchor.constraint(equalTo: notificationScreen.centerXAnchor),
-            statusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: safe.leadingAnchor, constant: 16),
+            statusLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            statusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
 
             startButton.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 14),
-            startButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 24),
-            startButton.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -24),
+            startButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            startButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
 
             pointsCard.topAnchor.constraint(equalTo: startButton.bottomAnchor, constant: 16),
-            pointsCard.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
-            pointsCard.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -16),
+            pointsCard.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            pointsCard.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
 
             contactCard.topAnchor.constraint(equalTo: pointsCard.bottomAnchor, constant: 10),
-            contactCard.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
-            contactCard.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -16),
+            contactCard.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            contactCard.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            contactCard.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
 
             demoButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -4),
             demoButton.centerXAnchor.constraint(equalTo: notificationScreen.centerXAnchor),
