@@ -12,11 +12,62 @@
 import UIKit
 import ARKit
 import SceneKit
+import CoreLocation
 import NearbyInteraction
 import MultipeerConnectivity
 import simd
 
+// MARK: - Help message protocol (requester -> supporter over MPC)
+
+struct HelpMessage: Codable {
+    enum Kind: String, Codable, CaseIterable {
+        case accompany   // 体調が悪いので付き添ってほしい
+        case heat        // 熱中症かも・飲み物がほしい
+        case lost        // 道に迷った・案内してほしい
+
+        var text: String {
+            switch self {
+            case .accompany: return "体調が悪いので付き添ってほしい"
+            case .heat: return "熱中症かも・飲み物を買ってきてほしい"
+            case .lost: return "道に迷った・案内してほしい"
+            }
+        }
+        var actionPoints: String {
+            switch self {
+            case .accompany:
+                return "やること\n・安全な場所へ誘導して座らせる\n・症状と希望を本人に確認する\n・改善しない場合は #7119 に相談する"
+            case .heat:
+                return "やること\n・涼しい場所へ移動して体を冷やす\n・水分と塩分を取らせる(近くの自販機を確認)\n・意識がはっきりしない場合は 119 に通報する"
+            case .lost:
+                return "やること\n・行き先を本人に確認する\n・一緒に案内するか道順を伝える\n・不安が強い場合は近くの係員に引き継ぐ"
+            }
+        }
+    }
+    enum CommMode: String, Codable {
+        case voice, sign, writing
+        var text: String {
+            switch self {
+            case .voice: return "声で伝えて"
+            case .sign: return "手話で伝えて"
+            case .writing: return "筆談で伝えて"
+            }
+        }
+    }
+    var type: String = "help"
+    var kind: Kind
+    var mode: CommMode
+}
+
+struct CancelMessage: Codable {
+    var type: String = "cancel"
+}
+
 final class ArchViewController: UIViewController {
+
+    // MARK: - Role
+
+    private enum Role { case supporter, requester }
+    private var role: Role = .supporter
 
     // MARK: - Flow state
 
@@ -27,6 +78,10 @@ final class ArchViewController: UIViewController {
         case arrived
     }
     private var phase: Phase = .searching { didSet { applyPhase() } }
+
+    // Active help request (supporter: received; requester: sent).
+    private var activeHelp: HelpMessage?
+    private var pendingHelpToSend: HelpMessage?
 
     private let arrivalThreshold: Float = 1.0
     private let nearThreshold: Float = 2.5
@@ -72,6 +127,32 @@ final class ArchViewController: UIViewController {
     private let pinkCard = UIColor(red: 0.98, green: 0.88, blue: 0.90, alpha: 1.0)
     private let alertRed = UIColor(red: 0.86, green: 0.16, blue: 0.22, alpha: 1.0)
 
+    // MARK: - Location + open data
+
+    private let locationManager = CLLocationManager()
+    private var lastLocation: CLLocation?
+    private let resourcesLabel = UILabel()
+    private var resourcesFetched = false
+
+    // MARK: - Role select / requester screens
+
+    private let roleScreen = UIView()
+    private let requesterScreen = UIView()
+    private var selectedKind: HelpMessage.Kind = .accompany
+    private var selectedMode: HelpMessage.CommMode = .voice
+    private var kindButtons: [UIButton] = []
+    private var modeButtons: [UIButton] = []
+    private let requesterStatusLabel = UILabel()
+    private let requesterDistanceLabel = UILabel()
+    private let sendHelpButton = UIButton(type: .system)
+    private let cancelHelpButton = UIButton(type: .system)
+
+    // Supporter views that change with the received help.
+    private var helpTextLabels: [UILabel] = []
+    private var modeChipLabels: [UILabel] = []
+    private let requestLabel = UILabel()
+    private var pointsBodyLabel: UILabel?
+
     // MARK: - Notification screen views
 
     private let notificationScreen = UIView()
@@ -106,12 +187,21 @@ final class ArchViewController: UIViewController {
 
         buildARScreen()
         buildNotificationScreen()
+        buildRequesterScreen()
+        buildRoleScreen()
         applyPhase()
 
+        // Wait for a role choice before starting NI/MPC.
+        roleScreen.isHidden = false
+        view.bringSubviewToFront(roleScreen)
+    }
+
+    private func beginSession() {
         if supportsUWB {
             startup()
         } else {
             statusLabel.text = "この端末はUWB非対応です"
+            requesterStatusLabel.text = "この端末はUWB非対応です"
             unsupportedNote.isHidden = false
         }
     }
@@ -171,7 +261,11 @@ final class ArchViewController: UIViewController {
         if connectedPeer != nil { return }
         if !sharedTokenWithPeer { shareMyDiscoveryToken(token: myToken) }
         connectedPeer = peer
-        statusLabel.text = "求援者と接続しました"
+        statusLabel.text = role == .supporter ? "求援者と接続しました" : nil
+        if role == .requester, helpSent {
+            requesterStatusLabel.text = "サポーターに伝えました"
+            if let help = pendingHelpToSend { sendHelp(help) }
+        }
     }
 
     private func disconnectedFromPeer(peer: MCPeerID) {
@@ -182,10 +276,44 @@ final class ArchViewController: UIViewController {
     }
 
     private func dataReceivedHandler(data: Data, peer: MCPeerID) {
-        guard let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: data) else { return }
         if connectedPeer != peer { return }
-        peerDiscoveryToken = token
-        runConfig(peerToken: token)
+        // Envelope: either an archived NIDiscoveryToken, or a JSON app message.
+        if let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: data) {
+            peerDiscoveryToken = token
+            runConfig(peerToken: token)
+            return
+        }
+        if let help = try? JSONDecoder().decode(HelpMessage.self, from: data), help.type == "help" {
+            activeHelp = help
+            if role == .supporter { applyHelp(help) }
+            return
+        }
+        if let msg = try? JSONDecoder().decode(CancelMessage.self, from: data), msg.type == "cancel" {
+            activeHelp = nil
+            if role == .supporter {
+                statusLabel.text = "求援は取り下げられました"
+                if phase == .guiding || phase == .arrived { phase = .ready }
+            }
+        }
+    }
+
+    private func sendHelp(_ help: HelpMessage) {
+        guard let data = try? JSONEncoder().encode(help) else { return }
+        mpc?.sendDataToAllPeers(data: data)
+        pendingHelpToSend = nil
+        activeHelp = help
+    }
+
+    // Update every supporter-side surface that mirrors the request.
+    private func applyHelp(_ help: HelpMessage) {
+        let twoLine = help.kind.text.replacingOccurrences(of: "ので", with: "ので\n")
+        for label in helpTextLabels {
+            label.text = label.numberOfLines == 2 ? twoLine : help.kind.text
+        }
+        for chip in modeChipLabels { chip.text = help.mode.text }
+        requestLabel.text = "近くに[\(help.kind.text)]を\n求めている求援者がいます"
+        pointsBodyLabel?.text = help.kind.actionPoints
+        impactGenerator.impactOccurred()
     }
 
     private func shareMyDiscoveryToken(token: NIDiscoveryToken) {
@@ -203,6 +331,9 @@ final class ArchViewController: UIViewController {
 
         if let d = distance {
             distanceLabel.text = formatMeters(d)
+            if role == .requester && helpSent {
+                requesterDistanceLabel.text = "サポーターが向かっています  あと \(formatMeters(d))"
+            }
             if phase == .searching { phase = .ready }
         }
 
@@ -227,6 +358,13 @@ final class ArchViewController: UIViewController {
     // MARK: - Phase handling
 
     private func applyPhase() {
+        if role == .requester {
+            notificationScreen.isHidden = true
+            arScreen.isHidden = true
+            requesterScreen.isHidden = false
+            return
+        }
+        requesterScreen.isHidden = true
         switch phase {
         case .searching:
             notificationScreen.isHidden = false
@@ -462,7 +600,9 @@ final class ArchViewController: UIViewController {
         helpText.textColor = .white
         helpText.numberOfLines = 2
         helpText.font = .systemFont(ofSize: 17, weight: .semibold)
+        helpTextLabels.append(helpText)
         let signChip = outlineChip(text: "手話で伝えて")
+        modeChipLabels.append(signChip)
         for v in [helpChip, helpText, signChip] {
             helpCard.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -484,7 +624,6 @@ final class ArchViewController: UIViewController {
         }
 
         // Texts.
-        let requestLabel = UILabel()
         requestLabel.text = "近くに[体調が悪いので付き添って\nほしい]を求めている求援者がいます"
         requestLabel.textColor = .white
         requestLabel.font = .systemFont(ofSize: 16, weight: .semibold)
@@ -528,7 +667,8 @@ final class ArchViewController: UIViewController {
         // Accordions.
         let pointsCard = accordionCard(icon: "doc.text", title: "対応のポイント", bg: navyCard,
                                        tint: .white,
-                                       body: "やること\n・安全な場所へ誘導して座らせる\n・症状と希望を本人に確認する\n・改善しない場合は #7119 に相談する")
+                                       body: HelpMessage.Kind.accompany.actionPoints)
+        pointsBodyLabel = lastAccordionBody
         let contactCard = contactAccordion()
         for v in [pointsCard, contactCard] {
             notificationScreen.addSubview(v)
@@ -669,10 +809,12 @@ final class ArchViewController: UIViewController {
         bText.text = "体調が悪いので付き添ってほしい"
         bText.textColor = .white
         bText.font = .systemFont(ofSize: 13, weight: .semibold)
+        helpTextLabels.append(bText)
         let bSign = UILabel()
         bSign.text = "手話で伝えて"
         bSign.textColor = accentBlue.withAlphaComponent(0.9)
         bSign.font = .systemFont(ofSize: 11)
+        modeChipLabels.append(bSign)
 
         // Center hints.
         arHintLabel.textColor = .white
@@ -878,7 +1020,253 @@ final class ArchViewController: UIViewController {
         root.addChildNode(circleNode)
     }
 
+    // MARK: - Role select screen
+
+    private func buildRoleScreen() {
+        roleScreen.backgroundColor = bgColor
+        roleScreen.isHidden = true
+        view.addSubview(roleScreen)
+        roleScreen.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            roleScreen.topAnchor.constraint(equalTo: view.topAnchor),
+            roleScreen.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            roleScreen.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            roleScreen.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+
+        let title = UILabel()
+        title.text = "Arch再現"
+        title.textColor = .white
+        title.font = .systemFont(ofSize: 24, weight: .bold)
+        title.textAlignment = .center
+
+        let subtitle = UILabel()
+        subtitle.text = "困っている人と、近くにいる助けられる人を\n結びつける支援アプリ(再現)"
+        subtitle.textColor = UIColor.white.withAlphaComponent(0.6)
+        subtitle.font = .systemFont(ofSize: 13)
+        subtitle.numberOfLines = 2
+        subtitle.textAlignment = .center
+
+        let requesterButton = roleButton(title: "助けを求める", subtitle: "求援者として発報します", bg: alertRed)
+        requesterButton.addTarget(self, action: #selector(chooseRequester), for: .touchUpInside)
+        let supporterButton = roleButton(title: "サポーターになる", subtitle: "近くの求援を待ち受けます", bg: accentBlue)
+        supporterButton.addTarget(self, action: #selector(chooseSupporter), for: .touchUpInside)
+
+        for v in [title, subtitle, requesterButton, supporterButton] {
+            roleScreen.addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+        NSLayoutConstraint.activate([
+            title.centerXAnchor.constraint(equalTo: roleScreen.centerXAnchor),
+            title.topAnchor.constraint(equalTo: roleScreen.safeAreaLayoutGuide.topAnchor, constant: 80),
+            subtitle.centerXAnchor.constraint(equalTo: roleScreen.centerXAnchor),
+            subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 10),
+
+            requesterButton.centerXAnchor.constraint(equalTo: roleScreen.centerXAnchor),
+            requesterButton.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 60),
+            requesterButton.leadingAnchor.constraint(equalTo: roleScreen.leadingAnchor, constant: 32),
+            requesterButton.trailingAnchor.constraint(equalTo: roleScreen.trailingAnchor, constant: -32),
+            requesterButton.heightAnchor.constraint(equalToConstant: 88),
+
+            supporterButton.centerXAnchor.constraint(equalTo: roleScreen.centerXAnchor),
+            supporterButton.topAnchor.constraint(equalTo: requesterButton.bottomAnchor, constant: 16),
+            supporterButton.leadingAnchor.constraint(equalTo: requesterButton.leadingAnchor),
+            supporterButton.trailingAnchor.constraint(equalTo: requesterButton.trailingAnchor),
+            supporterButton.heightAnchor.constraint(equalToConstant: 88),
+        ])
+    }
+
+    private func roleButton(title: String, subtitle: String, bg: UIColor) -> UIButton {
+        let button = UIButton(type: .system)
+        var conf = UIButton.Configuration.filled()
+        conf.title = title
+        conf.subtitle = subtitle
+        conf.baseBackgroundColor = bg
+        conf.baseForegroundColor = .white
+        conf.cornerStyle = .large
+        conf.titleAlignment = .center
+        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = UIFont.systemFont(ofSize: 20, weight: .bold)
+            return a
+        }
+        button.configuration = conf
+        return button
+    }
+
+    @objc private func chooseRequester() {
+        role = .requester
+        roleScreen.isHidden = true
+        applyPhase()
+        beginSession()
+    }
+
+    @objc private func chooseSupporter() {
+        role = .supporter
+        roleScreen.isHidden = true
+        applyPhase()
+        beginSession()
+    }
+
+    // MARK: - Requester screen (not shown in the original video — same design language)
+
+    private var signToggleButton = UIButton(type: .system)
+    private var helpSent = false
+
+    private func buildRequesterScreen() {
+        requesterScreen.backgroundColor = bgColor
+        requesterScreen.isHidden = true
+        view.addSubview(requesterScreen)
+        requesterScreen.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            requesterScreen.topAnchor.constraint(equalTo: view.topAnchor),
+            requesterScreen.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            requesterScreen.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            requesterScreen.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+        let safe = requesterScreen.safeAreaLayoutGuide
+
+        let roleChip = chip(text: "求援者", textColor: .white, bg: alertRed)
+        requesterScreen.addSubview(roleChip)
+
+        // Same help card as the supporter side.
+        let helpCard = UIView()
+        helpCard.backgroundColor = cardColor
+        helpCard.layer.cornerRadius = 14
+        requesterScreen.addSubview(helpCard)
+        helpCard.translatesAutoresizingMaskIntoConstraints = false
+
+        let helpChip = chip(text: "ヘルプ", textColor: .white, bg: accentBlue.withAlphaComponent(0.85), small: true)
+        let helpText = UILabel()
+        helpText.text = "体調が悪いので\n付き添ってほしい"
+        helpText.textColor = .white
+        helpText.numberOfLines = 2
+        helpText.font = .systemFont(ofSize: 17, weight: .semibold)
+
+        var sconf = UIButton.Configuration.plain()
+        sconf.title = "手話で伝えて"
+        sconf.baseForegroundColor = UIColor.white.withAlphaComponent(0.85)
+        sconf.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 12, bottom: 5, trailing: 12)
+        signToggleButton.configuration = sconf
+        signToggleButton.layer.cornerRadius = 12
+        signToggleButton.layer.borderWidth = 1
+        signToggleButton.layer.borderColor = UIColor.white.withAlphaComponent(0.35).cgColor
+        signToggleButton.clipsToBounds = true
+        signToggleButton.addTarget(self, action: #selector(toggleSign), for: .touchUpInside)
+
+        for v in [helpChip, helpText, signToggleButton] {
+            helpCard.addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+
+        // Status / distance.
+        requesterStatusLabel.text = "内容を確認して、助けを求めてください"
+        requesterStatusLabel.textColor = UIColor.white.withAlphaComponent(0.6)
+        requesterStatusLabel.font = .systemFont(ofSize: 13)
+        requesterStatusLabel.textAlignment = .center
+        requesterStatusLabel.numberOfLines = 2
+
+        requesterDistanceLabel.text = nil
+        requesterDistanceLabel.textColor = .white
+        requesterDistanceLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        requesterDistanceLabel.textAlignment = .center
+        requesterDistanceLabel.numberOfLines = 2
+
+        // Send button (big, red — a person feeling unwell taps once).
+        var hconf = UIButton.Configuration.filled()
+        hconf.title = "助けを求める"
+        hconf.image = UIImage(systemName: "bell.fill")
+        hconf.imagePadding = 10
+        hconf.baseBackgroundColor = alertRed
+        hconf.baseForegroundColor = .white
+        hconf.cornerStyle = .capsule
+        hconf.contentInsets = NSDirectionalEdgeInsets(top: 22, leading: 24, bottom: 22, trailing: 24)
+        sendHelpButton.configuration = hconf
+        sendHelpButton.addTarget(self, action: #selector(sendHelpTapped), for: .touchUpInside)
+
+        var xconf = UIButton.Configuration.plain()
+        xconf.title = "もう大丈夫(取り下げる)"
+        xconf.baseForegroundColor = UIColor.white.withAlphaComponent(0.7)
+        cancelHelpButton.configuration = xconf
+        cancelHelpButton.isHidden = true
+        cancelHelpButton.addTarget(self, action: #selector(cancelHelpTapped), for: .touchUpInside)
+
+        for v in [requesterStatusLabel, requesterDistanceLabel, sendHelpButton, cancelHelpButton] {
+            requesterScreen.addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+
+        NSLayoutConstraint.activate([
+            roleChip.topAnchor.constraint(equalTo: safe.topAnchor, constant: 24),
+            roleChip.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 20),
+
+            helpCard.topAnchor.constraint(equalTo: roleChip.bottomAnchor, constant: 10),
+            helpCard.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
+            helpCard.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -16),
+
+            helpChip.topAnchor.constraint(equalTo: helpCard.topAnchor, constant: 12),
+            helpChip.leadingAnchor.constraint(equalTo: helpCard.leadingAnchor, constant: 12),
+            helpText.centerYAnchor.constraint(equalTo: helpChip.centerYAnchor),
+            helpText.leadingAnchor.constraint(equalTo: helpChip.trailingAnchor, constant: 10),
+            signToggleButton.topAnchor.constraint(equalTo: helpText.bottomAnchor, constant: 10),
+            signToggleButton.leadingAnchor.constraint(equalTo: helpCard.leadingAnchor, constant: 12),
+            signToggleButton.bottomAnchor.constraint(equalTo: helpCard.bottomAnchor, constant: -12),
+
+            sendHelpButton.centerYAnchor.constraint(equalTo: requesterScreen.centerYAnchor, constant: 20),
+            sendHelpButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 32),
+            sendHelpButton.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -32),
+
+            requesterStatusLabel.bottomAnchor.constraint(equalTo: sendHelpButton.topAnchor, constant: -20),
+            requesterStatusLabel.centerXAnchor.constraint(equalTo: requesterScreen.centerXAnchor),
+            requesterDistanceLabel.topAnchor.constraint(equalTo: sendHelpButton.bottomAnchor, constant: 24),
+            requesterDistanceLabel.centerXAnchor.constraint(equalTo: requesterScreen.centerXAnchor),
+            requesterDistanceLabel.leadingAnchor.constraint(greaterThanOrEqualTo: safe.leadingAnchor, constant: 16),
+
+            cancelHelpButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -16),
+            cancelHelpButton.centerXAnchor.constraint(equalTo: requesterScreen.centerXAnchor),
+        ])
+    }
+
+    @objc private func toggleSign() {
+        let isOn = selectedMode == .sign
+        selectedMode = isOn ? .voice : .sign
+        let nowOn = selectedMode == .sign
+        signToggleButton.configuration?.baseForegroundColor = nowOn ? .white : UIColor.white.withAlphaComponent(0.85)
+        signToggleButton.backgroundColor = nowOn ? accentBlue : .clear
+        signToggleButton.layer.borderColor = (nowOn ? accentBlue : UIColor.white.withAlphaComponent(0.35)).cgColor
+    }
+
+    @objc private func sendHelpTapped() {
+        let help = HelpMessage(kind: .accompany, mode: selectedMode)
+        helpSent = true
+        sendHelpButton.isHidden = true
+        cancelHelpButton.isHidden = false
+        impactGenerator.impactOccurred()
+        if connectedPeer != nil {
+            sendHelp(help)
+            requesterStatusLabel.text = "サポーターに伝えました"
+        } else {
+            pendingHelpToSend = help
+            requesterStatusLabel.text = "近くのサポーターを探しています…"
+        }
+    }
+
+    @objc private func cancelHelpTapped() {
+        helpSent = false
+        pendingHelpToSend = nil
+        activeHelp = nil
+        if let data = try? JSONEncoder().encode(CancelMessage()) {
+            mpc?.sendDataToAllPeers(data: data)
+        }
+        sendHelpButton.isHidden = false
+        cancelHelpButton.isHidden = true
+        requesterDistanceLabel.text = nil
+        requesterStatusLabel.text = "内容を確認して、助けを求めてください"
+    }
+
     // MARK: - Small view factories
+
+    private var lastAccordionBody: UILabel?
 
     private func chip(text: String, textColor: UIColor, bg: UIColor, small: Bool = false) -> UILabel {
         let label = PaddedLabel()
@@ -940,8 +1328,10 @@ final class ArchViewController: UIViewController {
             chevron.heightAnchor.constraint(equalToConstant: 14),
         ])
 
+        lastAccordionBody = nil
         if let body {
             let bodyLabel = UILabel()
+            lastAccordionBody = bodyLabel
             bodyLabel.text = body
             bodyLabel.textColor = tint.withAlphaComponent(0.85)
             bodyLabel.font = .systemFont(ofSize: 12)
