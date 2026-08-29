@@ -580,6 +580,7 @@ final class ArchViewController: UIViewController {
         back.tintColor = .white
         back.backgroundColor = cardColor
         back.layer.cornerRadius = 22
+        back.addTarget(self, action: #selector(backToRoleSelect), for: .touchUpInside)
         notificationScreen.addSubview(back)
         back.translatesAutoresizingMaskIntoConstraints = false
 
@@ -1094,6 +1095,37 @@ final class ArchViewController: UIViewController {
         return button
     }
 
+    @objc private func backToRoleSelect() {
+        // Tear down the whole session so the next role starts clean.
+        if isDemo { stopDemo() }
+        demoTimer?.invalidate()
+        helpSent = false
+        pendingHelpToSend = nil
+        activeHelp = nil
+        sendHelpButton.isHidden = false
+        cancelHelpButton.isHidden = true
+        requesterDistanceLabel.text = nil
+        requesterStatusLabel.text = "内容を確認して、助けを求めてください"
+
+        niSession?.invalidate()
+        niSession = nil
+        mpc?.invalidate()
+        mpc = nil
+        connectedPeer = nil
+        sharedTokenWithPeer = false
+        peerDiscoveryToken = nil
+        latestDistance = nil
+        latestDirection = nil
+        latestWorldTransform = nil
+
+        phase = .searching
+        notificationScreen.isHidden = true
+        requesterScreen.isHidden = true
+        arScreen.isHidden = true
+        roleScreen.isHidden = false
+        view.bringSubviewToFront(roleScreen)
+    }
+
     @objc private func chooseRequester() {
         role = .requester
         roleScreen.isHidden = true
@@ -1125,6 +1157,21 @@ final class ArchViewController: UIViewController {
             requesterScreen.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
         let safe = requesterScreen.safeAreaLayoutGuide
+
+        let back = UIButton(type: .system)
+        back.setImage(UIImage(systemName: "chevron.left"), for: .normal)
+        back.tintColor = .white
+        back.backgroundColor = cardColor
+        back.layer.cornerRadius = 22
+        back.addTarget(self, action: #selector(backToRoleSelect), for: .touchUpInside)
+        requesterScreen.addSubview(back)
+        back.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            back.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
+            back.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
+            back.widthAnchor.constraint(equalToConstant: 44),
+            back.heightAnchor.constraint(equalToConstant: 44),
+        ])
 
         let roleChip = chip(text: "求援者", textColor: .white, bg: alertRed)
         requesterScreen.addSubview(roleChip)
@@ -1197,7 +1244,7 @@ final class ArchViewController: UIViewController {
         }
 
         NSLayoutConstraint.activate([
-            roleChip.topAnchor.constraint(equalTo: safe.topAnchor, constant: 24),
+            roleChip.topAnchor.constraint(equalTo: back.bottomAnchor, constant: 16),
             roleChip.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 20),
 
             helpCard.topAnchor.constraint(equalTo: roleChip.bottomAnchor, constant: 10),
