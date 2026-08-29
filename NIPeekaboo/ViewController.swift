@@ -418,6 +418,15 @@ final class ArchViewController: UIViewController {
         if isDemo { demoTimer?.invalidate() }
     }
 
+    // Done supporting: back to the waiting state, ready for the next request.
+    @objc private func finishSupportTapped() {
+        if isDemo { stopDemo() }
+        activeHelp = nil
+        arrivalOverlay.isHidden = true
+        setSupporterActive(false)
+        phase = .searching
+    }
+
     // MARK: - Demo mode
 
     @objc private func demoTapped() {
@@ -915,8 +924,13 @@ final class ArchViewController: UIViewController {
             contactBar.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -8),
         ])
 
-        // The scene view must sit behind every overlay.
+        // The scene view must sit behind every overlay; controls stay tappable
+        // even while the arrival overlay is up.
         arScreen.sendSubviewToBack(sceneView)
+        arScreen.bringSubviewToFront(closeButton)
+        arScreen.bringSubviewToFront(title)
+        arScreen.bringSubviewToFront(pointsBar)
+        arScreen.bringSubviewToFront(contactBar)
     }
 
     private func buildArrivalOverlay() {
@@ -954,10 +968,24 @@ final class ArchViewController: UIViewController {
         tip.layer.cornerRadius = 10
         tip.clipsToBounds = true
 
-        for v in [checkCircle, check, arrived, putAway, tip] {
+        let doneButton = UIButton(type: .system)
+        var dconf = UIButton.Configuration.filled()
+        dconf.title = "対応を終える"
+        dconf.baseBackgroundColor = accentBlue
+        dconf.baseForegroundColor = .white
+        dconf.cornerStyle = .capsule
+        dconf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 32, bottom: 12, trailing: 32)
+        doneButton.configuration = dconf
+        doneButton.addTarget(self, action: #selector(finishSupportTapped), for: .touchUpInside)
+
+        for v in [checkCircle, check, arrived, putAway, tip, doneButton] {
             arrivalOverlay.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
+        NSLayoutConstraint.activate([
+            doneButton.topAnchor.constraint(equalTo: tip.bottomAnchor, constant: 28),
+            doneButton.centerXAnchor.constraint(equalTo: arrivalOverlay.centerXAnchor),
+        ])
 
         NSLayoutConstraint.activate([
             arrivalOverlay.topAnchor.constraint(equalTo: arScreen.topAnchor),
