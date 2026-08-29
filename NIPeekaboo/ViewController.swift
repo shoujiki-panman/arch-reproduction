@@ -1448,8 +1448,18 @@ final class ArchViewController: UIViewController {
         call.tintColor = .white
         call.backgroundColor = alertRed
         call.layer.cornerRadius = 20
-        call.addAction(UIAction { _ in
-            if let url = URL(string: "tel://%237119") { UIApplication.shared.open(url) }
+        // Confirm before dialing — a mis-tap during a demo must not place a real call.
+        call.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let alert = UIAlertController(
+                title: "#7119 に発信しますか?",
+                message: "救急相談センター(総務省消防庁 救急安心センター事業)に電話をかけます。",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+            alert.addAction(UIAlertAction(title: "発信する", style: .destructive) { _ in
+                if let url = URL(string: "tel://%237119") { UIApplication.shared.open(url) }
+            })
+            self.present(alert, animated: true)
         }, for: .touchUpInside)
 
         for v in [num, org, call] {
