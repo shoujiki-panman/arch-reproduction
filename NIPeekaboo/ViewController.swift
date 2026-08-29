@@ -151,7 +151,7 @@ final class ArchViewController: UIViewController {
     private var helpTextLabels: [UILabel] = []
     private var modeChipLabels: [UILabel] = []
     private let requestLabel = UILabel()
-    private var pointsBodyLabel: UILabel?
+    private var pointsBodyLabels: [UILabel] = []
 
     // Supporter views revealed only once a help request arrives (or demo starts).
     private var supporterActiveViews: [UIView] = []
@@ -315,7 +315,7 @@ final class ArchViewController: UIViewController {
         }
         for chip in modeChipLabels { chip.text = help.mode.text }
         requestLabel.text = "近くに[\(help.kind.text)]を\n求めている求援者がいます"
-        pointsBodyLabel?.text = help.kind.actionPoints
+        pointsBodyLabels.forEach { $0.text = help.kind.actionPoints }
         setSupporterActive(true)
         if latestDistance != nil { phase = .ready }
         impactGenerator.impactOccurred()
@@ -688,7 +688,7 @@ final class ArchViewController: UIViewController {
         let pointsCard = accordionCard(icon: "doc.text", title: "対応のポイント", bg: navyCard,
                                        tint: .white,
                                        body: HelpMessage.Kind.accompany.actionPoints)
-        pointsBodyLabel = lastAccordionBody
+        if let b = lastAccordionBody { pointsBodyLabels.append(b) }
         let contactCard = contactAccordion()
         for v in [pointsCard, contactCard] {
             notificationScreen.addSubview(v)
@@ -867,9 +867,10 @@ final class ArchViewController: UIViewController {
         arDistancePill.isHidden = true
 
         // Bottom accordions (collapsed look).
-        let pointsBar = accordionCard(icon: "doc.text", title: "対応のポイント", bg: navyCard, tint: .white, body: nil)
-        let contactBar = accordionCard(icon: "phone.fill", title: "引継ぎ連絡先", bg: pinkCard,
-                                       tint: UIColor(red: 0.75, green: 0.15, blue: 0.25, alpha: 1), body: nil)
+        let pointsBar = accordionCard(icon: "doc.text", title: "対応のポイント", bg: navyCard, tint: .white,
+                                      body: HelpMessage.Kind.accompany.actionPoints, expanded: false)
+        if let b = lastAccordionBody { pointsBodyLabels.append(b) }
+        let contactBar = contactAccordion(expanded: false)
 
         for v in [closeButton, title, banner, arHintLabel, arSubHintLabel, arDistancePill, pointsBar, contactBar] {
             arScreen.addSubview(v)
@@ -1391,39 +1392,8 @@ final class ArchViewController: UIViewController {
         return label
     }
 
-    private func accordionCard(icon: String, title: String, bg: UIColor, tint: UIColor, body: String?) -> UIView {
-        let card = UIView()
-        card.backgroundColor = bg
-        card.layer.cornerRadius = 12
-
-        let iconView = UIImageView(image: UIImage(systemName: icon))
-        iconView.tintColor = tint
-        iconView.contentMode = .scaleAspectFit
-        let titleLabel = UILabel()
-        titleLabel.text = title
-        titleLabel.textColor = tint
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-        let chevron = UIImageView(image: UIImage(systemName: "chevron.down"))
-        chevron.tintColor = tint.withAlphaComponent(0.7)
-        chevron.contentMode = .scaleAspectFit
-
-        for v in [iconView, titleLabel, chevron] {
-            card.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-        NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
-            iconView.topAnchor.constraint(equalTo: card.topAnchor, constant: 13),
-            iconView.widthAnchor.constraint(equalToConstant: 18),
-            iconView.heightAnchor.constraint(equalToConstant: 18),
-            titleLabel.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
-            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
-            chevron.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
-            chevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
-            chevron.widthAnchor.constraint(equalToConstant: 14),
-            chevron.heightAnchor.constraint(equalToConstant: 14),
-        ])
-
+    private func accordionCard(icon: String, title: String, bg: UIColor, tint: UIColor, body: String?, expanded: Bool = true) -> UIView {
+        var bodyView: UIView?
         lastAccordionBody = nil
         if let body {
             let bodyLabel = UILabel()
@@ -1432,34 +1402,13 @@ final class ArchViewController: UIViewController {
             bodyLabel.textColor = tint.withAlphaComponent(0.85)
             bodyLabel.font = .systemFont(ofSize: 12)
             bodyLabel.numberOfLines = 0
-            card.addSubview(bodyLabel)
-            bodyLabel.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                bodyLabel.topAnchor.constraint(equalTo: iconView.bottomAnchor, constant: 10),
-                bodyLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
-                bodyLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
-                bodyLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
-            ])
-        } else {
-            iconView.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -13).isActive = true
+            bodyView = bodyLabel
         }
-        return card
+        return AccordionView(icon: icon, title: title, bg: bg, tint: tint, bodyView: bodyView, expanded: expanded)
     }
 
-    private func contactAccordion() -> UIView {
-        let card = UIView()
-        card.backgroundColor = pinkCard
-        card.layer.cornerRadius = 12
+    private func contactAccordion(expanded: Bool = true) -> UIView {
         let tint = UIColor(red: 0.75, green: 0.15, blue: 0.25, alpha: 1)
-
-        let iconView = UIImageView(image: UIImage(systemName: "phone.fill"))
-        iconView.tintColor = tint
-        let titleLabel = UILabel()
-        titleLabel.text = "引継ぎ連絡先"
-        titleLabel.textColor = tint
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-        let chevron = UIImageView(image: UIImage(systemName: "chevron.up"))
-        chevron.tintColor = tint.withAlphaComponent(0.7)
 
         let row = UIView()
         row.backgroundColor = .white
@@ -1481,32 +1430,12 @@ final class ArchViewController: UIViewController {
             if let url = URL(string: "tel://%237119") { UIApplication.shared.open(url) }
         }, for: .touchUpInside)
 
-        for v in [iconView, titleLabel, chevron, row] {
-            card.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
         for v in [num, org, call] {
             row.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
-            iconView.topAnchor.constraint(equalTo: card.topAnchor, constant: 13),
-            iconView.widthAnchor.constraint(equalToConstant: 18),
-            iconView.heightAnchor.constraint(equalToConstant: 18),
-            titleLabel.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
-            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
-            chevron.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
-            chevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
-            chevron.widthAnchor.constraint(equalToConstant: 14),
-            chevron.heightAnchor.constraint(equalToConstant: 14),
-
-            row.topAnchor.constraint(equalTo: iconView.bottomAnchor, constant: 10),
-            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
-            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
-            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
             row.heightAnchor.constraint(equalToConstant: 60),
-
             num.topAnchor.constraint(equalTo: row.topAnchor, constant: 12),
             num.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
             org.topAnchor.constraint(equalTo: num.bottomAnchor, constant: 2),
@@ -1516,7 +1445,92 @@ final class ArchViewController: UIViewController {
             call.widthAnchor.constraint(equalToConstant: 40),
             call.heightAnchor.constraint(equalToConstant: 40),
         ])
-        return card
+        return AccordionView(icon: "phone.fill", title: "引継ぎ連絡先", bg: pinkCard, tint: tint, bodyView: row, expanded: expanded)
+    }
+}
+
+// MARK: - Tappable accordion card
+
+private final class AccordionView: UIView, UIGestureRecognizerDelegate {
+    private let chevron = UIImageView(image: UIImage(systemName: "chevron.down"))
+    private let stack = UIStackView()
+    private(set) var bodyView: UIView?
+
+    init(icon: String, title: String, bg: UIColor, tint: UIColor, bodyView: UIView?, expanded: Bool) {
+        super.init(frame: .zero)
+        backgroundColor = bg
+        layer.cornerRadius = 12
+        clipsToBounds = true
+
+        stack.axis = .vertical
+        stack.spacing = 10
+        stack.isLayoutMarginsRelativeArrangement = true
+        stack.layoutMargins = UIEdgeInsets(top: 13, left: 14, bottom: 13, right: 14)
+        addSubview(stack)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+
+        let iconView = UIImageView(image: UIImage(systemName: icon))
+        iconView.tintColor = tint
+        iconView.contentMode = .scaleAspectFit
+        let titleLabel = UILabel()
+        titleLabel.text = title
+        titleLabel.textColor = tint
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        chevron.tintColor = tint.withAlphaComponent(0.7)
+        chevron.contentMode = .scaleAspectFit
+        let spacer = UIView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let header = UIStackView(arrangedSubviews: [iconView, titleLabel, spacer, chevron])
+        header.axis = .horizontal
+        header.alignment = .center
+        header.spacing = 10
+        NSLayoutConstraint.activate([
+            iconView.widthAnchor.constraint(equalToConstant: 18),
+            iconView.heightAnchor.constraint(equalToConstant: 18),
+            chevron.widthAnchor.constraint(equalToConstant: 14),
+            chevron.heightAnchor.constraint(equalToConstant: 14),
+        ])
+        stack.addArrangedSubview(header)
+
+        if let bodyView {
+            self.bodyView = bodyView
+            stack.addArrangedSubview(bodyView)
+            bodyView.isHidden = !expanded
+            chevron.transform = expanded ? CGAffineTransform(rotationAngle: .pi) : .identity
+        }
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(toggle))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        addGestureRecognizer(tap)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func toggle() {
+        guard let bodyView else { return }
+        UIView.animate(withDuration: 0.25) {
+            bodyView.isHidden.toggle()
+            self.chevron.transform = bodyView.isHidden ? .identity : CGAffineTransform(rotationAngle: .pi)
+            self.superview?.layoutIfNeeded()
+        }
+    }
+
+    // Don't let the toggle swallow taps on inner buttons (e.g. the call button).
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        var v: UIView? = touch.view
+        while let cur = v {
+            if cur is UIControl { return false }
+            v = cur.superview
+        }
+        return true
     }
 }
 
