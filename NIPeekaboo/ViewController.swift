@@ -495,7 +495,7 @@ final class ArchViewController: UIViewController {
     private func startRequesterDemo() {
         isDemo = true
         requesterDemoButton.setTitle("デモ停止", for: .normal)
-        requesterStatusLabel.text = "デモモード(シミュレーション)\n距離は実測ではありません
+        requesterStatusLabel.text = "デモモード(シミュレーション)\n距離は実測ではありません"
         let demoPeers: [(String, Float)] = [("会場スタッフのiPhone", 7.4), ("となりの席のiPhone", 15.6), ("受付のiPhone", 24.1)]
         for (name, distance) in demoPeers {
             let peerID = MCPeerID(displayName: name)
