@@ -43,7 +43,7 @@ struct HelpMessage: Codable {
             }
         }
     }
-    enum CommMode: String, Codable {
+    enum CommMode: String, Codable, CaseIterable {
         case voice, sign, writing
         var text: String {
             switch self {
@@ -1176,7 +1176,8 @@ final class ArchViewController: UIViewController {
         sendHelpButton.isHidden = false
         cancelHelpButton.isHidden = true
         requesterDistanceLabel.text = nil
-        requesterStatusLabel.text = "内容を確認して、助けを求めてください"
+        requesterStatusLabel.text = "内容を選んで、助けを求めてください"
+        setSelectionEnabled(true)
 
         niSession?.invalidate()
         niSession = nil
@@ -1214,8 +1215,8 @@ final class ArchViewController: UIViewController {
 
     // MARK: - Requester screen (not shown in the original video — same design language)
 
-    private var signToggleButton = UIButton(type: .system)
     private var helpSent = false
+    private var selectionContainer = UIStackView()
 
     private func buildRequesterScreen() {
         requesterScreen.backgroundColor = bgColor
@@ -1230,6 +1231,7 @@ final class ArchViewController: UIViewController {
         ])
         let safe = requesterScreen.safeAreaLayoutGuide
 
+        // Fixed header.
         let back = UIButton(type: .system)
         back.setImage(UIImage(systemName: "chevron.left"), for: .normal)
         back.tintColor = .white
@@ -1238,48 +1240,75 @@ final class ArchViewController: UIViewController {
         back.addTarget(self, action: #selector(backToRoleSelect), for: .touchUpInside)
         requesterScreen.addSubview(back)
         back.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            back.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
-            back.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
-            back.widthAnchor.constraint(equalToConstant: 44),
-            back.heightAnchor.constraint(equalToConstant: 44),
-        ])
+
+        // Fixed footer.
+        var xconf = UIButton.Configuration.plain()
+        xconf.title = "もう大丈夫(取り下げる)"
+        xconf.baseForegroundColor = UIColor.white.withAlphaComponent(0.7)
+        cancelHelpButton.configuration = xconf
+        cancelHelpButton.isHidden = true
+        cancelHelpButton.addTarget(self, action: #selector(cancelHelpTapped), for: .touchUpInside)
+        requesterScreen.addSubview(cancelHelpButton)
+        cancelHelpButton.translatesAutoresizingMaskIntoConstraints = false
+
+        // Scrolling body.
+        let scroll = UIScrollView()
+        scroll.alwaysBounceVertical = true
+        requesterScreen.addSubview(scroll)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        let content = UIView()
+        scroll.addSubview(content)
+        content.translatesAutoresizingMaskIntoConstraints = false
 
         let roleChip = chip(text: "求援者", textColor: .white, bg: alertRed)
-        requesterScreen.addSubview(roleChip)
+        content.addSubview(roleChip)
 
-        // Same help card as the supporter side.
-        let helpCard = UIView()
-        helpCard.backgroundColor = cardColor
-        helpCard.layer.cornerRadius = 14
-        requesterScreen.addSubview(helpCard)
-        helpCard.translatesAutoresizingMaskIntoConstraints = false
-
-        let helpChip = chip(text: "ヘルプ", textColor: .white, bg: accentBlue.withAlphaComponent(0.85), small: true)
-        let helpText = UILabel()
-        helpText.text = "体調が悪いので\n付き添ってほしい"
-        helpText.textColor = .white
-        helpText.numberOfLines = 2
-        helpText.font = .systemFont(ofSize: 17, weight: .semibold)
-
-        var sconf = UIButton.Configuration.plain()
-        sconf.title = "手話で伝えて"
-        sconf.baseForegroundColor = UIColor.white.withAlphaComponent(0.85)
-        sconf.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 12, bottom: 5, trailing: 12)
-        signToggleButton.configuration = sconf
-        signToggleButton.layer.cornerRadius = 12
-        signToggleButton.layer.borderWidth = 1
-        signToggleButton.layer.borderColor = UIColor.white.withAlphaComponent(0.35).cgColor
-        signToggleButton.clipsToBounds = true
-        signToggleButton.addTarget(self, action: #selector(toggleSign), for: .touchUpInside)
-
-        for v in [helpChip, helpText, signToggleButton] {
-            helpCard.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
+        // Section 1: what is wrong.
+        let kindTitle = sectionLabel("どうしましたか?")
+        kindButtons = HelpMessage.Kind.allCases.enumerated().map { index, kind in
+            let button = selectableCard(title: kind.text)
+            button.tag = index
+            button.addTarget(self, action: #selector(kindTapped(_:)), for: .touchUpInside)
+            return button
         }
+        let kindStack = UIStackView(arrangedSubviews: kindButtons)
+        kindStack.axis = .vertical
+        kindStack.spacing = 10
+        kindStack.distribution = .fillEqually
 
-        // Status / distance.
-        requesterStatusLabel.text = "内容を確認して、助けを求めてください"
+        // Section 2: how the requester wants to be spoken to.
+        let modeTitle = sectionLabel("伝え方の希望")
+        modeButtons = HelpMessage.CommMode.allCases.enumerated().map { index, mode in
+            let button = selectableChip(title: mode.text)
+            button.tag = index
+            button.addTarget(self, action: #selector(modeTapped(_:)), for: .touchUpInside)
+            return button
+        }
+        let modeStack = UIStackView(arrangedSubviews: modeButtons)
+        modeStack.axis = .horizontal
+        modeStack.spacing = 8
+        modeStack.distribution = .fillEqually
+
+        selectionContainer = UIStackView(arrangedSubviews: [kindTitle, kindStack, modeTitle, modeStack])
+        selectionContainer.axis = .vertical
+        selectionContainer.spacing = 10
+        selectionContainer.setCustomSpacing(18, after: kindStack)
+        content.addSubview(selectionContainer)
+        selectionContainer.translatesAutoresizingMaskIntoConstraints = false
+
+        // Send button.
+        var hconf = UIButton.Configuration.filled()
+        hconf.title = "助けを求める"
+        hconf.image = UIImage(systemName: "bell.fill")
+        hconf.imagePadding = 10
+        hconf.baseBackgroundColor = alertRed
+        hconf.baseForegroundColor = .white
+        hconf.cornerStyle = .capsule
+        hconf.contentInsets = NSDirectionalEdgeInsets(top: 20, leading: 24, bottom: 20, trailing: 24)
+        sendHelpButton.configuration = hconf
+        sendHelpButton.addTarget(self, action: #selector(sendHelpTapped), for: .touchUpInside)
+
+        requesterStatusLabel.text = "内容を選んで、助けを求めてください"
         requesterStatusLabel.textColor = UIColor.white.withAlphaComponent(0.6)
         requesterStatusLabel.font = .systemFont(ofSize: 13)
         requesterStatusLabel.textAlignment = .center
@@ -1291,75 +1320,145 @@ final class ArchViewController: UIViewController {
         requesterDistanceLabel.textAlignment = .center
         requesterDistanceLabel.numberOfLines = 2
 
-        // Send button (big, red — a person feeling unwell taps once).
-        var hconf = UIButton.Configuration.filled()
-        hconf.title = "助けを求める"
-        hconf.image = UIImage(systemName: "bell.fill")
-        hconf.imagePadding = 10
-        hconf.baseBackgroundColor = alertRed
-        hconf.baseForegroundColor = .white
-        hconf.cornerStyle = .capsule
-        hconf.contentInsets = NSDirectionalEdgeInsets(top: 22, leading: 24, bottom: 22, trailing: 24)
-        sendHelpButton.configuration = hconf
-        sendHelpButton.addTarget(self, action: #selector(sendHelpTapped), for: .touchUpInside)
-
-        var xconf = UIButton.Configuration.plain()
-        xconf.title = "もう大丈夫(取り下げる)"
-        xconf.baseForegroundColor = UIColor.white.withAlphaComponent(0.7)
-        cancelHelpButton.configuration = xconf
-        cancelHelpButton.isHidden = true
-        cancelHelpButton.addTarget(self, action: #selector(cancelHelpTapped), for: .touchUpInside)
-
-        for v in [requesterStatusLabel, requesterDistanceLabel, sendHelpButton, cancelHelpButton] {
-            requesterScreen.addSubview(v)
+        for v in [sendHelpButton, requesterStatusLabel, requesterDistanceLabel] {
+            content.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
 
         NSLayoutConstraint.activate([
-            roleChip.topAnchor.constraint(equalTo: back.bottomAnchor, constant: 16),
-            roleChip.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 20),
+            back.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
+            back.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
+            back.widthAnchor.constraint(equalToConstant: 44),
+            back.heightAnchor.constraint(equalToConstant: 44),
 
-            helpCard.topAnchor.constraint(equalTo: roleChip.bottomAnchor, constant: 10),
-            helpCard.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
-            helpCard.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -16),
-
-            helpChip.topAnchor.constraint(equalTo: helpCard.topAnchor, constant: 12),
-            helpChip.leadingAnchor.constraint(equalTo: helpCard.leadingAnchor, constant: 12),
-            helpText.centerYAnchor.constraint(equalTo: helpChip.centerYAnchor),
-            helpText.leadingAnchor.constraint(equalTo: helpChip.trailingAnchor, constant: 10),
-            signToggleButton.topAnchor.constraint(equalTo: helpText.bottomAnchor, constant: 10),
-            signToggleButton.leadingAnchor.constraint(equalTo: helpCard.leadingAnchor, constant: 12),
-            signToggleButton.bottomAnchor.constraint(equalTo: helpCard.bottomAnchor, constant: -12),
-
-            sendHelpButton.centerYAnchor.constraint(equalTo: requesterScreen.centerYAnchor, constant: 20),
-            sendHelpButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 32),
-            sendHelpButton.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -32),
-
-            requesterStatusLabel.bottomAnchor.constraint(equalTo: sendHelpButton.topAnchor, constant: -20),
-            requesterStatusLabel.centerXAnchor.constraint(equalTo: requesterScreen.centerXAnchor),
-            requesterDistanceLabel.topAnchor.constraint(equalTo: sendHelpButton.bottomAnchor, constant: 24),
-            requesterDistanceLabel.centerXAnchor.constraint(equalTo: requesterScreen.centerXAnchor),
-            requesterDistanceLabel.leadingAnchor.constraint(greaterThanOrEqualTo: safe.leadingAnchor, constant: 16),
-
-            cancelHelpButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -16),
+            cancelHelpButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12),
             cancelHelpButton.centerXAnchor.constraint(equalTo: requesterScreen.centerXAnchor),
+
+            scroll.topAnchor.constraint(equalTo: back.bottomAnchor, constant: 8),
+            scroll.leadingAnchor.constraint(equalTo: requesterScreen.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: requesterScreen.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: cancelHelpButton.topAnchor, constant: -8),
+
+            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
+
+            roleChip.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
+            roleChip.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+
+            selectionContainer.topAnchor.constraint(equalTo: roleChip.bottomAnchor, constant: 16),
+            selectionContainer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            selectionContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+
+            sendHelpButton.topAnchor.constraint(equalTo: selectionContainer.bottomAnchor, constant: 26),
+            sendHelpButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 32),
+            sendHelpButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -32),
+
+            requesterStatusLabel.topAnchor.constraint(equalTo: sendHelpButton.bottomAnchor, constant: 14),
+            requesterStatusLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            requesterStatusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
+
+            requesterDistanceLabel.topAnchor.constraint(equalTo: requesterStatusLabel.bottomAnchor, constant: 14),
+            requesterDistanceLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            requesterDistanceLabel.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
+            requesterDistanceLabel.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
         ])
+
+        refreshSelectionStyles()
     }
 
-    @objc private func toggleSign() {
-        let isOn = selectedMode == .sign
-        selectedMode = isOn ? .voice : .sign
-        let nowOn = selectedMode == .sign
-        signToggleButton.configuration?.baseForegroundColor = nowOn ? .white : UIColor.white.withAlphaComponent(0.85)
-        signToggleButton.backgroundColor = nowOn ? accentBlue : .clear
-        signToggleButton.layer.borderColor = (nowOn ? accentBlue : UIColor.white.withAlphaComponent(0.35)).cgColor
+    private func sectionLabel(_ text: String) -> UILabel {
+        let label = UILabel()
+        label.text = text
+        label.textColor = UIColor.white.withAlphaComponent(0.55)
+        label.font = .systemFont(ofSize: 13, weight: .semibold)
+        return label
+    }
+
+    private func selectableCard(title: String) -> UIButton {
+        let button = UIButton(type: .system)
+        var conf = UIButton.Configuration.plain()
+        conf.title = title
+        conf.baseForegroundColor = .white
+        conf.titleAlignment = .leading
+        conf.contentInsets = NSDirectionalEdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16)
+        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+            return a
+        }
+        button.configuration = conf
+        button.contentHorizontalAlignment = .leading
+        button.titleLabel?.numberOfLines = 2
+        button.backgroundColor = cardColor
+        button.layer.cornerRadius = 14
+        button.layer.borderWidth = 2
+        button.layer.borderColor = UIColor.clear.cgColor
+        return button
+    }
+
+    private func selectableChip(title: String) -> UIButton {
+        let button = UIButton(type: .system)
+        var conf = UIButton.Configuration.plain()
+        conf.title = title
+        conf.baseForegroundColor = .white
+        conf.contentInsets = NSDirectionalEdgeInsets(top: 9, leading: 8, bottom: 9, trailing: 8)
+        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = UIFont.systemFont(ofSize: 13)
+            return a
+        }
+        button.configuration = conf
+        button.layer.cornerRadius = 16
+        button.layer.borderWidth = 1
+        return button
+    }
+
+    @objc private func kindTapped(_ sender: UIButton) {
+        let kinds = HelpMessage.Kind.allCases
+        guard sender.tag < kinds.count else { return }
+        selectedKind = kinds[sender.tag]
+        impactGenerator.impactOccurred()
+        refreshSelectionStyles()
+    }
+
+    @objc private func modeTapped(_ sender: UIButton) {
+        let modes = HelpMessage.CommMode.allCases
+        guard sender.tag < modes.count else { return }
+        selectedMode = modes[sender.tag]
+        refreshSelectionStyles()
+    }
+
+    private func refreshSelectionStyles() {
+        let kinds = HelpMessage.Kind.allCases
+        for (index, button) in kindButtons.enumerated() {
+            let selected = index < kinds.count && kinds[index] == selectedKind
+            button.layer.borderColor = (selected ? accentBlue : UIColor.clear).cgColor
+            button.backgroundColor = selected ? accentBlue.withAlphaComponent(0.18) : cardColor
+        }
+        let modes = HelpMessage.CommMode.allCases
+        for (index, button) in modeButtons.enumerated() {
+            let selected = index < modes.count && modes[index] == selectedMode
+            button.backgroundColor = selected ? accentBlue : .clear
+            button.layer.borderColor = (selected ? accentBlue : UIColor.white.withAlphaComponent(0.35)).cgColor
+            button.configuration?.baseForegroundColor = selected ? .white : UIColor.white.withAlphaComponent(0.75)
+        }
+    }
+
+    // Selection is locked while a request is out, so the supporter's view can't drift.
+    private func setSelectionEnabled(_ enabled: Bool) {
+        selectionContainer.isUserInteractionEnabled = enabled
+        selectionContainer.alpha = enabled ? 1.0 : 0.5
     }
 
     @objc private func sendHelpTapped() {
-        let help = HelpMessage(kind: .accompany, mode: selectedMode)
+        let help = HelpMessage(kind: selectedKind, mode: selectedMode)
         helpSent = true
         sendHelpButton.isHidden = true
         cancelHelpButton.isHidden = false
+        setSelectionEnabled(false)
         impactGenerator.impactOccurred()
         if connectedPeer != nil {
             sendHelp(help)
@@ -1379,8 +1478,9 @@ final class ArchViewController: UIViewController {
         }
         sendHelpButton.isHidden = false
         cancelHelpButton.isHidden = true
+        setSelectionEnabled(true)
         requesterDistanceLabel.text = nil
-        requesterStatusLabel.text = "内容を確認して、助けを求めてください"
+        requesterStatusLabel.text = "内容を選んで、助けを求めてください"
     }
 
     // MARK: - Small view factories
