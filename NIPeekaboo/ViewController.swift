@@ -17,45 +17,45 @@ import NearbyInteraction
 import MultipeerConnectivity
 import simd
 
-// MARK: - Help message protocol (requester -> supporter over MPC)
+// MARK: - Meet-up protocol (the waiting side -> the side coming to find them)
 
-struct HelpMessage: Codable {
+struct MeetRequest: Codable {
     enum Kind: String, Codable, CaseIterable {
-        case accompany   // 体調が悪いので付き添ってほしい
-        case heat        // 熱中症かも・飲み物がほしい
-        case lost        // 道に迷った・案内してほしい
+        case here      // ここで待ってる
+        case inside    // お店・建物の中にいる
+        case outside   // 外で待っている
 
         var text: String {
             switch self {
-            case .accompany: return "体調が悪いので付き添ってほしい"
-            case .heat: return "熱中症かも・飲み物を買ってきてほしい"
-            case .lost: return "道に迷った・案内してほしい"
+            case .here: return "ここで待ってる"
+            case .inside: return "お店・建物の中にいる"
+            case .outside: return "外で待ってる"
             }
         }
-        var actionPoints: String {
+        var tips: String {
             switch self {
-            case .accompany:
-                return "やること\n・安全な場所へ誘導して座らせる\n・症状と希望を本人に確認する\n・改善しない場合は #7119 に相談する"
-            case .heat:
-                return "やること\n・涼しい場所へ移動して体を冷やす\n・水分と塩分を取らせる(近くの自販機を確認)\n・意識がはっきりしない場合は 119 に通報する"
-            case .lost:
-                return "やること\n・行き先を本人に確認する\n・一緒に案内するか道順を伝える\n・不安が強い場合は近くの係員に引き継ぐ"
+            case .here:
+                return "合流のコツ\n・相手はその場から動かない方が早い\n・残り5mを切ったら画面から顔を上げる\n・見つけたら手を振ってもらう"
+            case .inside:
+                return "合流のコツ\n・入口を1つ決めてそこで待ってもらう\n・建物の中は電波が弱くなることがある\n・残り5mを切ったら顔を上げる"
+            case .outside:
+                return "合流のコツ\n・人の流れの外側で待ってもらう\n・目印になるものの近くだと早い\n・残り5mを切ったら顔を上げる"
             }
         }
     }
-    enum CommMode: String, Codable, CaseIterable {
-        case voice, sign, writing
+    enum MarkerHint: String, Codable, CaseIterable {
+        case wave, standing, seated
         var text: String {
             switch self {
-            case .voice: return "声で伝えて"
-            case .sign: return "手話で伝えて"
-            case .writing: return "筆談で伝えて"
+            case .wave: return "手を振ってる"
+            case .standing: return "立って待ってる"
+            case .seated: return "座って待ってる"
             }
         }
     }
-    var type: String = "help"
+    var type: String = "meet"
     var kind: Kind
-    var mode: CommMode
+    var mode: MarkerHint
 }
 
 struct CancelMessage: Codable {
@@ -86,8 +86,8 @@ final class ArchViewController: UIViewController {
     private var phase: Phase = .searching { didSet { applyPhase() } }
 
     // Active help request (supporter: received; requester: sent).
-    private var activeHelp: HelpMessage?
-    private var pendingHelpToSend: HelpMessage?
+    private var activeHelp: MeetRequest?
+    private var pendingHelpToSend: MeetRequest?
 
     private let arrivalThreshold: Float = 1.0
     private let nearThreshold: Float = 2.5
@@ -147,9 +147,9 @@ final class ArchViewController: UIViewController {
         }
         var color: UIColor {
             switch self {
-            case .far: return UIColor(red: 0.20, green: 0.45, blue: 0.95, alpha: 1)
-            case .mid: return UIColor(red: 0.25, green: 0.62, blue: 0.98, alpha: 1)
-            case .near, .arrived: return UIColor(red: 0.20, green: 0.80, blue: 0.50, alpha: 1)
+            case .far: return UIColor(red: 0.98, green: 0.66, blue: 0.25, alpha: 1)
+            case .mid: return UIColor(red: 1.00, green: 0.78, blue: 0.35, alpha: 1)
+            case .near, .arrived: return UIColor(red: 0.21, green: 0.82, blue: 0.54, alpha: 1)
             }
         }
     }
@@ -177,12 +177,12 @@ final class ArchViewController: UIViewController {
 
     // MARK: - Palette
 
-    private let bgColor = UIColor(red: 0.05, green: 0.05, blue: 0.07, alpha: 1.0)
-    private let cardColor = UIColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1.0)
-    private let accentBlue = UIColor(red: 0.20, green: 0.45, blue: 0.95, alpha: 1.0)
-    private let navyCard = UIColor(red: 0.09, green: 0.14, blue: 0.28, alpha: 1.0)
-    private let pinkCard = UIColor(red: 0.98, green: 0.88, blue: 0.90, alpha: 1.0)
-    private let alertRed = UIColor(red: 0.86, green: 0.16, blue: 0.22, alpha: 1.0)
+    private let bgColor = UIColor(red: 0.06, green: 0.06, blue: 0.07, alpha: 1.0)
+    private let cardColor = UIColor(red: 0.13, green: 0.13, blue: 0.15, alpha: 1.0)
+    private let accentMain = UIColor(red: 1.00, green: 0.65, blue: 0.24, alpha: 1.0)
+    private let hintCard = UIColor(red: 0.15, green: 0.15, blue: 0.17, alpha: 1.0)
+    private let markerCard = UIColor(red: 0.93, green: 0.94, blue: 0.96, alpha: 1.0)
+    private let accentMint = UIColor(red: 0.21, green: 0.82, blue: 0.54, alpha: 1.0)
 
     // MARK: - Location + open data
 
@@ -195,8 +195,8 @@ final class ArchViewController: UIViewController {
 
     private let roleScreen = UIView()
     private let requesterScreen = UIView()
-    private var selectedKind: HelpMessage.Kind = .accompany
-    private var selectedMode: HelpMessage.CommMode = .voice
+    private var selectedKind: MeetRequest.Kind = .here
+    private var selectedMode: MeetRequest.MarkerHint = .wave
     private var kindButtons: [UIButton] = []
     private var modeButtons: [UIButton] = []
     private let supporterListStack = UIStackView()
@@ -386,12 +386,12 @@ final class ArchViewController: UIViewController {
             refreshSupporterList()
             return
         }
-        if let help = try? JSONDecoder().decode(HelpMessage.self, from: data), help.type == "help" {
+        if let request = try? JSONDecoder().decode(MeetRequest.self, from: data), request.type == "meet" {
             guard role == .supporter, activePeerID == nil || activePeerID == peer else { return }
             activePeerID = peer
-            activeHelp = help
+            activeHelp = request
             latestDistance = link.distance
-            applyHelp(help)
+            applyHelp(request)
             return
         }
         if let msg = try? JSONDecoder().decode(CancelMessage.self, from: data), msg.type == "cancel" {
@@ -401,11 +401,11 @@ final class ArchViewController: UIViewController {
             arrivalOverlay.isHidden = true
             setSupporterActive(false)
             phase = .searching
-            statusLabel.text = "求援は取り下げられました"
+            statusLabel.text = "相手が合流をやめました"
         }
     }
 
-    private func sendHelp(_ help: HelpMessage, to peer: MCPeerID) {
+    private func sendHelp(_ help: MeetRequest, to peer: MCPeerID) {
         guard let data = try? JSONEncoder().encode(help) else { return }
         mpc?.sendData(data: data, peers: [peer], mode: .reliable)
         pendingHelpToSend = nil
@@ -413,14 +413,11 @@ final class ArchViewController: UIViewController {
     }
 
     // Update every supporter-side surface that mirrors the request.
-    private func applyHelp(_ help: HelpMessage) {
-        let twoLine = help.kind.text.replacingOccurrences(of: "ので", with: "ので\n")
-        for label in helpTextLabels {
-            label.text = label.numberOfLines == 2 ? twoLine : help.kind.text
-        }
+    private func applyHelp(_ help: MeetRequest) {
+        for label in helpTextLabels { label.text = help.kind.text }
         for chip in modeChipLabels { chip.text = help.mode.text }
-        requestLabel.text = "近くに[\(help.kind.text)]を\n求めている求援者がいます"
-        pointsBodyLabels.forEach { $0.text = help.kind.actionPoints }
+        requestLabel.text = "[\(help.kind.text)]と伝えてきた\n相手が近くにいます"
+        pointsBodyLabels.forEach { $0.text = help.kind.tips }
         setSupporterActive(true)
         if latestDistance != nil { phase = .ready }
         impactGenerator.impactOccurred()
@@ -438,8 +435,8 @@ final class ArchViewController: UIViewController {
             if role == .requester && helpSent {
                 updateRequesterCompass(distance: d, direction: direction)
                 requesterDistanceLabel.text = d < arrivalThreshold
-                    ? "サポーターが到着しました\nスマホから顔を上げてください"
-                    : "サポーターが向かっています  あと \(formatMeters(d))"
+                    ? "合流しました\nスマホから顔を上げてください"
+                    : "相手が向かっています  あと \(formatMeters(d))"
             }
             // The supporter stays in the waiting state until a request arrives.
             if phase == .searching, role == .requester || activeHelp != nil || isDemo {
@@ -611,7 +608,7 @@ final class ArchViewController: UIViewController {
         if role == .requester { return }
         if activeHelp == nil { setSupporterActive(false) }
         if supportsUWB {
-            statusLabel.text = activePeerID == nil ? "近くの求援者を待ち受けています…" : nil
+            statusLabel.text = activePeerID == nil ? "「ここだよ」の合図を待っています…" : nil
             if activePeerID == nil { phase = .searching }
         } else {
             phase = .searching
@@ -749,7 +746,7 @@ final class ArchViewController: UIViewController {
             return
         }
         compassArrow.alpha = 1.0
-        compassHint.text = distance < arrivalThreshold ? "すぐそばにいます" : "この方向から来ています"
+        compassHint.text = distance < arrivalThreshold ? "すぐそばにいます" : "相手はこの方向にいます"
         let angle = atan2(direction.x, -direction.z)
         UIView.animate(withDuration: 0.18) {
             self.compassArrow.transform = CGAffineTransform(rotationAngle: CGFloat(angle))
@@ -854,7 +851,7 @@ final class ArchViewController: UIViewController {
         content.translatesAutoresizingMaskIntoConstraints = false
 
         // "サポーター" chip.
-        let roleChip = chip(text: "サポーター", textColor: .white, bg: accentBlue)
+        let roleChip = chip(text: "迎えに行く人", textColor: .black, bg: accentMint)
         content.addSubview(roleChip)
 
         // Help card.
@@ -864,14 +861,14 @@ final class ArchViewController: UIViewController {
         content.addSubview(helpCard)
         helpCard.translatesAutoresizingMaskIntoConstraints = false
 
-        let helpChip = chip(text: "ヘルプ", textColor: .white, bg: accentBlue.withAlphaComponent(0.85), small: true)
+        let helpChip = chip(text: "いる場所", textColor: .black, bg: accentMain.withAlphaComponent(0.9), small: true)
         let helpText = UILabel()
-        helpText.text = "体調が悪いので\n付き添ってほしい"
+        helpText.text = "ここで待ってる"
         helpText.textColor = .white
         helpText.numberOfLines = 2
         helpText.font = .systemFont(ofSize: 17, weight: .semibold)
         helpTextLabels.append(helpText)
-        let signChip = outlineChip(text: "手話で伝えて")
+        let signChip = outlineChip(text: "手を振ってる")
         modeChipLabels.append(signChip)
         for v in [helpChip, helpText, signChip] {
             helpCard.addSubview(v)
@@ -882,10 +879,10 @@ final class ArchViewController: UIViewController {
         let bellCircle = UIView()
         bellCircle.backgroundColor = cardColor
         bellCircle.layer.cornerRadius = 41
-        let bell = UIImageView(image: UIImage(systemName: "bell.fill"))
-        bell.tintColor = alertRed
+        let bell = UIImageView(image: UIImage(systemName: "hand.wave.fill"))
+        bell.tintColor = accentMint
         bell.contentMode = .scaleAspectFit
-        bellRing.layer.borderColor = accentBlue.withAlphaComponent(0.5).cgColor
+        bellRing.layer.borderColor = accentMain.withAlphaComponent(0.5).cgColor
         bellRing.layer.borderWidth = 1.5
         bellRing.layer.cornerRadius = 64
         for v in [bellRing, bellCircle, bell] {
@@ -894,7 +891,7 @@ final class ArchViewController: UIViewController {
         }
 
         // Texts.
-        requestLabel.text = "近くに[体調が悪いので付き添って\nほしい]を求めている求援者がいます"
+        requestLabel.text = "[ここで待ってる]と伝えてきた\n相手が近くにいます"
         requestLabel.textColor = .white
         requestLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         requestLabel.numberOfLines = 2
@@ -922,10 +919,10 @@ final class ArchViewController: UIViewController {
 
         // Start button.
         var conf = UIButton.Configuration.filled()
-        conf.title = "ARで誘導を開始"
+        conf.title = "ARで向かう"
         conf.image = UIImage(systemName: "viewfinder")
         conf.imagePadding = 8
-        conf.baseBackgroundColor = accentBlue
+        conf.baseBackgroundColor = accentMain
         conf.baseForegroundColor = .white
         conf.cornerStyle = .capsule
         conf.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 24, bottom: 14, trailing: 24)
@@ -935,9 +932,9 @@ final class ArchViewController: UIViewController {
         startButton.translatesAutoresizingMaskIntoConstraints = false
 
         // Accordions.
-        let pointsCard = accordionCard(icon: "doc.text", title: "対応のポイント", bg: navyCard,
+        let pointsCard = accordionCard(icon: "doc.text", title: "合流のコツ", bg: hintCard,
                                        tint: .white,
-                                       body: HelpMessage.Kind.accompany.actionPoints)
+                                       body: MeetRequest.Kind.here.tips)
         if let b = lastAccordionBody { pointsBodyLabels.append(b) }
         let contactCard = contactAccordion()
         for v in [pointsCard, contactCard] {
@@ -1051,7 +1048,7 @@ final class ArchViewController: UIViewController {
     // Waiting state: bell + status only. Active state: the full Arch notification.
     private func setSupporterActive(_ active: Bool) {
         supporterActiveViews.forEach { $0.isHidden = !active }
-        statusLabel.text = active ? nil : "近くの求援者を待ち受けています…\n距離はこの2台の間だけで測られます(サーバーに送りません)"
+        statusLabel.text = active ? nil : "「ここだよ」の合図を待っています…\n距離はこの2台の間だけで測られます(サーバーに送りません)"
     }
 
     // MARK: - UI construction: AR screen
@@ -1088,7 +1085,7 @@ final class ArchViewController: UIViewController {
         closeButton.addTarget(self, action: #selector(closeARTapped), for: .touchUpInside)
 
         let title = UILabel()
-        title.text = "AR誘導"
+        title.text = "合流ガイド"
         title.textColor = .white
         title.font = .systemFont(ofSize: 16, weight: .semibold)
 
@@ -1096,15 +1093,15 @@ final class ArchViewController: UIViewController {
         let banner = UIView()
         banner.backgroundColor = UIColor.black.withAlphaComponent(0.6)
         banner.layer.cornerRadius = 10
-        let bChip = chip(text: "ヘルプ", textColor: .white, bg: accentBlue.withAlphaComponent(0.85), small: true)
+        let bChip = chip(text: "ヘルプ", textColor: .white, bg: accentMain.withAlphaComponent(0.85), small: true)
         let bText = UILabel()
-        bText.text = "体調が悪いので付き添ってほしい"
+        bText.text = "ここで待ってる"
         bText.textColor = .white
         bText.font = .systemFont(ofSize: 13, weight: .semibold)
         helpTextLabels.append(bText)
         let bSign = UILabel()
-        bSign.text = "手話で伝えて"
-        bSign.textColor = accentBlue.withAlphaComponent(0.9)
+        bSign.text = "手を振ってる"
+        bSign.textColor = accentMain.withAlphaComponent(0.9)
         bSign.font = .systemFont(ofSize: 11)
         modeChipLabels.append(bSign)
 
@@ -1129,8 +1126,8 @@ final class ArchViewController: UIViewController {
         arDistancePill.isHidden = true
 
         // Bottom accordions (collapsed look).
-        let pointsBar = accordionCard(icon: "doc.text", title: "対応のポイント", bg: navyCard, tint: .white,
-                                      body: HelpMessage.Kind.accompany.actionPoints, expanded: false)
+        let pointsBar = accordionCard(icon: "doc.text", title: "合流のコツ", bg: hintCard, tint: .white,
+                                      body: MeetRequest.Kind.here.tips, expanded: false)
         if let b = lastAccordionBody { pointsBodyLabels.append(b) }
         let contactBar = contactAccordion(expanded: false)
 
@@ -1203,26 +1200,26 @@ final class ArchViewController: UIViewController {
         arrivalOverlay.translatesAutoresizingMaskIntoConstraints = false
 
         let checkCircle = UIView()
-        checkCircle.backgroundColor = accentBlue
+        checkCircle.backgroundColor = accentMain
         checkCircle.layer.cornerRadius = 40
         let check = UIImageView(image: UIImage(systemName: "checkmark"))
         check.tintColor = .white
         check.contentMode = .scaleAspectFit
 
         let arrived = UILabel()
-        arrived.text = "到着しました"
+        arrived.text = "合流しました"
         arrived.textColor = .white
         arrived.font = .systemFont(ofSize: 28, weight: .bold)
         arrived.textAlignment = .center
 
         let putAway = UILabel()
-        putAway.text = "スマホをしまって声をかけましょう"
-        putAway.textColor = accentBlue.withAlphaComponent(0.95)
+        putAway.text = "スマホをしまって顔を上げましょう"
+        putAway.textColor = accentMain.withAlphaComponent(0.95)
         putAway.font = .systemFont(ofSize: 15, weight: .semibold)
         putAway.textAlignment = .center
 
         let tip = UILabel()
-        tip.text = "安全な場所で休めるようにし、症状と希望\nを本人に確認する"
+        tip.text = "見つからないときは、相手に手を振って\nもらいましょう"
         tip.textColor = .white
         tip.font = .systemFont(ofSize: 13)
         tip.numberOfLines = 2
@@ -1233,8 +1230,8 @@ final class ArchViewController: UIViewController {
 
         let doneButton = UIButton(type: .system)
         var dconf = UIButton.Configuration.filled()
-        dconf.title = "対応を終える"
-        dconf.baseBackgroundColor = accentBlue
+        dconf.title = "合流を終える"
+        dconf.baseBackgroundColor = accentMain
         dconf.baseForegroundColor = .white
         dconf.cornerStyle = .capsule
         dconf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 32, bottom: 12, trailing: 32)
@@ -1350,21 +1347,21 @@ final class ArchViewController: UIViewController {
         ])
 
         let title = UILabel()
-        title.text = "Arch再現"
+        title.text = "ここだよ"
         title.textColor = .white
         title.font = .systemFont(ofSize: 24, weight: .bold)
         title.textAlignment = .center
 
         let subtitle = UILabel()
-        subtitle.text = "困っている人と、近くにいる助けられる人を\n結びつける支援アプリ(再現)"
+        subtitle.text = "人混みの最後の10m。\n相手がどっちに、あと何メートルか分かる。"
         subtitle.textColor = UIColor.white.withAlphaComponent(0.6)
         subtitle.font = .systemFont(ofSize: 13)
         subtitle.numberOfLines = 2
         subtitle.textAlignment = .center
 
-        let requesterButton = roleButton(title: "助けを求める", subtitle: "求援者として発報します", bg: alertRed)
+        let requesterButton = roleButton(title: "ここで待つ", subtitle: "自分の場所を相手に知らせます", bg: accentMain)
         requesterButton.addTarget(self, action: #selector(chooseRequester), for: .touchUpInside)
-        let supporterButton = roleButton(title: "サポーターになる", subtitle: "近くの求援を待ち受けます", bg: accentBlue)
+        let supporterButton = roleButton(title: "迎えに行く", subtitle: "待っている相手を探します", bg: accentMint)
         supporterButton.addTarget(self, action: #selector(chooseSupporter), for: .touchUpInside)
 
         for v in [title, subtitle, requesterButton, supporterButton] {
@@ -1421,7 +1418,7 @@ final class ArchViewController: UIViewController {
         sendHelpButton.isHidden = false
         cancelHelpButton.isHidden = true
         requesterDistanceLabel.text = nil
-        requesterStatusLabel.text = "内容を選んで、助けを求めてください"
+        requesterStatusLabel.text = "場所と目印を選んで、相手に知らせてください"
         setSelectionEnabled(true)
 
         for link in links.values { link.session?.invalidate() }
@@ -1490,7 +1487,7 @@ final class ArchViewController: UIViewController {
 
         // Fixed footer.
         var xconf = UIButton.Configuration.plain()
-        xconf.title = "もう大丈夫(取り下げる)"
+        xconf.title = "合流をやめる"
         xconf.baseForegroundColor = UIColor.white.withAlphaComponent(0.7)
         cancelHelpButton.configuration = xconf
         cancelHelpButton.isHidden = true
@@ -1514,12 +1511,12 @@ final class ArchViewController: UIViewController {
         scroll.addSubview(content)
         content.translatesAutoresizingMaskIntoConstraints = false
 
-        let roleChip = chip(text: "求援者", textColor: .white, bg: alertRed)
+        let roleChip = chip(text: "待っている人", textColor: .black, bg: accentMain)
         content.addSubview(roleChip)
 
         // Section 1: what is wrong.
-        let kindTitle = sectionLabel("どうしましたか?")
-        kindButtons = HelpMessage.Kind.allCases.enumerated().map { index, kind in
+        let kindTitle = sectionLabel("いまどこにいる?")
+        kindButtons = MeetRequest.Kind.allCases.enumerated().map { index, kind in
             let button = selectableCard(title: kind.text)
             button.tag = index
             button.addTarget(self, action: #selector(kindTapped(_:)), for: .touchUpInside)
@@ -1531,8 +1528,8 @@ final class ArchViewController: UIViewController {
         kindStack.distribution = .fillEqually
 
         // Section 2: how the requester wants to be spoken to.
-        let modeTitle = sectionLabel("伝え方の希望")
-        modeButtons = HelpMessage.CommMode.allCases.enumerated().map { index, mode in
+        let modeTitle = sectionLabel("目印は?")
+        modeButtons = MeetRequest.MarkerHint.allCases.enumerated().map { index, mode in
             let button = selectableChip(title: mode.text)
             button.tag = index
             button.addTarget(self, action: #selector(modeTapped(_:)), for: .touchUpInside)
@@ -1544,10 +1541,10 @@ final class ArchViewController: UIViewController {
         modeStack.distribution = .fillEqually
 
         // Section 3: which nearby supporter to ask.
-        let supporterTitle = sectionLabel("近くのサポーター")
+        let supporterTitle = sectionLabel("迎えに来てくれる人")
         supporterListStack.axis = .vertical
         supporterListStack.spacing = 8
-        supporterEmptyLabel.text = "近くのサポーターを探しています…"
+        supporterEmptyLabel.text = "近くで「迎えに行く」にしている人を探しています…"
         supporterEmptyLabel.textColor = UIColor.white.withAlphaComponent(0.45)
         supporterEmptyLabel.font = .systemFont(ofSize: 13)
         supporterEmptyLabel.numberOfLines = 0
@@ -1563,17 +1560,17 @@ final class ArchViewController: UIViewController {
 
         // Send button.
         var hconf = UIButton.Configuration.filled()
-        hconf.title = "助けを求める"
-        hconf.image = UIImage(systemName: "bell.fill")
+        hconf.title = "ここだよ と伝える"
+        hconf.image = UIImage(systemName: "hand.wave.fill")
         hconf.imagePadding = 10
-        hconf.baseBackgroundColor = alertRed
+        hconf.baseBackgroundColor = accentMain
         hconf.baseForegroundColor = .white
         hconf.cornerStyle = .capsule
         hconf.contentInsets = NSDirectionalEdgeInsets(top: 20, leading: 24, bottom: 20, trailing: 24)
         sendHelpButton.configuration = hconf
         sendHelpButton.addTarget(self, action: #selector(sendHelpTapped), for: .touchUpInside)
 
-        requesterStatusLabel.text = "内容を選んで、助けを求めてください\n助けを求めている間だけ、選んだ相手に距離が伝わります"
+        requesterStatusLabel.text = "場所と目印を選んで、相手に知らせてください\n伝えている間だけ、選んだ相手に距離が届きます"
         requesterStatusLabel.textColor = UIColor.white.withAlphaComponent(0.6)
         requesterStatusLabel.font = .systemFont(ofSize: 13)
         requesterStatusLabel.textAlignment = .center
@@ -1589,10 +1586,10 @@ final class ArchViewController: UIViewController {
         // bare number while waiting.
         compassContainer.isHidden = true
         compassRing.layer.borderWidth = 1.5
-        compassRing.layer.borderColor = accentBlue.withAlphaComponent(0.4).cgColor
+        compassRing.layer.borderColor = accentMain.withAlphaComponent(0.4).cgColor
         compassRing.layer.cornerRadius = 70
         compassArrow.image = UIImage(systemName: "location.north.fill")
-        compassArrow.tintColor = accentBlue
+        compassArrow.tintColor = accentMain
         compassArrow.contentMode = .scaleAspectFit
         compassHint.text = nil
         compassHint.textColor = UIColor.white.withAlphaComponent(0.5)
@@ -1724,7 +1721,7 @@ final class ArchViewController: UIViewController {
     }
 
     @objc private func kindTapped(_ sender: UIButton) {
-        let kinds = HelpMessage.Kind.allCases
+        let kinds = MeetRequest.Kind.allCases
         guard sender.tag < kinds.count else { return }
         selectedKind = kinds[sender.tag]
         impactGenerator.impactOccurred()
@@ -1732,7 +1729,7 @@ final class ArchViewController: UIViewController {
     }
 
     @objc private func modeTapped(_ sender: UIButton) {
-        let modes = HelpMessage.CommMode.allCases
+        let modes = MeetRequest.MarkerHint.allCases
         guard sender.tag < modes.count else { return }
         selectedMode = modes[sender.tag]
         refreshSelectionStyles()
@@ -1768,10 +1765,10 @@ final class ArchViewController: UIViewController {
         for link in supporters {
             guard let row = supporterRows[link.peerID] else { continue }
             row.configuration?.title = link.peerID.displayName
-            row.configuration?.subtitle = link.distance.map { "距離 \(formatMeters($0))" } ?? "距離を測定中…"
+            row.configuration?.subtitle = link.distance.map { "あと \(formatMeters($0))" } ?? "距離を測定中…"
             let selected = link.peerID == selectedSupporterID
-            row.layer.borderColor = (selected ? accentBlue : UIColor.clear).cgColor
-            row.backgroundColor = selected ? accentBlue.withAlphaComponent(0.18) : cardColor
+            row.layer.borderColor = (selected ? accentMain : UIColor.clear).cgColor
+            row.backgroundColor = selected ? accentMain.withAlphaComponent(0.18) : cardColor
         }
 
         supporterListStack.isHidden = supporters.isEmpty
@@ -1790,17 +1787,17 @@ final class ArchViewController: UIViewController {
     }
 
     private func refreshSelectionStyles() {
-        let kinds = HelpMessage.Kind.allCases
+        let kinds = MeetRequest.Kind.allCases
         for (index, button) in kindButtons.enumerated() {
             let selected = index < kinds.count && kinds[index] == selectedKind
-            button.layer.borderColor = (selected ? accentBlue : UIColor.clear).cgColor
-            button.backgroundColor = selected ? accentBlue.withAlphaComponent(0.18) : cardColor
+            button.layer.borderColor = (selected ? accentMain : UIColor.clear).cgColor
+            button.backgroundColor = selected ? accentMain.withAlphaComponent(0.18) : cardColor
         }
-        let modes = HelpMessage.CommMode.allCases
+        let modes = MeetRequest.MarkerHint.allCases
         for (index, button) in modeButtons.enumerated() {
             let selected = index < modes.count && modes[index] == selectedMode
-            button.backgroundColor = selected ? accentBlue : .clear
-            button.layer.borderColor = (selected ? accentBlue : UIColor.white.withAlphaComponent(0.35)).cgColor
+            button.backgroundColor = selected ? accentMain : .clear
+            button.layer.borderColor = (selected ? accentMain : UIColor.white.withAlphaComponent(0.35)).cgColor
             button.configuration?.baseForegroundColor = selected ? .white : UIColor.white.withAlphaComponent(0.75)
         }
     }
@@ -1813,10 +1810,10 @@ final class ArchViewController: UIViewController {
 
     @objc private func sendHelpTapped() {
         guard let target = selectedSupporterID, let link = links[target] else {
-            requesterStatusLabel.text = "近くにサポーターが見つかりません"
+            requesterStatusLabel.text = "近くに「迎えに行く」の人が見つかりません"
             return
         }
-        let help = HelpMessage(kind: selectedKind, mode: selectedMode)
+        let help = MeetRequest(kind: selectedKind, mode: selectedMode)
         helpSent = true
         activePeerID = target
         sendHelpButton.isHidden = true
@@ -1824,10 +1821,10 @@ final class ArchViewController: UIViewController {
         setSelectionEnabled(false)
         impactGenerator.impactOccurred()
         if link.isDemo {
-            requesterStatusLabel.text = "\(target.displayName) に伝えました(デモ)"
+            requesterStatusLabel.text = "\(target.displayName) に「ここだよ」を伝えました(デモ)"
         } else {
             sendHelp(help, to: target)
-            requesterStatusLabel.text = "\(target.displayName) に伝えました"
+            requesterStatusLabel.text = "\(target.displayName) に「ここだよ」を伝えました"
         }
         updateMeasurement(distance: link.distance, direction: link.direction, world: nil)
     }
@@ -1847,7 +1844,7 @@ final class ArchViewController: UIViewController {
         setSelectionEnabled(true)
         hideRequesterCompass()
         requesterDistanceLabel.text = nil
-        requesterStatusLabel.text = "内容を選んで、助けを求めてください"
+        requesterStatusLabel.text = "場所と目印を選んで、相手に知らせてください"
     }
 
     // MARK: - Small view factories
@@ -1896,55 +1893,45 @@ final class ArchViewController: UIViewController {
         return AccordionView(icon: icon, title: title, bg: bg, tint: tint, bodyView: bodyView, expanded: expanded)
     }
 
+    // The other person's marker: the last hint that closes the final few metres.
     private func contactAccordion(expanded: Bool = true) -> UIView {
-        let tint = UIColor(red: 0.75, green: 0.15, blue: 0.25, alpha: 1)
+        let tint = UIColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1)
 
         let row = UIView()
         row.backgroundColor = .white
         row.layer.cornerRadius = 10
-        let num = UILabel()
-        num.text = "#7119 救急相談センター"
-        num.textColor = .black
-        num.font = .systemFont(ofSize: 14, weight: .semibold)
-        let org = UILabel()
-        org.text = "総務省消防庁 救急安心センター事業"
-        org.textColor = UIColor.black.withAlphaComponent(0.5)
-        org.font = .systemFont(ofSize: 11)
-        let call = UIButton(type: .system)
-        call.setImage(UIImage(systemName: "phone.fill"), for: .normal)
-        call.tintColor = .white
-        call.backgroundColor = alertRed
-        call.layer.cornerRadius = 20
-        // Confirm before dialing — a mis-tap during a demo must not place a real call.
-        call.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            let alert = UIAlertController(
-                title: "#7119 に発信しますか?",
-                message: "救急相談センター(総務省消防庁 救急安心センター事業)に電話をかけます。",
-                preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
-            alert.addAction(UIAlertAction(title: "発信する", style: .destructive) { _ in
-                if let url = URL(string: "tel://%237119") { UIApplication.shared.open(url) }
-            })
-            self.present(alert, animated: true)
-        }, for: .touchUpInside)
 
-        for v in [num, org, call] {
+        let marker = UILabel()
+        marker.text = "手を振ってる"
+        marker.textColor = .black
+        marker.font = .systemFont(ofSize: 15, weight: .semibold)
+        modeChipLabels.append(marker)
+
+        let note = UILabel()
+        note.text = "近づいたら画面から顔を上げて探す"
+        note.textColor = UIColor.black.withAlphaComponent(0.5)
+        note.font = .systemFont(ofSize: 11)
+
+        let icon = UIImageView(image: UIImage(systemName: "hand.wave.fill"))
+        icon.tintColor = UIColor(red: 0.95, green: 0.60, blue: 0.20, alpha: 1)
+        icon.contentMode = .scaleAspectFit
+
+        for v in [marker, note, icon] {
             row.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
         NSLayoutConstraint.activate([
             row.heightAnchor.constraint(equalToConstant: 60),
-            num.topAnchor.constraint(equalTo: row.topAnchor, constant: 12),
-            num.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
-            org.topAnchor.constraint(equalTo: num.bottomAnchor, constant: 2),
-            org.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
-            call.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            call.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
-            call.widthAnchor.constraint(equalToConstant: 40),
-            call.heightAnchor.constraint(equalToConstant: 40),
+            marker.topAnchor.constraint(equalTo: row.topAnchor, constant: 12),
+            marker.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
+            note.topAnchor.constraint(equalTo: marker.bottomAnchor, constant: 2),
+            note.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
+            icon.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            icon.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
+            icon.widthAnchor.constraint(equalToConstant: 26),
+            icon.heightAnchor.constraint(equalToConstant: 26),
         ])
-        return AccordionView(icon: "phone.fill", title: "引継ぎ連絡先", bg: pinkCard, tint: tint, bodyView: row, expanded: expanded)
+        return AccordionView(icon: "figure.stand", title: "相手の目印", bg: markerCard, tint: tint, bodyView: row, expanded: expanded)
     }
 }
 

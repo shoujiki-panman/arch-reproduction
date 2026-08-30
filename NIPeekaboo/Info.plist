@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Arch再現</string>
+	<string>ここだよ</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -27,13 +27,13 @@
 		<string>_nisample._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>AR誘導のためにカメラを使用します(相手の方向を実空間に表示します)</string>
+	<string>合流ガイドで相手の方向を実空間に表示するためにカメラを使用します</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>This app requires local network service. Supply a value for this string to explain how the user benefits when they allow the app to access local network service.</string>
+	<string>近くの相手を見つけて合流するために使用します</string>
 	<key>NSNearbyInteractionAllowOnceUsageDescription</key>
-	<string>This app demonstrates the NearbyInteraction framework. Supply a value for this string to explain how the user benefits when they allow the app to use NearbyInteraction.</string>
+	<string>相手との距離と方向を測って合流するために使用します</string>
 	<key>NSNearbyInteractionUsageDescription</key>
-	<string>This app demonstrates the NearbyInteraction framework. Supply a value for this string to explain how the user benefits when they allow the app to use NearbyInteraction.</string>
+	<string>相手との距離と方向を測って合流するために使用します</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
