@@ -350,6 +350,28 @@ final class ArchViewController: UIViewController {
         session.run(config)
     }
 
+    // Ends the current ranging session with a peer and starts a fresh one, so
+    // "対応が終わったら共有も終わる" is real rather than a label.
+    private func restartLink(_ link: PeerLink) {
+        if let old = link.session {
+            sessionOwners.removeValue(forKey: ObjectIdentifier(old))
+            old.invalidate()
+        }
+        link.peerToken = nil
+        link.distance = nil
+        link.direction = nil
+        link.world = nil
+
+        let session = NISession()
+        session.delegate = self
+        link.session = session
+        sessionOwners[ObjectIdentifier(session)] = link.peerID
+        if let token = session.discoveryToken,
+           let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) {
+            mpc?.sendData(data: data, peers: [link.peerID], mode: .reliable)
+        }
+    }
+
     private func dataReceivedHandler(data: Data, peer: MCPeerID) {
         guard let link = links[peer] else { return }
 
@@ -504,6 +526,9 @@ final class ArchViewController: UIViewController {
     @objc private func finishSupportTapped() {
         stopProximityFeedback()
         if isDemo { stopDemo() }
+        if let id = activePeerID, let link = links[id] { restartLink(link) }
+        activePeerID = nil
+        latestDistance = nil
         activeHelp = nil
         arrivalOverlay.isHidden = true
         setSupporterActive(false)
@@ -888,7 +913,7 @@ final class ArchViewController: UIViewController {
         statusLabel.textColor = UIColor.white.withAlphaComponent(0.6)
         statusLabel.font = .systemFont(ofSize: 13)
         statusLabel.textAlignment = .center
-        statusLabel.numberOfLines = 2
+        statusLabel.numberOfLines = 3
 
         for v in [requestLabel, distanceLabel, distanceCaption, statusLabel] {
             content.addSubview(v)
@@ -1026,7 +1051,7 @@ final class ArchViewController: UIViewController {
     // Waiting state: bell + status only. Active state: the full Arch notification.
     private func setSupporterActive(_ active: Bool) {
         supporterActiveViews.forEach { $0.isHidden = !active }
-        statusLabel.text = active ? nil : "近くの求援者を待ち受けています…"
+        statusLabel.text = active ? nil : "近くの求援者を待ち受けています…\n距離はこの2台の間だけで測られます(サーバーに送りません)"
     }
 
     // MARK: - UI construction: AR screen
@@ -1548,11 +1573,11 @@ final class ArchViewController: UIViewController {
         sendHelpButton.configuration = hconf
         sendHelpButton.addTarget(self, action: #selector(sendHelpTapped), for: .touchUpInside)
 
-        requesterStatusLabel.text = "内容を選んで、助けを求めてください"
+        requesterStatusLabel.text = "内容を選んで、助けを求めてください\n助けを求めている間だけ、選んだ相手に距離が伝わります"
         requesterStatusLabel.textColor = UIColor.white.withAlphaComponent(0.6)
         requesterStatusLabel.font = .systemFont(ofSize: 13)
         requesterStatusLabel.textAlignment = .center
-        requesterStatusLabel.numberOfLines = 2
+        requesterStatusLabel.numberOfLines = 3
 
         requesterDistanceLabel.text = nil
         requesterDistanceLabel.textColor = .white
@@ -1815,6 +1840,7 @@ final class ArchViewController: UIViewController {
            let data = try? JSONEncoder().encode(CancelMessage()) {
             mpc?.sendData(data: data, peers: [target], mode: .reliable)
         }
+        if let id = activePeerID, let link = links[id], !link.isDemo { restartLink(link) }
         activePeerID = nil
         sendHelpButton.isHidden = false
         cancelHelpButton.isHidden = true
