@@ -124,6 +124,43 @@ final class ArchViewController: UIViewController {
     private let impactGenerator = UIImpactFeedbackGenerator(style: .medium)
     private var didArriveHapticFired = false
 
+    // Find My-style proximity feedback: the closer you get, the faster and
+    // stronger the pulse, and the colour shifts from blue to green.
+    private enum ProximityBand {
+        case far, mid, near, arrived
+
+        var interval: TimeInterval {
+            switch self {
+            case .far: return 1.2
+            case .mid: return 0.75
+            case .near: return 0.4
+            case .arrived: return 0
+            }
+        }
+        var intensity: CGFloat {
+            switch self {
+            case .far: return 0.35
+            case .mid: return 0.6
+            case .near: return 0.9
+            case .arrived: return 1.0
+            }
+        }
+        var color: UIColor {
+            switch self {
+            case .far: return UIColor(red: 0.20, green: 0.45, blue: 0.95, alpha: 1)
+            case .mid: return UIColor(red: 0.25, green: 0.62, blue: 0.98, alpha: 1)
+            case .near, .arrived: return UIColor(red: 0.20, green: 0.80, blue: 0.50, alpha: 1)
+            }
+        }
+    }
+    private var currentBand: ProximityBand?
+    private var hapticTimer: Timer?
+    private let proximityGenerator = UIImpactFeedbackGenerator(style: .medium)
+    private let arrivalGenerator = UINotificationFeedbackGenerator()
+    private var arrowMaterial: SCNMaterial?
+    private var dotMaterials: [SCNMaterial] = []
+    private var circleMaterial: SCNMaterial?
+
     // MARK: - Demo mode
 
     private var demoTimer: Timer?
@@ -448,6 +485,7 @@ final class ArchViewController: UIViewController {
     }
 
     @objc private func closeARTapped() {
+        stopProximityFeedback()
         phase = isDemo || latestDistance != nil ? .ready : .searching
         if isDemo { stopDemo() }
     }
@@ -459,6 +497,7 @@ final class ArchViewController: UIViewController {
 
     // Done supporting: back to the waiting state, ready for the next request.
     @objc private func finishSupportTapped() {
+        stopProximityFeedback()
         if isDemo { stopDemo() }
         activeHelp = nil
         arrivalOverlay.isHidden = true
@@ -571,6 +610,8 @@ final class ArchViewController: UIViewController {
     private func updateGuidance() {
         guard phase == .guiding else { return }
 
+        updateProximityFeedback(distance: latestDistance)
+
         guard let distance = latestDistance else {
             arHintLabel.text = "近くにいます"
             arSubHintLabel.text = "端末をゆっくり動かしてください"
@@ -656,6 +697,58 @@ final class ArchViewController: UIViewController {
             }
         }
         SCNTransaction.commit()
+    }
+
+    // MARK: - Proximity feedback
+
+    private func updateProximityFeedback(distance: Float?) {
+        guard phase == .guiding, let distance else { return }
+        let band: ProximityBand
+        if distance < arrivalThreshold { band = .arrived }
+        else if distance < nearThreshold { band = .near }
+        else if distance < 5.0 { band = .mid }
+        else { band = .far }
+        guard band != currentBand else { return }
+        currentBand = band
+        applyBandColour(band)
+
+        hapticTimer?.invalidate()
+        hapticTimer = nil
+        guard band != .arrived else {
+            arrivalGenerator.notificationOccurred(.success)
+            return
+        }
+        proximityGenerator.prepare()
+        proximityGenerator.impactOccurred(intensity: band.intensity)
+        hapticTimer = Timer.scheduledTimer(withTimeInterval: band.interval, repeats: true) { [weak self] _ in
+            guard let self, self.phase == .guiding else { return }
+            self.proximityGenerator.impactOccurred(intensity: band.intensity)
+        }
+    }
+
+    private func stopProximityFeedback() {
+        hapticTimer?.invalidate()
+        hapticTimer = nil
+        currentBand = nil
+    }
+
+    private func applyBandColour(_ band: ProximityBand) {
+        let colour = band.color
+        arDistancePill.backgroundColor = colour.withAlphaComponent(0.85)
+        arrowMaterial?.diffuse.contents = colour.withAlphaComponent(0.95)
+        arrowMaterial?.emission.contents = darker(colour, 0.5)
+        for material in dotMaterials {
+            material.diffuse.contents = colour.withAlphaComponent(0.85)
+            material.emission.contents = darker(colour, 0.5)
+        }
+        circleMaterial?.diffuse.contents = colour.withAlphaComponent(0.8)
+        circleMaterial?.emission.contents = darker(colour, 0.5)
+    }
+
+    private func darker(_ color: UIColor, _ factor: CGFloat) -> UIColor {
+        var h: CGFloat = 0, sat: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getHue(&h, saturation: &sat, brightness: &b, alpha: &a)
+        return UIColor(hue: h, saturation: sat, brightness: b * factor, alpha: a)
     }
 
     private func optionalPeerPos(camPos: simd_float3, dir: simd_float3, distance: Float) -> simd_float3? {
@@ -1141,6 +1234,7 @@ final class ArchViewController: UIViewController {
         mat.emission.contents = UIColor(red: 0.10, green: 0.25, blue: 0.65, alpha: 1)
         mat.lightingModel = .physicallyBased
         shape.materials = [mat]
+        arrowMaterial = mat
         let arrowNode = SCNNode(geometry: shape)
         // Path +Y (tip) maps to -Z (container front) after this rotation.
         arrowNode.eulerAngles = SCNVector3(-Float.pi / 2 + 0.18, 0, 0)
@@ -1158,6 +1252,7 @@ final class ArchViewController: UIViewController {
             dmat.diffuse.contents = UIColor(red: 0.55, green: 0.70, blue: 1.0, alpha: 0.85)
             dmat.emission.contents = UIColor(red: 0.2, green: 0.35, blue: 0.8, alpha: 1)
             dotGeom.materials = [dmat]
+            dotMaterials.append(dmat)
             let dot = SCNNode(geometry: dotGeom)
             dot.isHidden = true
             dotsContainer.addChildNode(dot)
@@ -1171,6 +1266,7 @@ final class ArchViewController: UIViewController {
         cmat.diffuse.contents = UIColor(red: 0.35, green: 0.55, blue: 0.95, alpha: 0.8)
         cmat.emission.contents = UIColor(red: 0.15, green: 0.3, blue: 0.7, alpha: 1)
         tube.materials = [cmat]
+        circleMaterial = cmat
         circleNode = SCNNode(geometry: tube)
         circleNode.isHidden = true
         root.addChildNode(circleNode)
@@ -1251,6 +1347,7 @@ final class ArchViewController: UIViewController {
     }
 
     @objc private func backToRoleSelect() {
+        stopProximityFeedback()
         // Tear down the whole session so the next role starts clean.
         if isDemo { stopDemo() }
         demoTimer?.invalidate()
