@@ -287,6 +287,7 @@ final class MeetViewController: UIViewController {
 
     private let waiterPanel = UIView()
     private let waiterSelection = UIStackView()
+    private var waiterSelectionCollapse: NSLayoutConstraint?
     private let waiterDial = MeetDial()
     private let sendButton = UIButton(type: .system)
     private let cancelButton = UIButton(type: .system)
@@ -311,7 +312,8 @@ final class MeetViewController: UIViewController {
 
     private let arScreen = UIView()
     private let arDial = MeetDial()
-    private let arHint = UILabel()
+    private let arDialBackdrop = UIView()
+    private let arHint = PaddedLabel()
     private let arMarkerChip = PaddedLabel()
     private let arrivalOverlay = UIView()
     private let arrivalMarker = UILabel()
@@ -342,6 +344,32 @@ final class MeetViewController: UIViewController {
             waiterStatus.text = "この端末はUWBに対応していません(デモのみ動きます)"
             finderStatus.text = "この端末はUWBに対応していません(デモのみ動きます)"
         }
+
+        #if DEBUG
+        // Launch arguments used to screenshot each state while checking layout.
+        let args = CommandLine.arguments
+        if args.contains("-previewFinder") {
+            roleSwitch.selectedSegmentIndex = 1
+            roleChanged()
+        }
+        if args.contains("-previewDemo") {
+            DispatchQueue.main.async { self.demoTapped() }
+        }
+        if args.contains("-previewSent") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.sendTapped() }
+        }
+        if args.contains("-previewAR") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.startGuidance() }
+        }
+        if args.contains("-previewMeasure") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                print("MEASURE rows=\(self.peerListStack.arrangedSubviews.count) listFrame=\(self.peerListStack.frame) selectionFrame=\(self.waiterSelection.frame) panelFrame=\(self.waiterPanel.frame) dialFrame=\(self.waiterDial.frame)")
+                for (i, row) in self.peerListStack.arrangedSubviews.enumerated() {
+                    print("MEASURE row\(i) frame=\(row.frame) hidden=\(row.isHidden)")
+                }
+            }
+        }
+        #endif
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
@@ -531,6 +559,7 @@ final class MeetViewController: UIViewController {
         let idleColour = UIColor.white.withAlphaComponent(0.35)
 
         if role == .requester {
+            waiterDial.isHidden = !requestSent
             if requestSent {
                 let value = latestDistance.map { $0 < arrivalThreshold ? "合流" : formatMeters($0) } ?? "—"
                 let caption: String
@@ -616,7 +645,7 @@ final class MeetViewController: UIViewController {
 
         sendButton.isHidden = false
         cancelButton.isHidden = true
-        waiterSelection.isHidden = false
+        setWaiterSelection(hidden: false)
         waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
         finderChips.isHidden = true
         finderTip.isHidden = true
@@ -733,7 +762,7 @@ final class MeetViewController: UIViewController {
             finderTip.isHidden = true
         } else {
             requestSent = false
-            waiterSelection.isHidden = false
+            setWaiterSelection(hidden: false)
             sendButton.isHidden = false
             cancelButton.isHidden = true
             waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
@@ -771,6 +800,7 @@ final class MeetViewController: UIViewController {
 
         guard let distance = latestDistance else {
             arHint.text = "端末をゆっくり動かしてください"
+            arHint.isHidden = false
             arDial.set(distance: nil, direction: nil, colour: UIColor.white.withAlphaComponent(0.35),
                        value: "—", caption: "測定中")
             setARGuidesHidden(true)
@@ -804,10 +834,12 @@ final class MeetViewController: UIViewController {
 
         guard let camNode = cam, let dir = horizontalDir else {
             arHint.text = "端末をゆっくり動かしてください"
+            arHint.isHidden = false
             setARGuidesHidden(true)
             return
         }
         arHint.text = distance < nearThreshold ? "画面から顔を上げて探してください" : nil
+        arHint.isHidden = arHint.text == nil
 
         let camPos = camNode.simdWorldPosition
         let floorY = camPos.y - 1.25
@@ -1012,6 +1044,19 @@ final class MeetViewController: UIViewController {
             v.translatesAutoresizingMaskIntoConstraints = false
         }
 
+        // Hidden views still hold their space, so collapse the selection outright
+        // once the request is out — otherwise it keeps pushing the dial down.
+        let collapse = waiterSelection.heightAnchor.constraint(equalToConstant: 0)
+        collapse.priority = .required
+        waiterSelectionCollapse = collapse
+
+        // The list keeps its natural height; the dial gives way instead of squashing it.
+        waiterSelection.setContentCompressionResistancePriority(.required, for: .vertical)
+        peerListStack.setContentCompressionResistancePriority(.required, for: .vertical)
+        let dialCentre = waiterDial.centerYAnchor.constraint(equalTo: waiterPanel.centerYAnchor, constant: -10)
+        dialCentre.priority = .defaultHigh
+        dialCentre.isActive = true
+
         NSLayoutConstraint.activate([
             waiterSelection.topAnchor.constraint(equalTo: waiterPanel.topAnchor),
             waiterSelection.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 20),
@@ -1019,7 +1064,6 @@ final class MeetViewController: UIViewController {
 
             waiterDial.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
             waiterDial.topAnchor.constraint(greaterThanOrEqualTo: waiterSelection.bottomAnchor, constant: 16),
-            waiterDial.centerYAnchor.constraint(equalTo: waiterPanel.centerYAnchor, constant: 30),
             waiterDial.widthAnchor.constraint(equalToConstant: 210),
             waiterDial.heightAnchor.constraint(equalToConstant: 210),
 
@@ -1134,14 +1178,21 @@ final class MeetViewController: UIViewController {
         style(chip: arMarkerChip, background: UIColor.black.withAlphaComponent(0.55), text: .white)
         arMarkerChip.text = "手を振ってる"
 
+        // Camera video sits behind these, so both need their own ground.
         arHint.font = .systemFont(ofSize: 14, weight: .semibold)
         arHint.textColor = .white
         arHint.textAlignment = .center
         arHint.numberOfLines = 2
+        arHint.insets = UIEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
+        arHint.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        arHint.layer.cornerRadius = 12
+        arHint.clipsToBounds = true
 
+        arDialBackdrop.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        arDialBackdrop.layer.cornerRadius = 83
         arDial.lineWidth = 10
 
-        for v in [close, arMarkerChip, arHint, arDial] {
+        for v in [close, arMarkerChip, arDialBackdrop, arHint, arDial] {
             arScreen.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -1164,9 +1215,14 @@ final class MeetViewController: UIViewController {
             arHint.bottomAnchor.constraint(equalTo: arDial.topAnchor, constant: -12),
 
             arDial.centerXAnchor.constraint(equalTo: arScreen.centerXAnchor),
-            arDial.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -16),
+            arDial.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -24),
             arDial.widthAnchor.constraint(equalToConstant: 150),
             arDial.heightAnchor.constraint(equalToConstant: 150),
+
+            arDialBackdrop.centerXAnchor.constraint(equalTo: arDial.centerXAnchor),
+            arDialBackdrop.centerYAnchor.constraint(equalTo: arDial.centerYAnchor),
+            arDialBackdrop.widthAnchor.constraint(equalToConstant: 166),
+            arDialBackdrop.heightAnchor.constraint(equalToConstant: 166),
         ])
 
         arScreen.sendSubviewToBack(sceneView)
@@ -1321,18 +1377,20 @@ final class MeetViewController: UIViewController {
     private func refreshPeerList() {
         guard role == .requester else { return }
 
+        // Ordered by name, not by distance: live distances jitter, and rows that
+        // reshuffle under the thumb are impossible to tap.
         let helpers = links.values
             .filter { $0.peerRole == "supporter" || $0.isDemo }
-            .sorted { ($0.distance ?? .greatestFiniteMagnitude, $0.peerID.displayName)
-                    < ($1.distance ?? .greatestFiniteMagnitude, $1.peerID.displayName) }
+            .sorted { $0.peerID.displayName < $1.peerID.displayName }
         let ids = helpers.map { $0.peerID }
 
-        if ids != peerOrder {
+        if Set(ids) != Set(peerOrder) {
             peerOrder = ids
             peerListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
             peerRows.removeAll()
             for link in helpers {
                 let row = peerRow(name: link.peerID.displayName)
+                row.setContentCompressionResistancePriority(.required, for: .vertical)
                 row.addTarget(self, action: #selector(peerTapped(_:)), for: .touchUpInside)
                 peerRows[link.peerID] = row
                 peerListStack.addArrangedSubview(row)
@@ -1340,7 +1398,8 @@ final class MeetViewController: UIViewController {
         }
 
         if selectedHelperID == nil || !ids.contains(where: { $0 == selectedHelperID }) {
-            selectedHelperID = ids.first
+            // Default to the nearest one that has a measurement.
+            selectedHelperID = helpers.min { ($0.distance ?? .greatestFiniteMagnitude) < ($1.distance ?? .greatestFiniteMagnitude) }?.peerID
         }
 
         for link in helpers {
@@ -1378,9 +1437,10 @@ final class MeetViewController: UIViewController {
         impactGenerator.impactOccurred()
 
         UIView.animate(withDuration: 0.25) {
-            self.waiterSelection.isHidden = true
+            self.setWaiterSelection(hidden: true)
             self.sendButton.isHidden = true
             self.cancelButton.isHidden = false
+            self.waiterPanel.layoutIfNeeded()
         }
         if link.isDemo {
             waiterStatus.text = "\(target.displayName) に伝えました(デモ)"
@@ -1403,9 +1463,10 @@ final class MeetViewController: UIViewController {
         latestDistance = nil
         latestDirection = nil
         UIView.animate(withDuration: 0.25) {
-            self.waiterSelection.isHidden = false
+            self.setWaiterSelection(hidden: false)
             self.sendButton.isHidden = false
             self.cancelButton.isHidden = true
+            self.waiterPanel.layoutIfNeeded()
         }
         waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
         waiterDial.reset()
@@ -1413,6 +1474,11 @@ final class MeetViewController: UIViewController {
     }
 
     // MARK: - Small builders
+
+    private func setWaiterSelection(hidden: Bool) {
+        waiterSelection.isHidden = hidden
+        waiterSelectionCollapse?.isActive = hidden
+    }
 
     private func sectionLabel(_ text: String) -> UILabel {
         let label = UILabel()
