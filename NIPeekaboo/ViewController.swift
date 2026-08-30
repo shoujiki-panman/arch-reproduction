@@ -1,18 +1,15 @@
 /*
- Arch reproduction — built on Apple's NIPeekaboo sample (see LICENSE.txt).
- Reproduces the UI/UX of the "Arch" support app demo:
-   1. Notification screen: help request, live distance, action accordions
-   2. AR guidance: camera view + 3D blue arrow + dotted path + "あと◯m"
-   3. Arrival: "到着しました / スマホをしまって声をかけましょう"
- UWB ranging via NearbyInteraction with ARKit camera assistance (iOS 16+).
- A demo mode (デモモード button) simulates a peer so the full flow can be
- shown on a single device.
+ ここだよ — 人混みの最後の10m。
+ 待つ側と迎えに行く側が、同じダイヤルを見ながら合流する。
+
+ UWB測距は NearbyInteraction、相手発見は MultipeerConnectivity、
+ カメラ内の方向は ARKit カメラアシスト(iOS 16+)。
+ 土台は Apple の NIPeekaboo サンプル(LICENSE.txt 参照)。
 */
 
 import UIKit
 import ARKit
 import SceneKit
-import CoreLocation
 import NearbyInteraction
 import MultipeerConnectivity
 import simd
@@ -22,24 +19,21 @@ import simd
 struct MeetRequest: Codable {
     enum Kind: String, Codable, CaseIterable {
         case here      // ここで待ってる
-        case inside    // お店・建物の中にいる
-        case outside   // 外で待っている
+        case inside    // お店・建物の中
+        case outside   // 外で待ってる
 
         var text: String {
             switch self {
             case .here: return "ここで待ってる"
-            case .inside: return "お店・建物の中にいる"
+            case .inside: return "お店・建物の中"
             case .outside: return "外で待ってる"
             }
         }
-        var tips: String {
+        var tip: String {
             switch self {
-            case .here:
-                return "合流のコツ\n・相手はその場から動かない方が早い\n・残り5mを切ったら画面から顔を上げる\n・見つけたら手を振ってもらう"
-            case .inside:
-                return "合流のコツ\n・入口を1つ決めてそこで待ってもらう\n・建物の中は電波が弱くなることがある\n・残り5mを切ったら顔を上げる"
-            case .outside:
-                return "合流のコツ\n・人の流れの外側で待ってもらう\n・目印になるものの近くだと早い\n・残り5mを切ったら顔を上げる"
+            case .here: return "相手はその場から動かない方が早く会えます"
+            case .inside: return "入口を1つ決めて、そこで待ってもらいましょう"
+            case .outside: return "人の流れの外側で待ってもらいましょう"
             }
         }
     }
@@ -68,34 +62,140 @@ struct HelloMessage: Codable {
     var role: String
 }
 
-final class ArchViewController: UIViewController {
+// MARK: - The dial both sides look at
+
+/// A ring that fills as the gap closes, with the direction arrow in the middle.
+/// Distance is a shape you watch, not a number you read.
+final class MeetDial: UIView {
+
+    private let track = CAShapeLayer()
+    private let bar = CAShapeLayer()
+    private let arrow = UIImageView(image: UIImage(systemName: "location.north.fill"))
+    private let valueLabel = UILabel()
+    private let captionLabel = UILabel()
+
+    /// The distance at which the ring is empty.
+    var span: CGFloat = 20
+    var lineWidth: CGFloat = 14 { didSet { track.lineWidth = lineWidth; bar.lineWidth = lineWidth } }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+
+        for layer in [track, bar] {
+            layer.fillColor = UIColor.clear.cgColor
+            layer.lineCap = .round
+            layer.lineWidth = lineWidth
+            self.layer.addSublayer(layer)
+        }
+        track.strokeColor = UIColor.white.withAlphaComponent(0.08).cgColor
+        bar.strokeColor = UIColor.white.cgColor
+        bar.strokeEnd = 0
+
+        arrow.contentMode = .scaleAspectFit
+        arrow.alpha = 0.22
+
+        valueLabel.font = .systemFont(ofSize: 30, weight: .bold)
+        valueLabel.textColor = .white
+        valueLabel.textAlignment = .center
+
+        captionLabel.font = .systemFont(ofSize: 12)
+        captionLabel.textColor = UIColor.white.withAlphaComponent(0.5)
+        captionLabel.textAlignment = .center
+        captionLabel.numberOfLines = 2
+
+        for v in [arrow, valueLabel, captionLabel] {
+            addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+        NSLayoutConstraint.activate([
+            arrow.centerXAnchor.constraint(equalTo: centerXAnchor),
+            arrow.bottomAnchor.constraint(equalTo: valueLabel.topAnchor, constant: -6),
+            arrow.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.20),
+            arrow.heightAnchor.constraint(equalTo: arrow.widthAnchor),
+
+            valueLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            valueLabel.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 8),
+
+            captionLabel.topAnchor.constraint(equalTo: valueLabel.bottomAnchor, constant: 2),
+            captionLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            captionLabel.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.74),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let side = min(bounds.width, bounds.height)
+        let radius = side / 2 - lineWidth / 2
+        let path = UIBezierPath(arcCenter: CGPoint(x: bounds.midX, y: bounds.midY),
+                                radius: radius,
+                                startAngle: -.pi / 2,
+                                endAngle: 1.5 * .pi,
+                                clockwise: true)
+        track.path = path.cgPath
+        bar.path = path.cgPath
+        track.frame = bounds
+        bar.frame = bounds
+    }
+
+    func set(distance: Float?, direction: simd_float3?, colour: UIColor, value: String, caption: String) {
+        valueLabel.text = value
+        captionLabel.text = caption
+        arrow.tintColor = colour
+        bar.strokeColor = colour.cgColor
+
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.2)
+        if let distance {
+            let remaining = min(max(CGFloat(distance), 0), span) / span
+            bar.strokeEnd = 1 - remaining
+        } else {
+            bar.strokeEnd = 0
+        }
+        CATransaction.commit()
+
+        guard let direction else {
+            UIView.animate(withDuration: 0.2) { self.arrow.alpha = 0.22 }
+            return
+        }
+        let angle = atan2(direction.x, -direction.z)
+        UIView.animate(withDuration: 0.18) {
+            self.arrow.alpha = 1
+            self.arrow.transform = CGAffineTransform(rotationAngle: CGFloat(angle))
+        }
+    }
+
+    func reset() {
+        bar.strokeEnd = 0
+        arrow.alpha = 0.22
+        arrow.transform = .identity
+    }
+}
+
+final class MeetViewController: UIViewController {
 
     // MARK: - Role
 
-    private enum Role { case supporter, requester }
-    private var role: Role = .supporter
+    private enum Role { case supporter, requester }   // supporter = 迎えに行く / requester = 待つ
+    private var role: Role = .requester
 
     // MARK: - Flow state
 
-    private enum Phase {
-        case searching        // no peer yet
-        case ready            // peer connected, distance flowing
-        case guiding          // AR screen visible
-        case arrived
-    }
+    private enum Phase { case searching, ready, guiding, arrived }
     private var phase: Phase = .searching { didSet { applyPhase() } }
 
-    // Active help request (supporter: received; requester: sent).
-    private var activeHelp: MeetRequest?
-    private var pendingHelpToSend: MeetRequest?
+    private var activeRequest: MeetRequest?
+    private var requestSent = false
 
     private let arrivalThreshold: Float = 1.0
     private let nearThreshold: Float = 2.5
 
     // MARK: - Nearby Interaction state
 
-    // One NI session per connected peer, so the requester can see every nearby
-    // supporter's distance at the same time and choose one.
+    /// One NI session per connected peer, so the waiting side can see every
+    /// nearby helper's distance at once and choose one.
     final class PeerLink {
         let peerID: MCPeerID
         var session: NISession?
@@ -112,23 +212,20 @@ final class ArchViewController: UIViewController {
     private var links: [MCPeerID: PeerLink] = [:]
     private var sessionOwners: [ObjectIdentifier: MCPeerID] = [:]
     private var activePeerID: MCPeerID?
-    private var selectedSupporterID: MCPeerID?
+    private var selectedHelperID: MCPeerID?
     private var supportsUWB = true
     private var cameraAssistance = false
 
     private var latestDistance: Float?
     private var latestDirection: simd_float3?
     private var latestWorldTransform: simd_float4x4?
-    private var converged = false
 
     private let impactGenerator = UIImpactFeedbackGenerator(style: .medium)
-    private var didArriveHapticFired = false
 
-    // Find My-style proximity feedback: the closer you get, the faster and
-    // stronger the pulse, and the colour shifts from blue to green.
+    // MARK: - Proximity feedback (colour + haptics tighten as the gap closes)
+
     private enum ProximityBand {
         case far, mid, near, arrived
-
         var interval: TimeInterval {
             switch self {
             case .far: return 1.2
@@ -145,7 +242,7 @@ final class ArchViewController: UIViewController {
             case .arrived: return 1.0
             }
         }
-        var color: UIColor {
+        var colour: UIColor {
             switch self {
             case .far: return UIColor(red: 0.98, green: 0.66, blue: 0.25, alpha: 1)
             case .mid: return UIColor(red: 1.00, green: 0.78, blue: 0.35, alpha: 1)
@@ -157,11 +254,8 @@ final class ArchViewController: UIViewController {
     private var hapticTimer: Timer?
     private let proximityGenerator = UIImpactFeedbackGenerator(style: .medium)
     private let arrivalGenerator = UINotificationFeedbackGenerator()
-    private var arrowMaterial: SCNMaterial?
-    private var dotMaterials: [SCNMaterial] = []
-    private var circleMaterial: SCNMaterial?
 
-    // MARK: - Demo mode
+    // MARK: - Demo
 
     private var demoTimer: Timer?
     private var demoDistance: Float = 7.4
@@ -173,79 +267,60 @@ final class ArchViewController: UIViewController {
     private var arrowContainer = SCNNode()
     private var dotsContainer = SCNNode()
     private var circleNode = SCNNode()
+    private var arrowMaterial: SCNMaterial?
+    private var dotMaterials: [SCNMaterial] = []
+    private var circleMaterial: SCNMaterial?
     private var arRunning = false
 
     // MARK: - Palette
 
-    private let bgColor = UIColor(red: 0.06, green: 0.06, blue: 0.07, alpha: 1.0)
-    private let cardColor = UIColor(red: 0.13, green: 0.13, blue: 0.15, alpha: 1.0)
-    private let accentMain = UIColor(red: 1.00, green: 0.65, blue: 0.24, alpha: 1.0)
-    private let hintCard = UIColor(red: 0.15, green: 0.15, blue: 0.17, alpha: 1.0)
-    private let markerCard = UIColor(red: 0.93, green: 0.94, blue: 0.96, alpha: 1.0)
-    private let accentMint = UIColor(red: 0.21, green: 0.82, blue: 0.54, alpha: 1.0)
+    private let bgColour = UIColor(red: 0.06, green: 0.06, blue: 0.07, alpha: 1)
+    private let cardColour = UIColor(red: 0.13, green: 0.13, blue: 0.15, alpha: 1)
+    private let amber = UIColor(red: 1.00, green: 0.65, blue: 0.24, alpha: 1)
+    private let mint = UIColor(red: 0.21, green: 0.82, blue: 0.54, alpha: 1)
 
-    // MARK: - Location + open data
+    // MARK: - Views
 
-    private let locationManager = CLLocationManager()
-    private var lastLocation: CLLocation?
-    private let resourcesLabel = UILabel()
-    private var resourcesFetched = false
-
-    // MARK: - Role select / requester screens
-
-    private let roleScreen = UIView()
-    private let requesterScreen = UIView()
-    private var selectedKind: MeetRequest.Kind = .here
-    private var selectedMode: MeetRequest.MarkerHint = .wave
-    private var kindButtons: [UIButton] = []
-    private var modeButtons: [UIButton] = []
-    private let supporterListStack = UIStackView()
-    private let supporterEmptyLabel = UILabel()
-    private var supporterRows: [MCPeerID: UIButton] = [:]
-    private var supporterOrder: [MCPeerID] = []
-    private let compassContainer = UIView()
-    private let compassRing = UIView()
-    private let compassArrow = UIImageView()
-    private let compassHint = UILabel()
-    private let requesterDemoButton = UIButton(type: .system)
-    private let requesterStatusLabel = UILabel()
-    private let requesterDistanceLabel = UILabel()
-    private let sendHelpButton = UIButton(type: .system)
-    private let cancelHelpButton = UIButton(type: .system)
-
-    // Supporter views that change with the received help.
-    private var helpTextLabels: [UILabel] = []
-    private var modeChipLabels: [UILabel] = []
-    private let requestLabel = UILabel()
-    private var pointsBodyLabels: [UILabel] = []
-
-    // Supporter views revealed only once a help request arrives (or demo starts).
-    private var supporterActiveViews: [UIView] = []
-
-    // MARK: - Notification screen views
-
-    private let notificationScreen = UIView()
-    private let bellRing = UIView()
-    private let distanceLabel = UILabel()
-    private let distanceCaption = UILabel()
-    private let statusLabel = UILabel()
-    private let startButton = UIButton(type: .system)
+    private let homeScreen = UIView()
+    private let roleSwitch = UISegmentedControl(items: ["待つ", "迎えに行く"])
     private let demoButton = UIButton(type: .system)
-    private let unsupportedNote = UILabel()
 
-    // MARK: - AR screen views
+    private let waiterPanel = UIView()
+    private let waiterSelection = UIStackView()
+    private let waiterDial = MeetDial()
+    private let sendButton = UIButton(type: .system)
+    private let cancelButton = UIButton(type: .system)
+    private let waiterStatus = UILabel()
+    private var kindButtons: [UIButton] = []
+    private var markerButtons: [UIButton] = []
+    private let peerListStack = UIStackView()
+    private let peerEmptyLabel = UILabel()
+    private var peerRows: [MCPeerID: UIButton] = [:]
+    private var peerOrder: [MCPeerID] = []
+    private var selectedKind: MeetRequest.Kind = .here
+    private var selectedMarker: MeetRequest.MarkerHint = .wave
+
+    private let finderPanel = UIView()
+    private let finderChips = UIStackView()
+    private let finderKindChip = PaddedLabel()
+    private let finderMarkerChip = PaddedLabel()
+    private let finderDial = MeetDial()
+    private let cameraButton = UIButton(type: .system)
+    private let finderStatus = UILabel()
+    private let finderTip = UILabel()
 
     private let arScreen = UIView()
-    private let arHintLabel = UILabel()
-    private let arSubHintLabel = UILabel()
-    private let arDistancePill = UILabel()
+    private let arDial = MeetDial()
+    private let arHint = UILabel()
+    private let arMarkerChip = PaddedLabel()
     private let arrivalOverlay = UIView()
+    private let arrivalMarker = UILabel()
 
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = bgColor
+        view.backgroundColor = bgColour
 
         if #available(iOS 16.0, *) {
             supportsUWB = NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
@@ -255,29 +330,23 @@ final class ArchViewController: UIViewController {
         }
 
         buildARScreen()
-        buildNotificationScreen()
-        buildRequesterScreen()
-        buildRoleScreen()
+        buildHome()
         applyPhase()
+        refreshSelectionStyles()
+        refreshPeerList()
+        refreshDials()
 
-        // Wait for a role choice before starting NI/MPC.
-        roleScreen.isHidden = false
-        view.bringSubviewToFront(roleScreen)
-    }
-
-    private func beginSession() {
         if supportsUWB {
             startup()
         } else {
-            statusLabel.text = "この端末はUWB非対応です"
-            requesterStatusLabel.text = "この端末はUWB非対応です"
-            unsupportedNote.isHidden = false
+            waiterStatus.text = "この端末はUWBに対応していません(デモのみ動きます)"
+            finderStatus.text = "この端末はUWBに対応していません(デモのみ動きます)"
         }
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
 
-    // MARK: - NI startup (mirrors the Apple sample, extended to multiple peers)
+    // MARK: - Nearby Interaction (extended from the Apple sample to several peers)
 
     private func startup() {
         startupMPC()
@@ -311,7 +380,6 @@ final class ArchViewController: UIViewController {
         links[peer] = link
         sessionOwners[ObjectIdentifier(session)] = peer
 
-        // Say which side we are, then hand over this session's own token.
         if let hello = try? JSONEncoder().encode(HelloMessage(role: role == .supporter ? "supporter" : "requester")) {
             mpc?.sendData(data: hello, peers: [peer], mode: .reliable)
         }
@@ -319,7 +387,7 @@ final class ArchViewController: UIViewController {
            let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) {
             mpc?.sendData(data: data, peers: [peer], mode: .reliable)
         }
-        refreshSupporterList()
+        refreshPeerList()
     }
 
     private func disconnectedFromPeer(peer: MCPeerID) {
@@ -333,10 +401,11 @@ final class ArchViewController: UIViewController {
             latestDistance = nil
             latestDirection = nil
             latestWorldTransform = nil
-            if role == .supporter, !isDemo { statusLabel.text = "相手との接続が切れました。再探索中…" }
+            if role == .supporter, !isDemo { finderStatus.text = "相手との接続が切れました。探し直しています…" }
         }
-        if selectedSupporterID == peer { selectedSupporterID = nil }
-        refreshSupporterList()
+        if selectedHelperID == peer { selectedHelperID = nil }
+        refreshPeerList()
+        refreshDials()
     }
 
     private func runConfig(for link: PeerLink, cameraAssist: Bool = false) {
@@ -350,8 +419,8 @@ final class ArchViewController: UIViewController {
         session.run(config)
     }
 
-    // Ends the current ranging session with a peer and starts a fresh one, so
-    // "対応が終わったら共有も終わる" is real rather than a label.
+    /// Ends ranging with a peer and starts a fresh session, so "終わったら共有も終わる"
+    /// is real rather than a label.
     private func restartLink(_ link: PeerLink) {
         if let old = link.session {
             sessionOwners.removeValue(forKey: ObjectIdentifier(old))
@@ -375,7 +444,6 @@ final class ArchViewController: UIViewController {
     private func dataReceivedHandler(data: Data, peer: MCPeerID) {
         guard let link = links[peer] else { return }
 
-        // Envelope: an archived NIDiscoveryToken, or one of the JSON app messages.
         if let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: data) {
             link.peerToken = token
             runConfig(for: link, cameraAssist: activePeerID == peer && phase == .guiding)
@@ -383,44 +451,49 @@ final class ArchViewController: UIViewController {
         }
         if let hello = try? JSONDecoder().decode(HelloMessage.self, from: data), hello.type == "hello" {
             link.peerRole = hello.role
-            refreshSupporterList()
+            refreshPeerList()
             return
         }
         if let request = try? JSONDecoder().decode(MeetRequest.self, from: data), request.type == "meet" {
             guard role == .supporter, activePeerID == nil || activePeerID == peer else { return }
             activePeerID = peer
-            activeHelp = request
+            activeRequest = request
             latestDistance = link.distance
-            applyHelp(request)
+            applyIncomingRequest(request)
             return
         }
         if let msg = try? JSONDecoder().decode(CancelMessage.self, from: data), msg.type == "cancel" {
             guard role == .supporter, activePeerID == peer else { return }
-            activeHelp = nil
+            activeRequest = nil
             activePeerID = nil
             arrivalOverlay.isHidden = true
-            setSupporterActive(false)
             phase = .searching
-            statusLabel.text = "相手が合流をやめました"
+            finderChips.isHidden = true
+            finderTip.isHidden = true
+            finderStatus.text = "相手が合流をやめました"
+            refreshDials()
         }
     }
 
-    private func sendHelp(_ help: MeetRequest, to peer: MCPeerID) {
-        guard let data = try? JSONEncoder().encode(help) else { return }
+    private func sendMeetRequest(_ request: MeetRequest, to peer: MCPeerID) {
+        guard let data = try? JSONEncoder().encode(request) else { return }
         mpc?.sendData(data: data, peers: [peer], mode: .reliable)
-        pendingHelpToSend = nil
-        activeHelp = help
+        activeRequest = request
     }
 
-    // Update every supporter-side surface that mirrors the request.
-    private func applyHelp(_ help: MeetRequest) {
-        for label in helpTextLabels { label.text = help.kind.text }
-        for chip in modeChipLabels { chip.text = help.mode.text }
-        requestLabel.text = "[\(help.kind.text)]と伝えてきた\n相手が近くにいます"
-        pointsBodyLabels.forEach { $0.text = help.kind.tips }
-        setSupporterActive(true)
+    /// The finder's screen mirrors whatever the waiting side chose.
+    private func applyIncomingRequest(_ request: MeetRequest) {
+        finderKindChip.text = request.kind.text
+        finderMarkerChip.text = request.mode.text
+        arMarkerChip.text = request.mode.text
+        arrivalMarker.text = request.mode.text
+        finderTip.text = request.kind.tip
+        finderChips.isHidden = false
+        finderTip.isHidden = false
+        finderStatus.text = nil
         if latestDistance != nil { phase = .ready }
         impactGenerator.impactOccurred()
+        refreshDials()
     }
 
     // MARK: - Measurement funnel (real NI and demo both land here)
@@ -430,162 +503,214 @@ final class ArchViewController: UIViewController {
         latestDirection = direction
         latestWorldTransform = world
 
-        if let d = distance {
-            distanceLabel.text = formatMeters(d)
-            if role == .requester && helpSent {
-                updateRequesterCompass(distance: d, direction: direction)
-                requesterDistanceLabel.text = d < arrivalThreshold
-                    ? "合流しました\nスマホから顔を上げてください"
-                    : "相手が向かっています  あと \(formatMeters(d))"
-            }
-            // The supporter stays in the waiting state until a request arrives.
-            if phase == .searching, role == .requester || activeHelp != nil || isDemo {
-                phase = .ready
-            }
+        if distance != nil, phase == .searching, role == .requester || activeRequest != nil || isDemo {
+            phase = .ready
         }
+        refreshDials()
 
-        switch phase {
-        case .guiding:
+        if phase == .guiding {
             updateGuidance()
-        case .arrived:
-            break
-        default:
-            break
+            if let d = distance, d < arrivalThreshold { arrive() }
         }
+    }
 
-        if (phase == .guiding), let d = distance, d < arrivalThreshold {
-            arrive()
-        }
+    private func band(for distance: Float) -> ProximityBand {
+        if distance < arrivalThreshold { return .arrived }
+        if distance < nearThreshold { return .near }
+        if distance < 5.0 { return .mid }
+        return .far
     }
 
     private func formatMeters(_ d: Float) -> String {
         d >= 2 ? String(format: "%.0f m", d.rounded()) : String(format: "%.1f m", d)
     }
 
-    // MARK: - Phase handling
+    /// Every dial on screen reads the same measurement.
+    private func refreshDials() {
+        let colour = latestDistance.map { band(for: $0).colour } ?? UIColor.white.withAlphaComponent(0.35)
+        let idleColour = UIColor.white.withAlphaComponent(0.35)
 
-    private func applyPhase() {
         if role == .requester {
-            notificationScreen.isHidden = true
-            arScreen.isHidden = true
-            requesterScreen.isHidden = false
-            return
-        }
-        requesterScreen.isHidden = true
-        switch phase {
-        case .searching:
-            notificationScreen.isHidden = false
-            arScreen.isHidden = true
-            startButton.isEnabled = false
-            startButton.alpha = 0.45
-            distanceLabel.text = "— m"
-        case .ready:
-            notificationScreen.isHidden = false
-            arScreen.isHidden = true
-            startButton.isEnabled = true
-            startButton.alpha = 1.0
-            statusLabel.text = nil
-        case .guiding:
-            notificationScreen.isHidden = true
-            arScreen.isHidden = false
-            arrivalOverlay.isHidden = true
-            didArriveHapticFired = false
-        case .arrived:
-            arrivalOverlay.isHidden = false
-            setARGuidesHidden(true)
-            arDistancePill.isHidden = true
-            if !didArriveHapticFired {
-                impactGenerator.impactOccurred()
-                didArriveHapticFired = true
+            if requestSent {
+                let value = latestDistance.map { $0 < arrivalThreshold ? "合流" : formatMeters($0) } ?? "—"
+                let caption: String
+                if let d = latestDistance, d < arrivalThreshold {
+                    caption = "顔を上げてください"
+                } else if latestDirection == nil {
+                    caption = "方向を測定中\n端末をゆっくり動かして"
+                } else {
+                    caption = "相手はこの方向"
+                }
+                waiterDial.set(distance: latestDistance, direction: latestDirection,
+                               colour: colour, value: value, caption: caption)
+            } else {
+                waiterDial.set(distance: nil, direction: nil, colour: idleColour,
+                               value: "—", caption: "「ここだよ」を送ると\n相手との距離が出ます")
             }
+        } else {
+            let waiting = activeRequest == nil
+            let value = waiting ? "—" : (latestDistance.map { $0 < arrivalThreshold ? "合流" : formatMeters($0) } ?? "—")
+            let caption: String
+            if waiting {
+                caption = "「ここだよ」を待っています"
+            } else if let d = latestDistance, d < arrivalThreshold {
+                caption = "顔を上げてください"
+            } else if latestDirection == nil {
+                caption = "方向を測定中\n端末をゆっくり動かして"
+            } else {
+                caption = "この方向にいます"
+            }
+            finderDial.set(distance: waiting ? nil : latestDistance,
+                           direction: waiting ? nil : latestDirection,
+                           colour: waiting ? idleColour : colour,
+                           value: value, caption: caption)
+            let ready = activeRequest != nil && latestDistance != nil
+            cameraButton.isEnabled = ready
+            cameraButton.alpha = ready ? 1 : 0.4
         }
     }
 
-    @objc private func startGuidanceTapped() {
+    // MARK: - Phase handling
+
+    private func applyPhase() {
+        let showAR = role == .supporter && (phase == .guiding || phase == .arrived)
+        arScreen.isHidden = !showAR
+        homeScreen.isHidden = showAR
+        waiterPanel.isHidden = role != .requester
+        finderPanel.isHidden = role != .supporter
+        arrivalOverlay.isHidden = phase != .arrived
+        if phase != .guiding { stopProximityFeedback() }
+    }
+
+    @objc private func roleChanged() {
+        let next: Role = roleSwitch.selectedSegmentIndex == 0 ? .requester : .supporter
+        guard next != role else { return }
+        resetSession()
+        role = next
+        phase = .searching
+        if supportsUWB { startup() }
+        refreshPeerList()
+        refreshDials()
+    }
+
+    /// Tears every link down so a role change starts from a clean state.
+    private func resetSession() {
+        stopProximityFeedback()
+        if isDemo { stopDemo() }
+        for link in links.values { link.session?.invalidate() }
+        links.removeAll()
+        sessionOwners.removeAll()
+        peerRows.removeAll()
+        peerOrder.removeAll()
+        peerListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        mpc?.invalidate()
+        mpc = nil
+
+        activePeerID = nil
+        selectedHelperID = nil
+        activeRequest = nil
+        requestSent = false
+        latestDistance = nil
+        latestDirection = nil
+        latestWorldTransform = nil
+
+        sendButton.isHidden = false
+        cancelButton.isHidden = true
+        waiterSelection.isHidden = false
+        waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
+        finderChips.isHidden = true
+        finderTip.isHidden = true
+        finderStatus.text = nil
+        arrivalOverlay.isHidden = true
+        waiterDial.reset()
+        finderDial.reset()
+    }
+
+    @objc private func startGuidance() {
         startARIfNeeded()
         if let id = activePeerID, let link = links[id] { runConfig(for: link, cameraAssist: true) }
         phase = .guiding
         updateGuidance()
     }
 
-    @objc private func closeARTapped() {
+    @objc private func closeAR() {
         stopProximityFeedback()
-        phase = isDemo || latestDistance != nil ? .ready : .searching
-        if isDemo { stopDemo() }
+        phase = latestDistance != nil ? .ready : .searching
     }
 
     private func arrive() {
+        guard phase != .arrived else { return }
         phase = .arrived
         if isDemo { demoTimer?.invalidate() }
+        arrivalGenerator.notificationOccurred(.success)
     }
 
-    // Done supporting: back to the waiting state, ready for the next request.
-    @objc private func finishSupportTapped() {
+    @objc private func finishMeet() {
         stopProximityFeedback()
         if isDemo { stopDemo() }
-        if let id = activePeerID, let link = links[id] { restartLink(link) }
+        if let id = activePeerID, let link = links[id], !link.isDemo { restartLink(link) }
         activePeerID = nil
+        activeRequest = nil
         latestDistance = nil
-        activeHelp = nil
+        latestDirection = nil
         arrivalOverlay.isHidden = true
-        setSupporterActive(false)
+        finderChips.isHidden = true
+        finderTip.isHidden = true
+        finderStatus.text = nil
         phase = .searching
+        refreshDials()
     }
 
-    // MARK: - Demo mode
+    // MARK: - Demo
 
     @objc private func demoTapped() {
         if isDemo { stopDemo(); return }
-        if role == .requester { startRequesterDemo(); return }
         isDemo = true
-        demoDistance = 7.4
-        setSupporterActive(true)
         demoButton.setTitle("デモ停止", for: .normal)
-        statusLabel.text = "デモモード(シミュレーション)"
+
+        if role == .requester {
+            for (name, distance) in [("会場スタッフのiPhone", Float(7.4)),
+                                     ("となりの席のiPhone", Float(15.6)),
+                                     ("受付のiPhone", Float(24.1))] {
+                let peerID = MCPeerID(displayName: name)
+                let link = PeerLink(peerID: peerID)
+                link.isDemo = true
+                link.peerRole = "supporter"
+                link.distance = distance
+                links[peerID] = link
+            }
+            waiterStatus.text = "デモ(シミュレーション)。距離は実測ではありません"
+            refreshPeerList()
+        } else {
+            demoDistance = 7.4
+            activeRequest = MeetRequest(kind: selectedKind, mode: selectedMarker)
+            applyIncomingRequest(activeRequest!)
+            finderStatus.text = "デモ(シミュレーション)。距離は実測ではありません"
+        }
+
         demoTimer?.invalidate()
         demoTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self else { return }
-            if self.phase == .guiding || self.phase == .ready || self.phase == .searching {
+            let azimuth: Float = 0.18 * sinf(Float(Date().timeIntervalSince1970) * 0.7)
+            let direction = simd_float3(sinf(azimuth), 0, -cosf(azimuth))
+
+            if self.role == .requester {
+                for (peerID, link) in self.links where link.isDemo {
+                    if self.requestSent, peerID == self.activePeerID {
+                        link.distance = max(0.4, (link.distance ?? 7.4) - 0.11)
+                        link.direction = direction
+                        self.updateMeasurement(distance: link.distance, direction: direction, world: nil)
+                    } else {
+                        link.distance = max(1.0, (link.distance ?? 10) + Float.random(in: -0.2...0.2))
+                    }
+                }
+                self.refreshPeerList()
+            } else {
                 if self.phase == .guiding {
                     self.demoDistance = max(0.4, self.demoDistance - 0.11 + Float.random(in: -0.02...0.02))
                 }
-                let az: Float = 0.18 * sinf(Float(Date().timeIntervalSince1970) * 0.7)
-                let dir = simd_float3(sinf(az), 0, -cosf(az))
-                self.updateMeasurement(distance: self.demoDistance, direction: dir, world: nil)
+                self.updateMeasurement(distance: self.demoDistance, direction: direction, world: nil)
             }
-        }
-    }
-
-    // Requester demo: three simulated supporters at different distances, so the
-    // list and the choice can be shown on a single device.
-    private func startRequesterDemo() {
-        isDemo = true
-        requesterDemoButton.setTitle("デモ停止", for: .normal)
-        requesterStatusLabel.text = "デモモード(シミュレーション)\n距離は実測ではありません"
-        let demoPeers: [(String, Float)] = [("会場スタッフのiPhone", 7.4), ("となりの席のiPhone", 15.6), ("受付のiPhone", 24.1)]
-        for (name, distance) in demoPeers {
-            let peerID = MCPeerID(displayName: name)
-            let link = PeerLink(peerID: peerID)
-            link.isDemo = true
-            link.peerRole = "supporter"
-            link.distance = distance
-            links[peerID] = link
-        }
-        refreshSupporterList()
-        demoTimer?.invalidate()
-        demoTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            for (peerID, link) in self.links where link.isDemo {
-                if self.helpSent, peerID == self.activePeerID {
-                    link.distance = max(0.4, (link.distance ?? 7.4) - 0.11)
-                    let azimuth: Float = 0.18 * sinf(Float(Date().timeIntervalSince1970) * 0.7)
-                    link.direction = simd_float3(sinf(azimuth), 0, -cosf(azimuth))
-                    self.updateMeasurement(distance: link.distance, direction: link.direction, world: nil)
-                } else {
-                    link.distance = max(1.0, (link.distance ?? 10) + Float.random(in: -0.2...0.2))
-                }
-            }
-            self.refreshSupporterList()
         }
     }
 
@@ -593,27 +718,33 @@ final class ArchViewController: UIViewController {
         isDemo = false
         demoTimer?.invalidate()
         demoTimer = nil
-        demoButton.setTitle("デモモード", for: .normal)
-        requesterDemoButton.setTitle("デモモード", for: .normal)
+        demoButton.setTitle("デモ", for: .normal)
         demoDistance = 7.4
 
         for (peerID, link) in links where link.isDemo {
             link.session?.invalidate()
             links.removeValue(forKey: peerID)
             if activePeerID == peerID { activePeerID = nil }
-            if selectedSupporterID == peerID { selectedSupporterID = nil }
+            if selectedHelperID == peerID { selectedHelperID = nil }
         }
-        refreshSupporterList()
-
-        if role == .requester { return }
-        if activeHelp == nil { setSupporterActive(false) }
-        if supportsUWB {
-            statusLabel.text = activePeerID == nil ? "「ここだよ」の合図を待っています…" : nil
-            if activePeerID == nil { phase = .searching }
+        if role == .supporter {
+            activeRequest = nil
+            finderChips.isHidden = true
+            finderTip.isHidden = true
         } else {
-            phase = .searching
-            statusLabel.text = "この端末はUWB非対応です"
+            requestSent = false
+            waiterSelection.isHidden = false
+            sendButton.isHidden = false
+            cancelButton.isHidden = true
+            waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
         }
+        latestDistance = nil
+        latestDirection = nil
+        phase = .searching
+        waiterDial.reset()
+        finderDial.reset()
+        refreshPeerList()
+        refreshDials()
     }
 
     // MARK: - AR guidance rendering
@@ -636,16 +767,20 @@ final class ArchViewController: UIViewController {
 
     private func updateGuidance() {
         guard phase == .guiding else { return }
-
         updateProximityFeedback(distance: latestDistance)
 
         guard let distance = latestDistance else {
-            arHintLabel.text = "近くにいます"
-            arSubHintLabel.text = "端末をゆっくり動かしてください"
-            arDistancePill.isHidden = true
+            arHint.text = "端末をゆっくり動かしてください"
+            arDial.set(distance: nil, direction: nil, colour: UIColor.white.withAlphaComponent(0.35),
+                       value: "—", caption: "測定中")
             setARGuidesHidden(true)
             return
         }
+
+        let colour = band(for: distance).colour
+        arDial.set(distance: distance, direction: latestDirection, colour: colour,
+                   value: distance < arrivalThreshold ? "合流" : formatMeters(distance),
+                   caption: distance < nearThreshold ? "すぐそこ" : "")
 
         // Positioning source: AR world transform (best) > direction (good) > none.
         let cam = sceneView.pointOfView
@@ -661,32 +796,18 @@ final class ArchViewController: UIViewController {
                 if simd_length(v) > 0.01 { horizontalDir = simd_normalize(v) }
             }
         } else if let dir = latestDirection, let camNode = cam {
-            // Direction is in camera coordinates; bring it to world space.
             let worldDir = camNode.simdConvertVector(simd_float3(dir.x, dir.y, dir.z), to: nil)
             var v = worldDir
             v.y = 0
             if simd_length(v) > 0.01 { horizontalDir = simd_normalize(v) }
         }
 
-        if distance < nearThreshold {
-            arHintLabel.text = nil
-            arSubHintLabel.text = nil
-            arDistancePill.isHidden = false
-            arDistancePill.text = distance < 1.6 ? "すぐそこ" : "あと\(max(1, Int(distance.rounded())))m"
-        } else {
-            arDistancePill.isHidden = false
-            arDistancePill.text = "あと\(Int(distance.rounded()))m"
-            arHintLabel.text = nil
-            arSubHintLabel.text = nil
-        }
-
         guard let camNode = cam, let dir = horizontalDir else {
-            // No usable direction yet: keep the calibration hint.
-            arHintLabel.text = "近くにいます(約 \(formatMeters(distance)))"
-            arSubHintLabel.text = "端末をゆっくり動かしてください"
+            arHint.text = "端末をゆっくり動かしてください"
             setARGuidesHidden(true)
             return
         }
+        arHint.text = distance < nearThreshold ? "画面から顔を上げて探してください" : nil
 
         let camPos = camNode.simdWorldPosition
         let floorY = camPos.y - 1.25
@@ -694,14 +815,13 @@ final class ArchViewController: UIViewController {
         SCNTransaction.begin()
         SCNTransaction.animationDuration = 0.18
 
-        if distance < nearThreshold, let peerPos = peerWorldPos ?? optionalPeerPos(camPos: camPos, dir: dir, distance: distance) {
-            // Close: draw the circle at the peer's feet.
+        if distance < nearThreshold,
+           let peerPos = peerWorldPos ?? optionalPeerPos(camPos: camPos, dir: dir, distance: distance) {
             arrowContainer.isHidden = true
             dotsContainer.isHidden = true
             circleNode.isHidden = false
             circleNode.simdPosition = simd_float3(peerPos.x, floorY, peerPos.z)
         } else {
-            // Far: arrow ahead of the camera pointing at the peer + dotted path.
             circleNode.isHidden = true
             arrowContainer.isHidden = false
             dotsContainer.isHidden = false
@@ -711,7 +831,6 @@ final class ArchViewController: UIViewController {
             let lookTarget = arrowContainer.simdPosition + dir
             arrowContainer.simdLook(at: lookTarget, up: simd_float3(0, 1, 0), localFront: simd_float3(0, 0, -1))
 
-            // Dots from just past the arrow toward the peer.
             let dotCount = dotsContainer.childNodes.count
             let usable = min(distance - 1.6, 4.5)
             for (i, dot) in dotsContainer.childNodes.enumerated() {
@@ -726,63 +845,27 @@ final class ArchViewController: UIViewController {
         SCNTransaction.commit()
     }
 
-    // MARK: - Requester compass
-
-    private func updateRequesterCompass(distance: Float, direction: simd_float3?) {
-        compassContainer.isHidden = false
-
-        let band: ProximityBand
-        if distance < arrivalThreshold { band = .arrived }
-        else if distance < nearThreshold { band = .near }
-        else if distance < 5.0 { band = .mid }
-        else { band = .far }
-        compassArrow.tintColor = band.color
-        compassRing.layer.borderColor = band.color.withAlphaComponent(0.4).cgColor
-
-        guard let direction else {
-            // Direction needs the peer roughly in front of the phone.
-            compassArrow.alpha = 0.25
-            compassHint.text = "方向を測定中…\n端末をゆっくり動かしてください"
-            return
-        }
-        compassArrow.alpha = 1.0
-        compassHint.text = distance < arrivalThreshold ? "すぐそばにいます" : "相手はこの方向にいます"
-        let angle = atan2(direction.x, -direction.z)
-        UIView.animate(withDuration: 0.18) {
-            self.compassArrow.transform = CGAffineTransform(rotationAngle: CGFloat(angle))
-        }
-    }
-
-    private func hideRequesterCompass() {
-        compassContainer.isHidden = true
-        compassHint.text = nil
-        compassArrow.transform = .identity
+    private func optionalPeerPos(camPos: simd_float3, dir: simd_float3, distance: Float) -> simd_float3? {
+        camPos + dir * distance
     }
 
     // MARK: - Proximity feedback
 
     private func updateProximityFeedback(distance: Float?) {
         guard phase == .guiding, let distance else { return }
-        let band: ProximityBand
-        if distance < arrivalThreshold { band = .arrived }
-        else if distance < nearThreshold { band = .near }
-        else if distance < 5.0 { band = .mid }
-        else { band = .far }
-        guard band != currentBand else { return }
-        currentBand = band
-        applyBandColour(band)
+        let next = band(for: distance)
+        guard next != currentBand else { return }
+        currentBand = next
+        applyBandColour(next)
 
         hapticTimer?.invalidate()
         hapticTimer = nil
-        guard band != .arrived else {
-            arrivalGenerator.notificationOccurred(.success)
-            return
-        }
+        guard next != .arrived else { return }
         proximityGenerator.prepare()
-        proximityGenerator.impactOccurred(intensity: band.intensity)
-        hapticTimer = Timer.scheduledTimer(withTimeInterval: band.interval, repeats: true) { [weak self] _ in
+        proximityGenerator.impactOccurred(intensity: next.intensity)
+        hapticTimer = Timer.scheduledTimer(withTimeInterval: next.interval, repeats: true) { [weak self] _ in
             guard let self, self.phase == .guiding else { return }
-            self.proximityGenerator.impactOccurred(intensity: band.intensity)
+            self.proximityGenerator.impactOccurred(intensity: next.intensity)
         }
     }
 
@@ -793,8 +876,7 @@ final class ArchViewController: UIViewController {
     }
 
     private func applyBandColour(_ band: ProximityBand) {
-        let colour = band.color
-        arDistancePill.backgroundColor = colour.withAlphaComponent(0.85)
+        let colour = band.colour
         arrowMaterial?.diffuse.contents = colour.withAlphaComponent(0.95)
         arrowMaterial?.emission.contents = darker(colour, 0.5)
         for material in dotMaterials {
@@ -805,256 +887,223 @@ final class ArchViewController: UIViewController {
         circleMaterial?.emission.contents = darker(colour, 0.5)
     }
 
-    private func darker(_ color: UIColor, _ factor: CGFloat) -> UIColor {
-        var h: CGFloat = 0, sat: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        color.getHue(&h, saturation: &sat, brightness: &b, alpha: &a)
-        return UIColor(hue: h, saturation: sat, brightness: b * factor, alpha: a)
+    private func darker(_ colour: UIColor, _ factor: CGFloat) -> UIColor {
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        colour.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return UIColor(hue: h, saturation: s, brightness: b * factor, alpha: a)
     }
 
-    private func optionalPeerPos(camPos: simd_float3, dir: simd_float3, distance: Float) -> simd_float3? {
-        camPos + dir * distance
-    }
+    // MARK: - Home (one screen, a switch instead of two separate flows)
 
-    // MARK: - UI construction: notification screen
-
-    private func buildNotificationScreen() {
-        notificationScreen.backgroundColor = bgColor
-        view.addSubview(notificationScreen)
-        notificationScreen.translatesAutoresizingMaskIntoConstraints = false
+    private func buildHome() {
+        homeScreen.backgroundColor = bgColour
+        view.addSubview(homeScreen)
+        homeScreen.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            notificationScreen.topAnchor.constraint(equalTo: view.topAnchor),
-            notificationScreen.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            notificationScreen.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            notificationScreen.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            homeScreen.topAnchor.constraint(equalTo: view.topAnchor),
+            homeScreen.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            homeScreen.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            homeScreen.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
+        let safe = homeScreen.safeAreaLayoutGuide
 
-        let safe = notificationScreen.safeAreaLayoutGuide
+        let title = UILabel()
+        title.text = "ここだよ"
+        title.font = .systemFont(ofSize: 17, weight: .bold)
+        title.textColor = .white
 
-        // Back chevron (fixed, outside the scrolling area).
-        let back = UIButton(type: .system)
-        back.setImage(UIImage(systemName: "chevron.left"), for: .normal)
-        back.tintColor = .white
-        back.backgroundColor = cardColor
-        back.layer.cornerRadius = 22
-        back.addTarget(self, action: #selector(backToRoleSelect), for: .touchUpInside)
-        notificationScreen.addSubview(back)
-        back.translatesAutoresizingMaskIntoConstraints = false
-
-        // Everything below the header scrolls.
-        let scroll = UIScrollView()
-        scroll.showsVerticalScrollIndicator = true
-        scroll.alwaysBounceVertical = true
-        notificationScreen.addSubview(scroll)
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        let content = UIView()
-        scroll.addSubview(content)
-        content.translatesAutoresizingMaskIntoConstraints = false
-
-        // "サポーター" chip.
-        let roleChip = chip(text: "迎えに行く人", textColor: .black, bg: accentMint)
-        content.addSubview(roleChip)
-
-        // Help card.
-        let helpCard = UIView()
-        helpCard.backgroundColor = cardColor
-        helpCard.layer.cornerRadius = 14
-        content.addSubview(helpCard)
-        helpCard.translatesAutoresizingMaskIntoConstraints = false
-
-        let helpChip = chip(text: "いる場所", textColor: .black, bg: accentMain.withAlphaComponent(0.9), small: true)
-        let helpText = UILabel()
-        helpText.text = "ここで待ってる"
-        helpText.textColor = .white
-        helpText.numberOfLines = 2
-        helpText.font = .systemFont(ofSize: 17, weight: .semibold)
-        helpTextLabels.append(helpText)
-        let signChip = outlineChip(text: "手を振ってる")
-        modeChipLabels.append(signChip)
-        for v in [helpChip, helpText, signChip] {
-            helpCard.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-
-        // Bell.
-        let bellCircle = UIView()
-        bellCircle.backgroundColor = cardColor
-        bellCircle.layer.cornerRadius = 41
-        let bell = UIImageView(image: UIImage(systemName: "hand.wave.fill"))
-        bell.tintColor = accentMint
-        bell.contentMode = .scaleAspectFit
-        bellRing.layer.borderColor = accentMain.withAlphaComponent(0.5).cgColor
-        bellRing.layer.borderWidth = 1.5
-        bellRing.layer.cornerRadius = 64
-        for v in [bellRing, bellCircle, bell] {
-            content.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-
-        // Texts.
-        requestLabel.text = "[ここで待ってる]と伝えてきた\n相手が近くにいます"
-        requestLabel.textColor = .white
-        requestLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-        requestLabel.numberOfLines = 2
-        requestLabel.textAlignment = .center
-
-        distanceLabel.text = "— m"
-        distanceLabel.textColor = .white
-        distanceLabel.font = .systemFont(ofSize: 38, weight: .bold)
-        distanceLabel.textAlignment = .center
-
-        distanceCaption.text = "相手までの距離"
-        distanceCaption.textColor = UIColor.white.withAlphaComponent(0.55)
-        distanceCaption.font = .systemFont(ofSize: 12)
-        distanceCaption.textAlignment = .center
-
-        statusLabel.textColor = UIColor.white.withAlphaComponent(0.6)
-        statusLabel.font = .systemFont(ofSize: 13)
-        statusLabel.textAlignment = .center
-        statusLabel.numberOfLines = 3
-
-        for v in [requestLabel, distanceLabel, distanceCaption, statusLabel] {
-            content.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-
-        // Start button.
-        var conf = UIButton.Configuration.filled()
-        conf.title = "ARで向かう"
-        conf.image = UIImage(systemName: "viewfinder")
-        conf.imagePadding = 8
-        conf.baseBackgroundColor = accentMain
-        conf.baseForegroundColor = .white
-        conf.cornerStyle = .capsule
-        conf.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 24, bottom: 14, trailing: 24)
-        startButton.configuration = conf
-        startButton.addTarget(self, action: #selector(startGuidanceTapped), for: .touchUpInside)
-        content.addSubview(startButton)
-        startButton.translatesAutoresizingMaskIntoConstraints = false
-
-        // Accordions.
-        let pointsCard = accordionCard(icon: "doc.text", title: "合流のコツ", bg: hintCard,
-                                       tint: .white,
-                                       body: MeetRequest.Kind.here.tips)
-        if let b = lastAccordionBody { pointsBodyLabels.append(b) }
-        let contactCard = contactAccordion()
-        for v in [pointsCard, contactCard] {
-            content.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-
-        // Demo mode + unsupported note.
-        demoButton.setTitle("デモモード", for: .normal)
+        demoButton.setTitle("デモ", for: .normal)
         demoButton.setTitleColor(UIColor.white.withAlphaComponent(0.45), for: .normal)
         demoButton.titleLabel?.font = .systemFont(ofSize: 13)
         demoButton.addTarget(self, action: #selector(demoTapped), for: .touchUpInside)
-        notificationScreen.addSubview(demoButton)
-        demoButton.translatesAutoresizingMaskIntoConstraints = false
 
-        unsupportedNote.text = "UWB非対応端末のため、実測はできません(デモモードのみ)"
-        unsupportedNote.textColor = UIColor.white.withAlphaComponent(0.4)
-        unsupportedNote.font = .systemFont(ofSize: 11)
-        unsupportedNote.textAlignment = .center
-        unsupportedNote.isHidden = true
-        notificationScreen.addSubview(unsupportedNote)
-        unsupportedNote.translatesAutoresizingMaskIntoConstraints = false
+        roleSwitch.selectedSegmentIndex = 0
+        roleSwitch.selectedSegmentTintColor = amber
+        roleSwitch.backgroundColor = cardColour
+        roleSwitch.setTitleTextAttributes([.foregroundColor: UIColor.white.withAlphaComponent(0.7),
+                                           .font: UIFont.systemFont(ofSize: 15, weight: .semibold)], for: .normal)
+        roleSwitch.setTitleTextAttributes([.foregroundColor: UIColor.black,
+                                           .font: UIFont.systemFont(ofSize: 15, weight: .bold)], for: .selected)
+        roleSwitch.addTarget(self, action: #selector(roleChanged), for: .valueChanged)
 
-        NSLayoutConstraint.activate([
-            back.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
-            back.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
-            back.widthAnchor.constraint(equalToConstant: 44),
-            back.heightAnchor.constraint(equalToConstant: 44),
-
-            scroll.topAnchor.constraint(equalTo: back.bottomAnchor, constant: 8),
-            scroll.leadingAnchor.constraint(equalTo: notificationScreen.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: notificationScreen.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: demoButton.topAnchor, constant: -4),
-
-            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
-
-            roleChip.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
-            roleChip.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-
-            helpCard.topAnchor.constraint(equalTo: roleChip.bottomAnchor, constant: 10),
-            helpCard.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            helpCard.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-
-            helpChip.topAnchor.constraint(equalTo: helpCard.topAnchor, constant: 12),
-            helpChip.leadingAnchor.constraint(equalTo: helpCard.leadingAnchor, constant: 12),
-            helpText.centerYAnchor.constraint(equalTo: helpChip.centerYAnchor),
-            helpText.leadingAnchor.constraint(equalTo: helpChip.trailingAnchor, constant: 10),
-            signChip.topAnchor.constraint(equalTo: helpText.bottomAnchor, constant: 10),
-            signChip.leadingAnchor.constraint(equalTo: helpCard.leadingAnchor, constant: 12),
-            signChip.bottomAnchor.constraint(equalTo: helpCard.bottomAnchor, constant: -12),
-
-            bellRing.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            bellRing.topAnchor.constraint(equalTo: helpCard.bottomAnchor, constant: 14),
-            bellRing.widthAnchor.constraint(equalToConstant: 128),
-            bellRing.heightAnchor.constraint(equalToConstant: 128),
-            bellCircle.centerXAnchor.constraint(equalTo: bellRing.centerXAnchor),
-            bellCircle.centerYAnchor.constraint(equalTo: bellRing.centerYAnchor),
-            bellCircle.widthAnchor.constraint(equalToConstant: 82),
-            bellCircle.heightAnchor.constraint(equalToConstant: 82),
-            bell.centerXAnchor.constraint(equalTo: bellCircle.centerXAnchor),
-            bell.centerYAnchor.constraint(equalTo: bellCircle.centerYAnchor),
-            bell.widthAnchor.constraint(equalToConstant: 36),
-            bell.heightAnchor.constraint(equalToConstant: 36),
-
-            requestLabel.topAnchor.constraint(equalTo: bellRing.bottomAnchor, constant: 12),
-            requestLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            requestLabel.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
-
-            distanceLabel.topAnchor.constraint(equalTo: requestLabel.bottomAnchor, constant: 10),
-            distanceLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            distanceCaption.topAnchor.constraint(equalTo: distanceLabel.bottomAnchor, constant: 2),
-            distanceCaption.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            statusLabel.topAnchor.constraint(equalTo: distanceCaption.bottomAnchor, constant: 6),
-            statusLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            statusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
-
-            startButton.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 14),
-            startButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            startButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-
-            pointsCard.topAnchor.constraint(equalTo: startButton.bottomAnchor, constant: 16),
-            pointsCard.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            pointsCard.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-
-            contactCard.topAnchor.constraint(equalTo: pointsCard.bottomAnchor, constant: 10),
-            contactCard.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            contactCard.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            contactCard.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
-
-            demoButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -4),
-            demoButton.centerXAnchor.constraint(equalTo: notificationScreen.centerXAnchor),
-            unsupportedNote.bottomAnchor.constraint(equalTo: demoButton.topAnchor, constant: -2),
-            unsupportedNote.centerXAnchor.constraint(equalTo: notificationScreen.centerXAnchor),
-        ])
-
-        // Pulse the ring.
-        UIView.animate(withDuration: 1.4, delay: 0, options: [.repeat, .autoreverse, .curveEaseInOut]) {
-            self.bellRing.transform = CGAffineTransform(scaleX: 1.06, y: 1.06)
-            self.bellRing.alpha = 0.5
+        for v in [title, demoButton, roleSwitch] {
+            homeScreen.addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
         }
 
-        // Until a help request arrives, the supporter screen only waits.
-        supporterActiveViews = [helpCard, requestLabel, distanceLabel, distanceCaption, startButton, pointsCard, contactCard]
-        setSupporterActive(false)
+        buildWaiterPanel()
+        buildFinderPanel()
+        for panel in [waiterPanel, finderPanel] {
+            homeScreen.addSubview(panel)
+            panel.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                panel.topAnchor.constraint(equalTo: roleSwitch.bottomAnchor, constant: 18),
+                panel.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
+                panel.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
+                panel.bottomAnchor.constraint(equalTo: safe.bottomAnchor),
+            ])
+        }
+
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: safe.topAnchor, constant: 10),
+            title.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 20),
+            demoButton.centerYAnchor.constraint(equalTo: title.centerYAnchor),
+            demoButton.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -20),
+
+            roleSwitch.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 14),
+            roleSwitch.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 20),
+            roleSwitch.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -20),
+            roleSwitch.heightAnchor.constraint(equalToConstant: 40),
+        ])
     }
 
-    // Waiting state: bell + status only. Active state: the full Arch notification.
-    private func setSupporterActive(_ active: Bool) {
-        supporterActiveViews.forEach { $0.isHidden = !active }
-        statusLabel.text = active ? nil : "「ここだよ」の合図を待っています…\n距離はこの2台の間だけで測られます(サーバーに送りません)"
+    // MARK: - Waiting side
+
+    private func buildWaiterPanel() {
+        let kindRow = chipRow(titles: MeetRequest.Kind.allCases.map { $0.text },
+                              action: #selector(kindTapped(_:)), store: &kindButtons)
+        let markerRow = chipRow(titles: MeetRequest.MarkerHint.allCases.map { $0.text },
+                                action: #selector(markerTapped(_:)), store: &markerButtons)
+
+        peerListStack.axis = .vertical
+        peerListStack.spacing = 1
+        peerListStack.backgroundColor = UIColor.white.withAlphaComponent(0.06)
+        peerListStack.layer.cornerRadius = 12
+        peerListStack.clipsToBounds = true
+
+        peerEmptyLabel.text = "近くで「迎えに行く」にしている人を探しています…"
+        peerEmptyLabel.font = .systemFont(ofSize: 13)
+        peerEmptyLabel.textColor = UIColor.white.withAlphaComponent(0.4)
+        peerEmptyLabel.numberOfLines = 0
+
+        waiterSelection.axis = .vertical
+        waiterSelection.spacing = 8
+        waiterSelection.addArrangedSubview(sectionLabel("いまどこにいる?"))
+        waiterSelection.addArrangedSubview(kindRow)
+        waiterSelection.setCustomSpacing(18, after: kindRow)
+        waiterSelection.addArrangedSubview(sectionLabel("目印は?"))
+        waiterSelection.addArrangedSubview(markerRow)
+        waiterSelection.setCustomSpacing(18, after: markerRow)
+        waiterSelection.addArrangedSubview(sectionLabel("迎えに来てくれる人"))
+        waiterSelection.addArrangedSubview(peerListStack)
+        waiterSelection.addArrangedSubview(peerEmptyLabel)
+
+        sendButton.configuration = primaryConfig(title: "ここだよ と伝える",
+                                                 image: "hand.wave.fill",
+                                                 background: amber,
+                                                 foreground: .black)
+        sendButton.addTarget(self, action: #selector(sendTapped), for: .touchUpInside)
+
+        var cancelConf = UIButton.Configuration.plain()
+        cancelConf.title = "合流をやめる"
+        cancelConf.baseForegroundColor = UIColor.white.withAlphaComponent(0.65)
+        cancelButton.configuration = cancelConf
+        cancelButton.isHidden = true
+        cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
+
+        waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
+        waiterStatus.font = .systemFont(ofSize: 12)
+        waiterStatus.textColor = UIColor.white.withAlphaComponent(0.45)
+        waiterStatus.textAlignment = .center
+        waiterStatus.numberOfLines = 3
+
+        for v in [waiterSelection, waiterDial, sendButton, cancelButton, waiterStatus] {
+            waiterPanel.addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+
+        NSLayoutConstraint.activate([
+            waiterSelection.topAnchor.constraint(equalTo: waiterPanel.topAnchor),
+            waiterSelection.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 20),
+            waiterSelection.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -20),
+
+            waiterDial.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
+            waiterDial.topAnchor.constraint(greaterThanOrEqualTo: waiterSelection.bottomAnchor, constant: 16),
+            waiterDial.centerYAnchor.constraint(equalTo: waiterPanel.centerYAnchor, constant: 30),
+            waiterDial.widthAnchor.constraint(equalToConstant: 210),
+            waiterDial.heightAnchor.constraint(equalToConstant: 210),
+
+            sendButton.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 24),
+            sendButton.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -24),
+            sendButton.bottomAnchor.constraint(equalTo: waiterStatus.topAnchor, constant: -12),
+
+            waiterStatus.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 24),
+            waiterStatus.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -24),
+            waiterStatus.bottomAnchor.constraint(equalTo: cancelButton.topAnchor, constant: -6),
+
+            cancelButton.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
+            cancelButton.bottomAnchor.constraint(equalTo: waiterPanel.bottomAnchor, constant: -6),
+        ])
     }
 
-    // MARK: - UI construction: AR screen
+    // MARK: - Finding side
+
+    private func buildFinderPanel() {
+        finderChips.axis = .horizontal
+        finderChips.spacing = 8
+        finderChips.alignment = .center
+        finderChips.isHidden = true
+        style(chip: finderKindChip, background: amber.withAlphaComponent(0.9), text: .black)
+        style(chip: finderMarkerChip, background: UIColor.white.withAlphaComponent(0.12), text: .white)
+        finderKindChip.text = "ここで待ってる"
+        finderMarkerChip.text = "手を振ってる"
+        finderChips.addArrangedSubview(finderKindChip)
+        finderChips.addArrangedSubview(finderMarkerChip)
+        finderChips.addArrangedSubview(UIView())
+
+        cameraButton.configuration = primaryConfig(title: "カメラで探す",
+                                                   image: "camera.viewfinder",
+                                                   background: mint,
+                                                   foreground: .black)
+        cameraButton.addTarget(self, action: #selector(startGuidance), for: .touchUpInside)
+        cameraButton.isEnabled = false
+        cameraButton.alpha = 0.4
+
+        finderStatus.font = .systemFont(ofSize: 12)
+        finderStatus.textColor = UIColor.white.withAlphaComponent(0.45)
+        finderStatus.textAlignment = .center
+        finderStatus.numberOfLines = 2
+
+        finderTip.font = .systemFont(ofSize: 12)
+        finderTip.textColor = UIColor.white.withAlphaComponent(0.45)
+        finderTip.textAlignment = .center
+        finderTip.numberOfLines = 2
+        finderTip.isHidden = true
+
+        for v in [finderChips, finderDial, cameraButton, finderTip, finderStatus] {
+            finderPanel.addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+
+        NSLayoutConstraint.activate([
+            finderChips.topAnchor.constraint(equalTo: finderPanel.topAnchor, constant: 4),
+            finderChips.leadingAnchor.constraint(equalTo: finderPanel.leadingAnchor, constant: 20),
+            finderChips.trailingAnchor.constraint(equalTo: finderPanel.trailingAnchor, constant: -20),
+
+            finderDial.centerXAnchor.constraint(equalTo: finderPanel.centerXAnchor),
+            finderDial.centerYAnchor.constraint(equalTo: finderPanel.centerYAnchor, constant: -20),
+            finderDial.widthAnchor.constraint(equalToConstant: 260),
+            finderDial.heightAnchor.constraint(equalToConstant: 260),
+
+            finderTip.leadingAnchor.constraint(equalTo: finderPanel.leadingAnchor, constant: 24),
+            finderTip.trailingAnchor.constraint(equalTo: finderPanel.trailingAnchor, constant: -24),
+            finderTip.bottomAnchor.constraint(equalTo: cameraButton.topAnchor, constant: -16),
+
+            cameraButton.leadingAnchor.constraint(equalTo: finderPanel.leadingAnchor, constant: 24),
+            cameraButton.trailingAnchor.constraint(equalTo: finderPanel.trailingAnchor, constant: -24),
+            cameraButton.bottomAnchor.constraint(equalTo: finderStatus.topAnchor, constant: -12),
+
+            finderStatus.leadingAnchor.constraint(equalTo: finderPanel.leadingAnchor, constant: 24),
+            finderStatus.trailingAnchor.constraint(equalTo: finderPanel.trailingAnchor, constant: -24),
+            finderStatus.bottomAnchor.constraint(equalTo: finderPanel.bottomAnchor, constant: -10),
+        ])
+    }
+
+    // MARK: - AR screen
 
     private func buildARScreen() {
         arScreen.backgroundColor = .black
+        arScreen.isHidden = true
         view.addSubview(arScreen)
         arScreen.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -1068,217 +1117,129 @@ final class ArchViewController: UIViewController {
         sceneView.scene = SCNScene()
         arScreen.addSubview(sceneView)
         sceneView.translatesAutoresizingMaskIntoConstraints = false
-
         buildARNodes()
 
         let safe = arScreen.safeAreaLayoutGuide
 
-        // Top bar.
-        let closeButton = UIButton(type: .system)
-        var cconf = UIButton.Configuration.filled()
-        cconf.title = "閉じる"
-        cconf.baseBackgroundColor = UIColor.black.withAlphaComponent(0.55)
-        cconf.baseForegroundColor = .white
-        cconf.cornerStyle = .capsule
-        cconf.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)
-        closeButton.configuration = cconf
-        closeButton.addTarget(self, action: #selector(closeARTapped), for: .touchUpInside)
+        let close = UIButton(type: .system)
+        var closeConf = UIButton.Configuration.filled()
+        closeConf.title = "閉じる"
+        closeConf.baseBackgroundColor = UIColor.black.withAlphaComponent(0.5)
+        closeConf.baseForegroundColor = .white
+        closeConf.cornerStyle = .capsule
+        closeConf.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)
+        close.configuration = closeConf
+        close.addTarget(self, action: #selector(closeAR), for: .touchUpInside)
 
-        let title = UILabel()
-        title.text = "合流ガイド"
-        title.textColor = .white
-        title.font = .systemFont(ofSize: 16, weight: .semibold)
+        style(chip: arMarkerChip, background: UIColor.black.withAlphaComponent(0.55), text: .white)
+        arMarkerChip.text = "手を振ってる"
 
-        // Help banner.
-        let banner = UIView()
-        banner.backgroundColor = UIColor.black.withAlphaComponent(0.6)
-        banner.layer.cornerRadius = 10
-        let bChip = chip(text: "ヘルプ", textColor: .white, bg: accentMain.withAlphaComponent(0.85), small: true)
-        let bText = UILabel()
-        bText.text = "ここで待ってる"
-        bText.textColor = .white
-        bText.font = .systemFont(ofSize: 13, weight: .semibold)
-        helpTextLabels.append(bText)
-        let bSign = UILabel()
-        bSign.text = "手を振ってる"
-        bSign.textColor = accentMain.withAlphaComponent(0.9)
-        bSign.font = .systemFont(ofSize: 11)
-        modeChipLabels.append(bSign)
+        arHint.font = .systemFont(ofSize: 14, weight: .semibold)
+        arHint.textColor = .white
+        arHint.textAlignment = .center
+        arHint.numberOfLines = 2
 
-        // Center hints.
-        arHintLabel.textColor = .white
-        arHintLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-        arHintLabel.textAlignment = .center
-        arHintLabel.backgroundColor = UIColor.black.withAlphaComponent(0.6)
-        arHintLabel.layer.cornerRadius = 8
-        arHintLabel.clipsToBounds = true
-        arSubHintLabel.textColor = UIColor.white.withAlphaComponent(0.7)
-        arSubHintLabel.font = .systemFont(ofSize: 12)
-        arSubHintLabel.textAlignment = .center
+        arDial.lineWidth = 10
 
-        // Distance pill.
-        arDistancePill.textColor = .white
-        arDistancePill.font = .systemFont(ofSize: 26, weight: .bold)
-        arDistancePill.textAlignment = .center
-        arDistancePill.backgroundColor = UIColor.black.withAlphaComponent(0.72)
-        arDistancePill.layer.cornerRadius = 12
-        arDistancePill.clipsToBounds = true
-        arDistancePill.isHidden = true
-
-        // Bottom accordions (collapsed look).
-        let pointsBar = accordionCard(icon: "doc.text", title: "合流のコツ", bg: hintCard, tint: .white,
-                                      body: MeetRequest.Kind.here.tips, expanded: false)
-        if let b = lastAccordionBody { pointsBodyLabels.append(b) }
-        let contactBar = contactAccordion(expanded: false)
-
-        for v in [closeButton, title, banner, arHintLabel, arSubHintLabel, arDistancePill, pointsBar, contactBar] {
+        for v in [close, arMarkerChip, arHint, arDial] {
             arScreen.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-        for v in [bChip, bText, bSign] {
-            banner.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
 
         buildArrivalOverlay()
 
         NSLayoutConstraint.activate([
-            closeButton.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
-            closeButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
-            title.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
-            title.centerXAnchor.constraint(equalTo: arScreen.centerXAnchor),
-
-            banner.topAnchor.constraint(equalTo: closeButton.bottomAnchor, constant: 10),
-            banner.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
-            banner.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
-            bChip.topAnchor.constraint(equalTo: banner.topAnchor, constant: 8),
-            bChip.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: 10),
-            bText.centerYAnchor.constraint(equalTo: bChip.centerYAnchor),
-            bText.leadingAnchor.constraint(equalTo: bChip.trailingAnchor, constant: 8),
-            bSign.topAnchor.constraint(equalTo: bChip.bottomAnchor, constant: 4),
-            bSign.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: 10),
-            bSign.bottomAnchor.constraint(equalTo: banner.bottomAnchor, constant: -8),
-
             sceneView.topAnchor.constraint(equalTo: arScreen.topAnchor),
             sceneView.bottomAnchor.constraint(equalTo: arScreen.bottomAnchor),
             sceneView.leadingAnchor.constraint(equalTo: arScreen.leadingAnchor),
             sceneView.trailingAnchor.constraint(equalTo: arScreen.trailingAnchor),
 
-            arHintLabel.centerXAnchor.constraint(equalTo: arScreen.centerXAnchor),
-            arHintLabel.centerYAnchor.constraint(equalTo: arScreen.centerYAnchor, constant: 40),
-            arHintLabel.heightAnchor.constraint(equalToConstant: 36),
-            arHintLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
-            arSubHintLabel.topAnchor.constraint(equalTo: arHintLabel.bottomAnchor, constant: 6),
-            arSubHintLabel.centerXAnchor.constraint(equalTo: arScreen.centerXAnchor),
+            close.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
+            close.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
+            arMarkerChip.centerYAnchor.constraint(equalTo: close.centerYAnchor),
+            arMarkerChip.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -16),
 
-            arDistancePill.centerXAnchor.constraint(equalTo: arScreen.centerXAnchor),
-            arDistancePill.bottomAnchor.constraint(equalTo: pointsBar.topAnchor, constant: -14),
-            arDistancePill.widthAnchor.constraint(greaterThanOrEqualToConstant: 150),
-            arDistancePill.heightAnchor.constraint(equalToConstant: 48),
+            arHint.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 24),
+            arHint.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -24),
+            arHint.bottomAnchor.constraint(equalTo: arDial.topAnchor, constant: -12),
 
-            pointsBar.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
-            pointsBar.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
-            pointsBar.bottomAnchor.constraint(equalTo: contactBar.topAnchor, constant: -8),
-            contactBar.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
-            contactBar.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
-            contactBar.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -8),
+            arDial.centerXAnchor.constraint(equalTo: arScreen.centerXAnchor),
+            arDial.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -16),
+            arDial.widthAnchor.constraint(equalToConstant: 150),
+            arDial.heightAnchor.constraint(equalToConstant: 150),
         ])
 
-        // The scene view must sit behind every overlay; controls stay tappable
-        // even while the arrival overlay is up.
         arScreen.sendSubviewToBack(sceneView)
-        arScreen.bringSubviewToFront(closeButton)
-        arScreen.bringSubviewToFront(title)
-        arScreen.bringSubviewToFront(pointsBar)
-        arScreen.bringSubviewToFront(contactBar)
+        arScreen.bringSubviewToFront(close)
     }
 
     private func buildArrivalOverlay() {
-        arrivalOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        arrivalOverlay.backgroundColor = mint
         arrivalOverlay.isHidden = true
         arScreen.addSubview(arrivalOverlay)
         arrivalOverlay.translatesAutoresizingMaskIntoConstraints = false
 
-        let checkCircle = UIView()
-        checkCircle.backgroundColor = accentMain
-        checkCircle.layer.cornerRadius = 40
-        let check = UIImageView(image: UIImage(systemName: "checkmark"))
-        check.tintColor = .white
-        check.contentMode = .scaleAspectFit
+        let headline = UILabel()
+        headline.text = "見つけた"
+        headline.font = .systemFont(ofSize: 40, weight: .heavy)
+        headline.textColor = .black
+        headline.textAlignment = .center
 
-        let arrived = UILabel()
-        arrived.text = "合流しました"
-        arrived.textColor = .white
-        arrived.font = .systemFont(ofSize: 28, weight: .bold)
-        arrived.textAlignment = .center
+        let sub = UILabel()
+        sub.text = "スマホをしまって顔を上げましょう"
+        sub.font = .systemFont(ofSize: 15, weight: .semibold)
+        sub.textColor = UIColor.black.withAlphaComponent(0.7)
+        sub.textAlignment = .center
 
-        let putAway = UILabel()
-        putAway.text = "スマホをしまって顔を上げましょう"
-        putAway.textColor = accentMain.withAlphaComponent(0.95)
-        putAway.font = .systemFont(ofSize: 15, weight: .semibold)
-        putAway.textAlignment = .center
+        let markerCaption = UILabel()
+        markerCaption.text = "相手の目印"
+        markerCaption.font = .systemFont(ofSize: 12)
+        markerCaption.textColor = UIColor.black.withAlphaComponent(0.55)
+        markerCaption.textAlignment = .center
 
-        let tip = UILabel()
-        tip.text = "見つからないときは、相手に手を振って\nもらいましょう"
-        tip.textColor = .white
-        tip.font = .systemFont(ofSize: 13)
-        tip.numberOfLines = 2
-        tip.textAlignment = .center
-        tip.backgroundColor = UIColor.black.withAlphaComponent(0.6)
-        tip.layer.cornerRadius = 10
-        tip.clipsToBounds = true
+        arrivalMarker.text = "手を振ってる"
+        arrivalMarker.font = .systemFont(ofSize: 26, weight: .bold)
+        arrivalMarker.textColor = .black
+        arrivalMarker.textAlignment = .center
 
-        let doneButton = UIButton(type: .system)
-        var dconf = UIButton.Configuration.filled()
-        dconf.title = "合流を終える"
-        dconf.baseBackgroundColor = accentMain
-        dconf.baseForegroundColor = .white
-        dconf.cornerStyle = .capsule
-        dconf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 32, bottom: 12, trailing: 32)
-        doneButton.configuration = dconf
-        doneButton.addTarget(self, action: #selector(finishSupportTapped), for: .touchUpInside)
+        let done = UIButton(type: .system)
+        var doneConf = UIButton.Configuration.filled()
+        doneConf.title = "合流を終える"
+        doneConf.baseBackgroundColor = .black
+        doneConf.baseForegroundColor = .white
+        doneConf.cornerStyle = .capsule
+        doneConf.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 32, bottom: 14, trailing: 32)
+        done.configuration = doneConf
+        done.addTarget(self, action: #selector(finishMeet), for: .touchUpInside)
 
-        for v in [checkCircle, check, arrived, putAway, tip, doneButton] {
+        for v in [headline, sub, markerCaption, arrivalMarker, done] {
             arrivalOverlay.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
-        NSLayoutConstraint.activate([
-            doneButton.topAnchor.constraint(equalTo: tip.bottomAnchor, constant: 28),
-            doneButton.centerXAnchor.constraint(equalTo: arrivalOverlay.centerXAnchor),
-        ])
-
         NSLayoutConstraint.activate([
             arrivalOverlay.topAnchor.constraint(equalTo: arScreen.topAnchor),
             arrivalOverlay.bottomAnchor.constraint(equalTo: arScreen.bottomAnchor),
             arrivalOverlay.leadingAnchor.constraint(equalTo: arScreen.leadingAnchor),
             arrivalOverlay.trailingAnchor.constraint(equalTo: arScreen.trailingAnchor),
 
-            checkCircle.centerXAnchor.constraint(equalTo: arrivalOverlay.centerXAnchor),
-            checkCircle.centerYAnchor.constraint(equalTo: arrivalOverlay.centerYAnchor, constant: -80),
-            checkCircle.widthAnchor.constraint(equalToConstant: 80),
-            checkCircle.heightAnchor.constraint(equalToConstant: 80),
-            check.centerXAnchor.constraint(equalTo: checkCircle.centerXAnchor),
-            check.centerYAnchor.constraint(equalTo: checkCircle.centerYAnchor),
-            check.widthAnchor.constraint(equalToConstant: 36),
-            check.heightAnchor.constraint(equalToConstant: 36),
+            headline.centerXAnchor.constraint(equalTo: arrivalOverlay.centerXAnchor),
+            headline.centerYAnchor.constraint(equalTo: arrivalOverlay.centerYAnchor, constant: -60),
+            sub.topAnchor.constraint(equalTo: headline.bottomAnchor, constant: 6),
+            sub.centerXAnchor.constraint(equalTo: arrivalOverlay.centerXAnchor),
 
-            arrived.topAnchor.constraint(equalTo: checkCircle.bottomAnchor, constant: 16),
-            arrived.centerXAnchor.constraint(equalTo: arrivalOverlay.centerXAnchor),
-            putAway.topAnchor.constraint(equalTo: arrived.bottomAnchor, constant: 8),
-            putAway.centerXAnchor.constraint(equalTo: arrivalOverlay.centerXAnchor),
-            tip.topAnchor.constraint(equalTo: putAway.bottomAnchor, constant: 18),
-            tip.centerXAnchor.constraint(equalTo: arrivalOverlay.centerXAnchor),
-            tip.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
-            tip.heightAnchor.constraint(equalToConstant: 58),
+            markerCaption.topAnchor.constraint(equalTo: sub.bottomAnchor, constant: 40),
+            markerCaption.centerXAnchor.constraint(equalTo: arrivalOverlay.centerXAnchor),
+            arrivalMarker.topAnchor.constraint(equalTo: markerCaption.bottomAnchor, constant: 2),
+            arrivalMarker.centerXAnchor.constraint(equalTo: arrivalOverlay.centerXAnchor),
+
+            done.centerXAnchor.constraint(equalTo: arrivalOverlay.centerXAnchor),
+            done.bottomAnchor.constraint(equalTo: arrivalOverlay.safeAreaLayoutGuide.bottomAnchor, constant: -28),
         ])
     }
-
-    // MARK: - AR nodes
 
     private func buildARNodes() {
         let root = sceneView.scene.rootNode
 
-        // Blue 3D arrow: extruded 2D arrow path, laid flat.
         let path = UIBezierPath()
         path.move(to: CGPoint(x: -0.10, y: 0))
         path.addLine(to: CGPoint(x: -0.10, y: 0.30))
@@ -1290,13 +1251,12 @@ final class ArchViewController: UIViewController {
         path.close()
         let shape = SCNShape(path: path, extrusionDepth: 0.10)
         let mat = SCNMaterial()
-        mat.diffuse.contents = UIColor(red: 0.35, green: 0.55, blue: 0.95, alpha: 0.95)
-        mat.emission.contents = UIColor(red: 0.10, green: 0.25, blue: 0.65, alpha: 1)
+        mat.diffuse.contents = amber.withAlphaComponent(0.95)
+        mat.emission.contents = darker(amber, 0.5)
         mat.lightingModel = .physicallyBased
         shape.materials = [mat]
         arrowMaterial = mat
         let arrowNode = SCNNode(geometry: shape)
-        // Path +Y (tip) maps to -Z (container front) after this rotation.
         arrowNode.eulerAngles = SCNVector3(-Float.pi / 2 + 0.18, 0, 0)
         arrowNode.position = SCNVector3(0, 0, 0.3)
         arrowContainer = SCNNode()
@@ -1304,27 +1264,25 @@ final class ArchViewController: UIViewController {
         arrowContainer.isHidden = true
         root.addChildNode(arrowContainer)
 
-        // Dotted path.
         dotsContainer = SCNNode()
         for _ in 0..<8 {
-            let dotGeom = SCNCylinder(radius: 0.05, height: 0.012)
+            let geom = SCNCylinder(radius: 0.05, height: 0.012)
             let dmat = SCNMaterial()
-            dmat.diffuse.contents = UIColor(red: 0.55, green: 0.70, blue: 1.0, alpha: 0.85)
-            dmat.emission.contents = UIColor(red: 0.2, green: 0.35, blue: 0.8, alpha: 1)
-            dotGeom.materials = [dmat]
+            dmat.diffuse.contents = amber.withAlphaComponent(0.85)
+            dmat.emission.contents = darker(amber, 0.5)
+            geom.materials = [dmat]
             dotMaterials.append(dmat)
-            let dot = SCNNode(geometry: dotGeom)
+            let dot = SCNNode(geometry: geom)
             dot.isHidden = true
             dotsContainer.addChildNode(dot)
         }
         dotsContainer.isHidden = true
         root.addChildNode(dotsContainer)
 
-        // Peer circle.
         let tube = SCNTube(innerRadius: 0.52, outerRadius: 0.60, height: 0.012)
         let cmat = SCNMaterial()
-        cmat.diffuse.contents = UIColor(red: 0.35, green: 0.55, blue: 0.95, alpha: 0.8)
-        cmat.emission.contents = UIColor(red: 0.15, green: 0.3, blue: 0.7, alpha: 1)
+        cmat.diffuse.contents = mint.withAlphaComponent(0.8)
+        cmat.emission.contents = darker(mint, 0.5)
         tube.materials = [cmat]
         circleMaterial = cmat
         circleNode = SCNNode(geometry: tube)
@@ -1332,393 +1290,7 @@ final class ArchViewController: UIViewController {
         root.addChildNode(circleNode)
     }
 
-    // MARK: - Role select screen
-
-    private func buildRoleScreen() {
-        roleScreen.backgroundColor = bgColor
-        roleScreen.isHidden = true
-        view.addSubview(roleScreen)
-        roleScreen.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            roleScreen.topAnchor.constraint(equalTo: view.topAnchor),
-            roleScreen.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            roleScreen.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            roleScreen.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-        ])
-
-        let title = UILabel()
-        title.text = "ここだよ"
-        title.textColor = .white
-        title.font = .systemFont(ofSize: 24, weight: .bold)
-        title.textAlignment = .center
-
-        let subtitle = UILabel()
-        subtitle.text = "人混みの最後の10m。\n相手がどっちに、あと何メートルか分かる。"
-        subtitle.textColor = UIColor.white.withAlphaComponent(0.6)
-        subtitle.font = .systemFont(ofSize: 13)
-        subtitle.numberOfLines = 2
-        subtitle.textAlignment = .center
-
-        let requesterButton = roleButton(title: "ここで待つ", subtitle: "自分の場所を相手に知らせます", bg: accentMain)
-        requesterButton.addTarget(self, action: #selector(chooseRequester), for: .touchUpInside)
-        let supporterButton = roleButton(title: "迎えに行く", subtitle: "待っている相手を探します", bg: accentMint)
-        supporterButton.addTarget(self, action: #selector(chooseSupporter), for: .touchUpInside)
-
-        for v in [title, subtitle, requesterButton, supporterButton] {
-            roleScreen.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-        NSLayoutConstraint.activate([
-            title.centerXAnchor.constraint(equalTo: roleScreen.centerXAnchor),
-            title.topAnchor.constraint(equalTo: roleScreen.safeAreaLayoutGuide.topAnchor, constant: 80),
-            subtitle.centerXAnchor.constraint(equalTo: roleScreen.centerXAnchor),
-            subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 10),
-
-            requesterButton.centerXAnchor.constraint(equalTo: roleScreen.centerXAnchor),
-            requesterButton.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 60),
-            requesterButton.leadingAnchor.constraint(equalTo: roleScreen.leadingAnchor, constant: 32),
-            requesterButton.trailingAnchor.constraint(equalTo: roleScreen.trailingAnchor, constant: -32),
-            requesterButton.heightAnchor.constraint(equalToConstant: 88),
-
-            supporterButton.centerXAnchor.constraint(equalTo: roleScreen.centerXAnchor),
-            supporterButton.topAnchor.constraint(equalTo: requesterButton.bottomAnchor, constant: 16),
-            supporterButton.leadingAnchor.constraint(equalTo: requesterButton.leadingAnchor),
-            supporterButton.trailingAnchor.constraint(equalTo: requesterButton.trailingAnchor),
-            supporterButton.heightAnchor.constraint(equalToConstant: 88),
-        ])
-    }
-
-    private func roleButton(title: String, subtitle: String, bg: UIColor) -> UIButton {
-        let button = UIButton(type: .system)
-        var conf = UIButton.Configuration.filled()
-        conf.title = title
-        conf.subtitle = subtitle
-        conf.baseBackgroundColor = bg
-        conf.baseForegroundColor = .white
-        conf.cornerStyle = .large
-        conf.titleAlignment = .center
-        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
-            var a = attrs
-            a.font = UIFont.systemFont(ofSize: 20, weight: .bold)
-            return a
-        }
-        button.configuration = conf
-        return button
-    }
-
-    @objc private func backToRoleSelect() {
-        stopProximityFeedback()
-        hideRequesterCompass()
-        // Tear down the whole session so the next role starts clean.
-        if isDemo { stopDemo() }
-        demoTimer?.invalidate()
-        helpSent = false
-        pendingHelpToSend = nil
-        activeHelp = nil
-        sendHelpButton.isHidden = false
-        cancelHelpButton.isHidden = true
-        requesterDistanceLabel.text = nil
-        requesterStatusLabel.text = "場所と目印を選んで、相手に知らせてください"
-        setSelectionEnabled(true)
-
-        for link in links.values { link.session?.invalidate() }
-        links.removeAll()
-        sessionOwners.removeAll()
-        supporterRows.removeAll()
-        supporterOrder.removeAll()
-        activePeerID = nil
-        selectedSupporterID = nil
-        mpc?.invalidate()
-        mpc = nil
-        latestDistance = nil
-        latestDirection = nil
-        latestWorldTransform = nil
-
-        phase = .searching
-        setSupporterActive(false)
-        notificationScreen.isHidden = true
-        requesterScreen.isHidden = true
-        arScreen.isHidden = true
-        roleScreen.isHidden = false
-        view.bringSubviewToFront(roleScreen)
-    }
-
-    @objc private func chooseRequester() {
-        role = .requester
-        roleScreen.isHidden = true
-        applyPhase()
-        beginSession()
-    }
-
-    @objc private func chooseSupporter() {
-        role = .supporter
-        roleScreen.isHidden = true
-        applyPhase()
-        beginSession()
-    }
-
-    // MARK: - Requester screen (not shown in the original video — same design language)
-
-    private var helpSent = false
-    private var selectionContainer = UIStackView()
-
-    private func buildRequesterScreen() {
-        requesterScreen.backgroundColor = bgColor
-        requesterScreen.isHidden = true
-        view.addSubview(requesterScreen)
-        requesterScreen.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            requesterScreen.topAnchor.constraint(equalTo: view.topAnchor),
-            requesterScreen.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            requesterScreen.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            requesterScreen.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-        ])
-        let safe = requesterScreen.safeAreaLayoutGuide
-
-        // Fixed header.
-        let back = UIButton(type: .system)
-        back.setImage(UIImage(systemName: "chevron.left"), for: .normal)
-        back.tintColor = .white
-        back.backgroundColor = cardColor
-        back.layer.cornerRadius = 22
-        back.addTarget(self, action: #selector(backToRoleSelect), for: .touchUpInside)
-        requesterScreen.addSubview(back)
-        back.translatesAutoresizingMaskIntoConstraints = false
-
-        // Fixed footer.
-        var xconf = UIButton.Configuration.plain()
-        xconf.title = "合流をやめる"
-        xconf.baseForegroundColor = UIColor.white.withAlphaComponent(0.7)
-        cancelHelpButton.configuration = xconf
-        cancelHelpButton.isHidden = true
-        cancelHelpButton.addTarget(self, action: #selector(cancelHelpTapped), for: .touchUpInside)
-        requesterScreen.addSubview(cancelHelpButton)
-        cancelHelpButton.translatesAutoresizingMaskIntoConstraints = false
-
-        requesterDemoButton.setTitle("デモモード", for: .normal)
-        requesterDemoButton.setTitleColor(UIColor.white.withAlphaComponent(0.45), for: .normal)
-        requesterDemoButton.titleLabel?.font = .systemFont(ofSize: 13)
-        requesterDemoButton.addTarget(self, action: #selector(demoTapped), for: .touchUpInside)
-        requesterScreen.addSubview(requesterDemoButton)
-        requesterDemoButton.translatesAutoresizingMaskIntoConstraints = false
-
-        // Scrolling body.
-        let scroll = UIScrollView()
-        scroll.alwaysBounceVertical = true
-        requesterScreen.addSubview(scroll)
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        let content = UIView()
-        scroll.addSubview(content)
-        content.translatesAutoresizingMaskIntoConstraints = false
-
-        let roleChip = chip(text: "待っている人", textColor: .black, bg: accentMain)
-        content.addSubview(roleChip)
-
-        // Section 1: what is wrong.
-        let kindTitle = sectionLabel("いまどこにいる?")
-        kindButtons = MeetRequest.Kind.allCases.enumerated().map { index, kind in
-            let button = selectableCard(title: kind.text)
-            button.tag = index
-            button.addTarget(self, action: #selector(kindTapped(_:)), for: .touchUpInside)
-            return button
-        }
-        let kindStack = UIStackView(arrangedSubviews: kindButtons)
-        kindStack.axis = .vertical
-        kindStack.spacing = 10
-        kindStack.distribution = .fillEqually
-
-        // Section 2: how the requester wants to be spoken to.
-        let modeTitle = sectionLabel("目印は?")
-        modeButtons = MeetRequest.MarkerHint.allCases.enumerated().map { index, mode in
-            let button = selectableChip(title: mode.text)
-            button.tag = index
-            button.addTarget(self, action: #selector(modeTapped(_:)), for: .touchUpInside)
-            return button
-        }
-        let modeStack = UIStackView(arrangedSubviews: modeButtons)
-        modeStack.axis = .horizontal
-        modeStack.spacing = 8
-        modeStack.distribution = .fillEqually
-
-        // Section 3: which nearby supporter to ask.
-        let supporterTitle = sectionLabel("迎えに来てくれる人")
-        supporterListStack.axis = .vertical
-        supporterListStack.spacing = 8
-        supporterEmptyLabel.text = "近くで「迎えに行く」にしている人を探しています…"
-        supporterEmptyLabel.textColor = UIColor.white.withAlphaComponent(0.45)
-        supporterEmptyLabel.font = .systemFont(ofSize: 13)
-        supporterEmptyLabel.numberOfLines = 0
-
-        selectionContainer = UIStackView(arrangedSubviews: [kindTitle, kindStack, modeTitle, modeStack,
-                                                            supporterTitle, supporterListStack, supporterEmptyLabel])
-        selectionContainer.axis = .vertical
-        selectionContainer.spacing = 10
-        selectionContainer.setCustomSpacing(18, after: kindStack)
-        selectionContainer.setCustomSpacing(18, after: modeStack)
-        content.addSubview(selectionContainer)
-        selectionContainer.translatesAutoresizingMaskIntoConstraints = false
-
-        // Send button.
-        var hconf = UIButton.Configuration.filled()
-        hconf.title = "ここだよ と伝える"
-        hconf.image = UIImage(systemName: "hand.wave.fill")
-        hconf.imagePadding = 10
-        hconf.baseBackgroundColor = accentMain
-        hconf.baseForegroundColor = .white
-        hconf.cornerStyle = .capsule
-        hconf.contentInsets = NSDirectionalEdgeInsets(top: 20, leading: 24, bottom: 20, trailing: 24)
-        sendHelpButton.configuration = hconf
-        sendHelpButton.addTarget(self, action: #selector(sendHelpTapped), for: .touchUpInside)
-
-        requesterStatusLabel.text = "場所と目印を選んで、相手に知らせてください\n伝えている間だけ、選んだ相手に距離が届きます"
-        requesterStatusLabel.textColor = UIColor.white.withAlphaComponent(0.6)
-        requesterStatusLabel.font = .systemFont(ofSize: 13)
-        requesterStatusLabel.textAlignment = .center
-        requesterStatusLabel.numberOfLines = 3
-
-        requesterDistanceLabel.text = nil
-        requesterDistanceLabel.textColor = .white
-        requesterDistanceLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-        requesterDistanceLabel.textAlignment = .center
-        requesterDistanceLabel.numberOfLines = 2
-
-        // Which way the chosen supporter is, so the requester isn't left with a
-        // bare number while waiting.
-        compassContainer.isHidden = true
-        compassRing.layer.borderWidth = 1.5
-        compassRing.layer.borderColor = accentMain.withAlphaComponent(0.4).cgColor
-        compassRing.layer.cornerRadius = 70
-        compassArrow.image = UIImage(systemName: "location.north.fill")
-        compassArrow.tintColor = accentMain
-        compassArrow.contentMode = .scaleAspectFit
-        compassHint.text = nil
-        compassHint.textColor = UIColor.white.withAlphaComponent(0.5)
-        compassHint.font = .systemFont(ofSize: 12)
-        compassHint.textAlignment = .center
-        compassHint.numberOfLines = 2
-
-        for v in [compassRing, compassArrow] {
-            compassContainer.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-        NSLayoutConstraint.activate([
-            compassRing.centerXAnchor.constraint(equalTo: compassContainer.centerXAnchor),
-            compassRing.centerYAnchor.constraint(equalTo: compassContainer.centerYAnchor),
-            compassRing.widthAnchor.constraint(equalToConstant: 140),
-            compassRing.heightAnchor.constraint(equalToConstant: 140),
-            compassArrow.centerXAnchor.constraint(equalTo: compassContainer.centerXAnchor),
-            compassArrow.centerYAnchor.constraint(equalTo: compassContainer.centerYAnchor),
-            compassArrow.widthAnchor.constraint(equalToConstant: 64),
-            compassArrow.heightAnchor.constraint(equalToConstant: 64),
-        ])
-
-        for v in [sendHelpButton, requesterStatusLabel, compassContainer, compassHint, requesterDistanceLabel] {
-            content.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-
-        NSLayoutConstraint.activate([
-            back.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
-            back.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 16),
-            back.widthAnchor.constraint(equalToConstant: 44),
-            back.heightAnchor.constraint(equalToConstant: 44),
-
-            requesterDemoButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -4),
-            requesterDemoButton.centerXAnchor.constraint(equalTo: requesterScreen.centerXAnchor),
-            cancelHelpButton.bottomAnchor.constraint(equalTo: requesterDemoButton.topAnchor, constant: -2),
-            cancelHelpButton.centerXAnchor.constraint(equalTo: requesterScreen.centerXAnchor),
-
-            scroll.topAnchor.constraint(equalTo: back.bottomAnchor, constant: 8),
-            scroll.leadingAnchor.constraint(equalTo: requesterScreen.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: requesterScreen.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: cancelHelpButton.topAnchor, constant: -8),
-
-            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
-
-            roleChip.topAnchor.constraint(equalTo: content.topAnchor, constant: 8),
-            roleChip.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-
-            selectionContainer.topAnchor.constraint(equalTo: roleChip.bottomAnchor, constant: 16),
-            selectionContainer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            selectionContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-
-            sendHelpButton.topAnchor.constraint(equalTo: selectionContainer.bottomAnchor, constant: 26),
-            sendHelpButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 32),
-            sendHelpButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -32),
-
-            requesterStatusLabel.topAnchor.constraint(equalTo: sendHelpButton.bottomAnchor, constant: 14),
-            requesterStatusLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            requesterStatusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
-
-            compassContainer.topAnchor.constraint(equalTo: requesterStatusLabel.bottomAnchor, constant: 14),
-            compassContainer.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            compassContainer.widthAnchor.constraint(equalToConstant: 150),
-            compassContainer.heightAnchor.constraint(equalToConstant: 150),
-
-            compassHint.topAnchor.constraint(equalTo: compassContainer.bottomAnchor, constant: 6),
-            compassHint.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            compassHint.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
-
-            requesterDistanceLabel.topAnchor.constraint(equalTo: compassHint.bottomAnchor, constant: 10),
-            requesterDistanceLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            requesterDistanceLabel.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
-            requesterDistanceLabel.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
-        ])
-
-        refreshSelectionStyles()
-        refreshSupporterList()
-    }
-
-    private func sectionLabel(_ text: String) -> UILabel {
-        let label = UILabel()
-        label.text = text
-        label.textColor = UIColor.white.withAlphaComponent(0.55)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        return label
-    }
-
-    private func selectableCard(title: String) -> UIButton {
-        let button = UIButton(type: .system)
-        var conf = UIButton.Configuration.plain()
-        conf.title = title
-        conf.baseForegroundColor = .white
-        conf.titleAlignment = .leading
-        conf.contentInsets = NSDirectionalEdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16)
-        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
-            var a = attrs
-            a.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
-            return a
-        }
-        button.configuration = conf
-        button.contentHorizontalAlignment = .leading
-        button.titleLabel?.numberOfLines = 2
-        button.backgroundColor = cardColor
-        button.layer.cornerRadius = 14
-        button.layer.borderWidth = 2
-        button.layer.borderColor = UIColor.clear.cgColor
-        return button
-    }
-
-    private func selectableChip(title: String) -> UIButton {
-        let button = UIButton(type: .system)
-        var conf = UIButton.Configuration.plain()
-        conf.title = title
-        conf.baseForegroundColor = .white
-        conf.contentInsets = NSDirectionalEdgeInsets(top: 9, leading: 8, bottom: 9, trailing: 8)
-        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
-            var a = attrs
-            a.font = UIFont.systemFont(ofSize: 13)
-            return a
-        }
-        button.configuration = conf
-        button.layer.cornerRadius = 16
-        button.layer.borderWidth = 1
-        return button
-    }
+    // MARK: - Selection + helper list
 
     @objc private func kindTapped(_ sender: UIButton) {
         let kinds = MeetRequest.Kind.allCases
@@ -1728,301 +1300,225 @@ final class ArchViewController: UIViewController {
         refreshSelectionStyles()
     }
 
-    @objc private func modeTapped(_ sender: UIButton) {
-        let modes = MeetRequest.MarkerHint.allCases
-        guard sender.tag < modes.count else { return }
-        selectedMode = modes[sender.tag]
+    @objc private func markerTapped(_ sender: UIButton) {
+        let markers = MeetRequest.MarkerHint.allCases
+        guard sender.tag < markers.count else { return }
+        selectedMarker = markers[sender.tag]
+        impactGenerator.impactOccurred()
         refreshSelectionStyles()
     }
 
-    // Rebuild only when the set of supporters changes; otherwise just refresh
-    // the distances, so tapping a row doesn't fight with live NI updates.
-    private func refreshSupporterList() {
+    private func refreshSelectionStyles() {
+        for (index, button) in kindButtons.enumerated() where index < MeetRequest.Kind.allCases.count {
+            style(chipButton: button, selected: MeetRequest.Kind.allCases[index] == selectedKind)
+        }
+        for (index, button) in markerButtons.enumerated() where index < MeetRequest.MarkerHint.allCases.count {
+            style(chipButton: button, selected: MeetRequest.MarkerHint.allCases[index] == selectedMarker)
+        }
+    }
+
+    /// Rebuild rows only when the set changes, so live distances don't fight taps.
+    private func refreshPeerList() {
         guard role == .requester else { return }
 
-        let supporters = links.values
+        let helpers = links.values
             .filter { $0.peerRole == "supporter" || $0.isDemo }
             .sorted { ($0.distance ?? .greatestFiniteMagnitude, $0.peerID.displayName)
                     < ($1.distance ?? .greatestFiniteMagnitude, $1.peerID.displayName) }
-        let ids = supporters.map { $0.peerID }
+        let ids = helpers.map { $0.peerID }
 
-        if ids != supporterOrder {
-            supporterOrder = ids
-            supporterListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-            supporterRows.removeAll()
-            for link in supporters {
-                let row = selectableCard(title: link.peerID.displayName)
-                row.addTarget(self, action: #selector(supporterTapped(_:)), for: .touchUpInside)
-                supporterRows[link.peerID] = row
-                supporterListStack.addArrangedSubview(row)
+        if ids != peerOrder {
+            peerOrder = ids
+            peerListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            peerRows.removeAll()
+            for link in helpers {
+                let row = peerRow(name: link.peerID.displayName)
+                row.addTarget(self, action: #selector(peerTapped(_:)), for: .touchUpInside)
+                peerRows[link.peerID] = row
+                peerListStack.addArrangedSubview(row)
             }
         }
 
-        if selectedSupporterID == nil || !ids.contains(where: { $0 == selectedSupporterID }) {
-            selectedSupporterID = ids.first
+        if selectedHelperID == nil || !ids.contains(where: { $0 == selectedHelperID }) {
+            selectedHelperID = ids.first
         }
 
-        for link in supporters {
-            guard let row = supporterRows[link.peerID] else { continue }
+        for link in helpers {
+            guard let row = peerRows[link.peerID] else { continue }
             row.configuration?.title = link.peerID.displayName
-            row.configuration?.subtitle = link.distance.map { "あと \(formatMeters($0))" } ?? "距離を測定中…"
-            let selected = link.peerID == selectedSupporterID
-            row.layer.borderColor = (selected ? accentMain : UIColor.clear).cgColor
-            row.backgroundColor = selected ? accentMain.withAlphaComponent(0.18) : cardColor
+            row.configuration?.subtitle = link.distance.map { "あと \(formatMeters($0))" } ?? "測定中…"
+            let selected = link.peerID == selectedHelperID
+            row.configuration?.baseForegroundColor = selected ? .white : UIColor.white.withAlphaComponent(0.6)
+            row.backgroundColor = selected ? amber.withAlphaComponent(0.22) : cardColour
         }
 
-        supporterListStack.isHidden = supporters.isEmpty
-        supporterEmptyLabel.isHidden = !supporters.isEmpty
-        if !helpSent {
-            sendHelpButton.isEnabled = !supporters.isEmpty
-            sendHelpButton.alpha = supporters.isEmpty ? 0.45 : 1.0
+        peerListStack.isHidden = helpers.isEmpty
+        peerEmptyLabel.isHidden = !helpers.isEmpty
+        if !requestSent {
+            sendButton.isEnabled = !helpers.isEmpty
+            sendButton.alpha = helpers.isEmpty ? 0.4 : 1
         }
     }
 
-    @objc private func supporterTapped(_ sender: UIButton) {
-        guard let peerID = supporterRows.first(where: { $0.value === sender })?.key else { return }
-        selectedSupporterID = peerID
+    @objc private func peerTapped(_ sender: UIButton) {
+        guard let peerID = peerRows.first(where: { $0.value === sender })?.key else { return }
+        selectedHelperID = peerID
         impactGenerator.impactOccurred()
-        refreshSupporterList()
+        refreshPeerList()
     }
 
-    private func refreshSelectionStyles() {
-        let kinds = MeetRequest.Kind.allCases
-        for (index, button) in kindButtons.enumerated() {
-            let selected = index < kinds.count && kinds[index] == selectedKind
-            button.layer.borderColor = (selected ? accentMain : UIColor.clear).cgColor
-            button.backgroundColor = selected ? accentMain.withAlphaComponent(0.18) : cardColor
-        }
-        let modes = MeetRequest.MarkerHint.allCases
-        for (index, button) in modeButtons.enumerated() {
-            let selected = index < modes.count && modes[index] == selectedMode
-            button.backgroundColor = selected ? accentMain : .clear
-            button.layer.borderColor = (selected ? accentMain : UIColor.white.withAlphaComponent(0.35)).cgColor
-            button.configuration?.baseForegroundColor = selected ? .white : UIColor.white.withAlphaComponent(0.75)
-        }
-    }
-
-    // Selection is locked while a request is out, so the supporter's view can't drift.
-    private func setSelectionEnabled(_ enabled: Bool) {
-        selectionContainer.isUserInteractionEnabled = enabled
-        selectionContainer.alpha = enabled ? 1.0 : 0.5
-    }
-
-    @objc private func sendHelpTapped() {
-        guard let target = selectedSupporterID, let link = links[target] else {
-            requesterStatusLabel.text = "近くに「迎えに行く」の人が見つかりません"
+    @objc private func sendTapped() {
+        guard let target = selectedHelperID, let link = links[target] else {
+            waiterStatus.text = "近くに「迎えに行く」の人が見つかりません"
             return
         }
-        let help = MeetRequest(kind: selectedKind, mode: selectedMode)
-        helpSent = true
+        let request = MeetRequest(kind: selectedKind, mode: selectedMarker)
+        requestSent = true
         activePeerID = target
-        sendHelpButton.isHidden = true
-        cancelHelpButton.isHidden = false
-        setSelectionEnabled(false)
         impactGenerator.impactOccurred()
+
+        UIView.animate(withDuration: 0.25) {
+            self.waiterSelection.isHidden = true
+            self.sendButton.isHidden = true
+            self.cancelButton.isHidden = false
+        }
         if link.isDemo {
-            requesterStatusLabel.text = "\(target.displayName) に「ここだよ」を伝えました(デモ)"
+            waiterStatus.text = "\(target.displayName) に伝えました(デモ)"
         } else {
-            sendHelp(help, to: target)
-            requesterStatusLabel.text = "\(target.displayName) に「ここだよ」を伝えました"
+            sendMeetRequest(request, to: target)
+            waiterStatus.text = "\(target.displayName) に「ここだよ」を伝えました\n伝えている間だけ、この相手に距離が届きます"
         }
         updateMeasurement(distance: link.distance, direction: link.direction, world: nil)
     }
 
-    @objc private func cancelHelpTapped() {
-        helpSent = false
-        pendingHelpToSend = nil
-        activeHelp = nil
+    @objc private func cancelTapped() {
+        requestSent = false
+        activeRequest = nil
         if let target = activePeerID, links[target]?.isDemo != true,
            let data = try? JSONEncoder().encode(CancelMessage()) {
             mpc?.sendData(data: data, peers: [target], mode: .reliable)
         }
-        if let id = activePeerID, let link = links[id], !link.isDemo { restartLink(link) }
+        if let target = activePeerID, let link = links[target], !link.isDemo { restartLink(link) }
         activePeerID = nil
-        sendHelpButton.isHidden = false
-        cancelHelpButton.isHidden = true
-        setSelectionEnabled(true)
-        hideRequesterCompass()
-        requesterDistanceLabel.text = nil
-        requesterStatusLabel.text = "場所と目印を選んで、相手に知らせてください"
+        latestDistance = nil
+        latestDirection = nil
+        UIView.animate(withDuration: 0.25) {
+            self.waiterSelection.isHidden = false
+            self.sendButton.isHidden = false
+            self.cancelButton.isHidden = true
+        }
+        waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
+        waiterDial.reset()
+        refreshDials()
     }
 
-    // MARK: - Small view factories
+    // MARK: - Small builders
 
-    private var lastAccordionBody: UILabel?
-
-    private func chip(text: String, textColor: UIColor, bg: UIColor, small: Bool = false) -> UILabel {
-        let label = PaddedLabel()
+    private func sectionLabel(_ text: String) -> UILabel {
+        let label = UILabel()
         label.text = text
-        label.textColor = textColor
-        label.backgroundColor = bg
-        label.font = .systemFont(ofSize: small ? 11 : 13, weight: .semibold)
-        label.layer.cornerRadius = small ? 9 : 12
-        label.clipsToBounds = true
-        label.insets = UIEdgeInsets(top: small ? 3 : 5, left: small ? 8 : 12, bottom: small ? 3 : 5, right: small ? 8 : 12)
-        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = UIColor.white.withAlphaComponent(0.45)
         return label
     }
 
-    private func outlineChip(text: String) -> UILabel {
-        let label = PaddedLabel()
-        label.text = text
-        label.textColor = UIColor.white.withAlphaComponent(0.85)
-        label.font = .systemFont(ofSize: 12)
-        label.layer.cornerRadius = 12
-        label.layer.borderWidth = 1
-        label.layer.borderColor = UIColor.white.withAlphaComponent(0.35).cgColor
-        label.clipsToBounds = true
-        label.insets = UIEdgeInsets(top: 5, left: 12, bottom: 5, right: 12)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        return label
-    }
-
-    private func accordionCard(icon: String, title: String, bg: UIColor, tint: UIColor, body: String?, expanded: Bool = true) -> UIView {
-        var bodyView: UIView?
-        lastAccordionBody = nil
-        if let body {
-            let bodyLabel = UILabel()
-            lastAccordionBody = bodyLabel
-            bodyLabel.text = body
-            bodyLabel.textColor = tint.withAlphaComponent(0.85)
-            bodyLabel.font = .systemFont(ofSize: 12)
-            bodyLabel.numberOfLines = 0
-            bodyView = bodyLabel
-        }
-        return AccordionView(icon: icon, title: title, bg: bg, tint: tint, bodyView: bodyView, expanded: expanded)
-    }
-
-    // The other person's marker: the last hint that closes the final few metres.
-    private func contactAccordion(expanded: Bool = true) -> UIView {
-        let tint = UIColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1)
-
-        let row = UIView()
-        row.backgroundColor = .white
-        row.layer.cornerRadius = 10
-
-        let marker = UILabel()
-        marker.text = "手を振ってる"
-        marker.textColor = .black
-        marker.font = .systemFont(ofSize: 15, weight: .semibold)
-        modeChipLabels.append(marker)
-
-        let note = UILabel()
-        note.text = "近づいたら画面から顔を上げて探す"
-        note.textColor = UIColor.black.withAlphaComponent(0.5)
-        note.font = .systemFont(ofSize: 11)
-
-        let icon = UIImageView(image: UIImage(systemName: "hand.wave.fill"))
-        icon.tintColor = UIColor(red: 0.95, green: 0.60, blue: 0.20, alpha: 1)
-        icon.contentMode = .scaleAspectFit
-
-        for v in [marker, note, icon] {
-            row.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-        NSLayoutConstraint.activate([
-            row.heightAnchor.constraint(equalToConstant: 60),
-            marker.topAnchor.constraint(equalTo: row.topAnchor, constant: 12),
-            marker.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
-            note.topAnchor.constraint(equalTo: marker.bottomAnchor, constant: 2),
-            note.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
-            icon.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            icon.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
-            icon.widthAnchor.constraint(equalToConstant: 26),
-            icon.heightAnchor.constraint(equalToConstant: 26),
-        ])
-        return AccordionView(icon: "figure.stand", title: "相手の目印", bg: markerCard, tint: tint, bodyView: row, expanded: expanded)
-    }
-}
-
-// MARK: - Tappable accordion card
-
-private final class AccordionView: UIView, UIGestureRecognizerDelegate {
-    private let chevron = UIImageView(image: UIImage(systemName: "chevron.down"))
-    private let stack = UIStackView()
-    private(set) var bodyView: UIView?
-
-    init(icon: String, title: String, bg: UIColor, tint: UIColor, bodyView: UIView?, expanded: Bool) {
-        super.init(frame: .zero)
-        backgroundColor = bg
-        layer.cornerRadius = 12
-        clipsToBounds = true
-
-        stack.axis = .vertical
-        stack.spacing = 10
-        stack.isLayoutMarginsRelativeArrangement = true
-        stack.layoutMargins = UIEdgeInsets(top: 13, left: 14, bottom: 13, right: 14)
-        addSubview(stack)
+    private func chipRow(titles: [String], action: Selector, store: inout [UIButton]) -> UIView {
+        let scroll = UIScrollView()
+        scroll.showsHorizontalScrollIndicator = false
+        let stack = UIStackView()
+        stack.axis = .horizontal
+        stack.spacing = 8
+        scroll.addSubview(stack)
         stack.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
         ])
+        scroll.heightAnchor.constraint(equalToConstant: 40).isActive = true
 
-        let iconView = UIImageView(image: UIImage(systemName: icon))
-        iconView.tintColor = tint
-        iconView.contentMode = .scaleAspectFit
-        let titleLabel = UILabel()
-        titleLabel.text = title
-        titleLabel.textColor = tint
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-        chevron.tintColor = tint.withAlphaComponent(0.7)
-        chevron.contentMode = .scaleAspectFit
-        let spacer = UIView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        let header = UIStackView(arrangedSubviews: [iconView, titleLabel, spacer, chevron])
-        header.axis = .horizontal
-        header.alignment = .center
-        header.spacing = 10
-        NSLayoutConstraint.activate([
-            iconView.widthAnchor.constraint(equalToConstant: 18),
-            iconView.heightAnchor.constraint(equalToConstant: 18),
-            chevron.widthAnchor.constraint(equalToConstant: 14),
-            chevron.heightAnchor.constraint(equalToConstant: 14),
-        ])
-        stack.addArrangedSubview(header)
-
-        if let bodyView {
-            self.bodyView = bodyView
-            stack.addArrangedSubview(bodyView)
-            bodyView.isHidden = !expanded
-            chevron.transform = expanded ? CGAffineTransform(rotationAngle: .pi) : .identity
+        for (index, title) in titles.enumerated() {
+            let button = UIButton(type: .system)
+            var conf = UIButton.Configuration.plain()
+            conf.title = title
+            conf.contentInsets = NSDirectionalEdgeInsets(top: 9, leading: 16, bottom: 9, trailing: 16)
+            conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                var a = attrs
+                a.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+                return a
+            }
+            button.configuration = conf
+            button.tag = index
+            button.layer.cornerRadius = 20
+            button.layer.borderWidth = 1
+            button.addTarget(self, action: action, for: .touchUpInside)
+            store.append(button)
+            stack.addArrangedSubview(button)
         }
-
-        let tap = UITapGestureRecognizer(target: self, action: #selector(toggle))
-        tap.cancelsTouchesInView = false
-        tap.delegate = self
-        addGestureRecognizer(tap)
+        return scroll
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    @objc private func toggle() {
-        guard let bodyView else { return }
-        UIView.animate(withDuration: 0.25) {
-            bodyView.isHidden.toggle()
-            self.chevron.transform = bodyView.isHidden ? .identity : CGAffineTransform(rotationAngle: .pi)
-            self.superview?.layoutIfNeeded()
-        }
+    private func style(chipButton button: UIButton, selected: Bool) {
+        button.backgroundColor = selected ? amber : .clear
+        button.layer.borderColor = (selected ? amber : UIColor.white.withAlphaComponent(0.25)).cgColor
+        button.configuration?.baseForegroundColor = selected ? .black : UIColor.white.withAlphaComponent(0.75)
     }
 
-    // Don't let the toggle swallow taps on inner buttons (e.g. the call button).
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        var v: UIView? = touch.view
-        while let cur = v {
-            if cur is UIControl { return false }
-            v = cur.superview
+    private func style(chip: PaddedLabel, background: UIColor, text: UIColor) {
+        chip.backgroundColor = background
+        chip.textColor = text
+        chip.font = .systemFont(ofSize: 13, weight: .semibold)
+        chip.insets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+        chip.layer.cornerRadius = 14
+        chip.clipsToBounds = true
+    }
+
+    private func peerRow(name: String) -> UIButton {
+        let button = UIButton(type: .system)
+        var conf = UIButton.Configuration.plain()
+        conf.title = name
+        conf.subtitle = "測定中…"
+        conf.titleAlignment = .leading
+        conf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
+        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+            return a
         }
-        return true
+        conf.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = UIFont.systemFont(ofSize: 12)
+            return a
+        }
+        button.configuration = conf
+        button.contentHorizontalAlignment = .leading
+        button.backgroundColor = cardColour
+        return button
+    }
+
+    private func primaryConfig(title: String, image: String, background: UIColor, foreground: UIColor) -> UIButton.Configuration {
+        var conf = UIButton.Configuration.filled()
+        conf.title = title
+        conf.image = UIImage(systemName: image)
+        conf.imagePadding = 10
+        conf.baseBackgroundColor = background
+        conf.baseForegroundColor = foreground
+        conf.cornerStyle = .capsule
+        conf.contentInsets = NSDirectionalEdgeInsets(top: 18, leading: 24, bottom: 18, trailing: 24)
+        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = UIFont.systemFont(ofSize: 17, weight: .bold)
+            return a
+        }
+        return conf
     }
 }
 
 // MARK: - NISessionDelegate
 
-extension ArchViewController: NISessionDelegate {
+extension MeetViewController: NISessionDelegate {
 
     func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
         guard let peerID = sessionOwners[ObjectIdentifier(session)], let link = links[peerID] else { return }
@@ -2038,17 +1534,12 @@ extension ArchViewController: NISessionDelegate {
         if peerID == activePeerID {
             updateMeasurement(distance: link.distance, direction: link.direction, world: link.world)
         } else {
-            refreshSupporterList()
+            refreshPeerList()
         }
     }
 
     @available(iOS 16.0, *)
     func session(_ session: NISession, didUpdateAlgorithmConvergence convergence: NIAlgorithmConvergence, for object: NINearbyObject?) {
-        switch convergence.status {
-        case .converged: converged = true
-        case .notConverged: converged = false
-        @unknown default: break
-        }
         if phase == .guiding { updateGuidance() }
     }
 
@@ -2061,19 +1552,16 @@ extension ArchViewController: NISessionDelegate {
             link.peerToken = nil
             link.distance = nil
             session.invalidate()
-            if peerID == activePeerID, !isDemo { statusLabel.text = "相手との接続が切れました。再探索中…" }
-            refreshSupporterList()
+            refreshPeerList()
+            refreshDials()
         case .timeout:
             if let config = session.configuration { session.run(config) }
-            if peerID == activePeerID, !isDemo { statusLabel.text = "相手を見失いました…" }
         default:
             break
         }
     }
 
-    func sessionWasSuspended(_ session: NISession) {
-        if !isDemo, sessionOwners[ObjectIdentifier(session)] == activePeerID { statusLabel.text = "一時停止中" }
-    }
+    func sessionWasSuspended(_ session: NISession) {}
 
     func sessionSuspensionEnded(_ session: NISession) {
         if let config = session.configuration { session.run(config) }
@@ -2081,9 +1569,8 @@ extension ArchViewController: NISessionDelegate {
 
     func session(_ session: NISession, didInvalidateWith error: Error) {
         if case NIError.userDidNotAllow = error {
-            statusLabel.text = "「正確な位置情報の共有」の許可が必要です。設定から変更できます。"
             let alert = UIAlertController(title: "許可が必要です",
-                                          message: "近くの人との距離測定(Nearby Interaction)の許可が必要です。設定を開いて許可してください。",
+                                          message: "近くの人との距離を測る許可(Nearby Interaction)が必要です。設定を開いて許可してください。",
                                           preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
             alert.addAction(UIAlertAction(title: "設定を開く", style: .default) { _ in
@@ -2094,20 +1581,19 @@ extension ArchViewController: NISessionDelegate {
             present(alert, animated: true)
             return
         }
-        // Drop the broken link; MultipeerConnectivity will reconnect and rebuild it.
         if let peerID = sessionOwners[ObjectIdentifier(session)] {
             sessionOwners.removeValue(forKey: ObjectIdentifier(session))
             links.removeValue(forKey: peerID)
             if activePeerID == peerID { activePeerID = nil }
-            if selectedSupporterID == peerID { selectedSupporterID = nil }
-            refreshSupporterList()
+            if selectedHelperID == peerID { selectedHelperID = nil }
+            refreshPeerList()
         }
     }
 }
 
 // MARK: - Helpers
 
-private final class PaddedLabel: UILabel {
+final class PaddedLabel: UILabel {
     var insets: UIEdgeInsets = .zero
     override func drawText(in rect: CGRect) {
         super.drawText(in: rect.inset(by: insets))
