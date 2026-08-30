@@ -62,6 +62,12 @@ struct CancelMessage: Codable {
     var type: String = "cancel"
 }
 
+// Announced right after connecting, so each side knows which role the peer plays.
+struct HelloMessage: Codable {
+    var type: String = "hello"
+    var role: String
+}
+
 final class ArchViewController: UIViewController {
 
     // MARK: - Role
@@ -88,11 +94,25 @@ final class ArchViewController: UIViewController {
 
     // MARK: - Nearby Interaction state
 
-    private var niSession: NISession?
-    private var peerDiscoveryToken: NIDiscoveryToken?
+    // One NI session per connected peer, so the requester can see every nearby
+    // supporter's distance at the same time and choose one.
+    final class PeerLink {
+        let peerID: MCPeerID
+        var session: NISession?
+        var peerToken: NIDiscoveryToken?
+        var peerRole: String?
+        var distance: Float?
+        var direction: simd_float3?
+        var world: simd_float4x4?
+        var isDemo = false
+        init(peerID: MCPeerID) { self.peerID = peerID }
+    }
+
     private var mpc: MPCSession?
-    private var connectedPeer: MCPeerID?
-    private var sharedTokenWithPeer = false
+    private var links: [MCPeerID: PeerLink] = [:]
+    private var sessionOwners: [ObjectIdentifier: MCPeerID] = [:]
+    private var activePeerID: MCPeerID?
+    private var selectedSupporterID: MCPeerID?
     private var supportsUWB = true
     private var cameraAssistance = false
 
@@ -142,6 +162,11 @@ final class ArchViewController: UIViewController {
     private var selectedMode: HelpMessage.CommMode = .voice
     private var kindButtons: [UIButton] = []
     private var modeButtons: [UIButton] = []
+    private let supporterListStack = UIStackView()
+    private let supporterEmptyLabel = UILabel()
+    private var supporterRows: [MCPeerID: UIButton] = [:]
+    private var supporterOrder: [MCPeerID] = []
+    private let requesterDemoButton = UIButton(type: .system)
     private let requesterStatusLabel = UILabel()
     private let requesterDistanceLabel = UILabel()
     private let sendHelpButton = UIButton(type: .system)
@@ -211,33 +236,10 @@ final class ArchViewController: UIViewController {
 
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
 
-    // MARK: - NI startup (mirrors the Apple sample)
+    // MARK: - NI startup (mirrors the Apple sample, extended to multiple peers)
 
     private func startup() {
-        niSession = NISession()
-        niSession?.delegate = self
-        sharedTokenWithPeer = false
-
-        if connectedPeer != nil && mpc != nil {
-            if let myToken = niSession?.discoveryToken {
-                if !sharedTokenWithPeer { shareMyDiscoveryToken(token: myToken) }
-                guard let peerToken = peerDiscoveryToken else { return }
-                runConfig(peerToken: peerToken)
-            }
-        } else {
-            statusLabel.text = "近くの求援者を探しています…"
-            startupMPC()
-        }
-    }
-
-    private func runConfig(peerToken: NIDiscoveryToken) {
-        let config = NINearbyPeerConfiguration(peerToken: peerToken)
-        if #available(iOS 16.0, *), cameraAssistance {
-            config.isCameraAssistanceEnabled = true
-            startARIfNeeded()
-            niSession?.setARSession(sceneView.session)
-        }
-        niSession?.run(config)
+        startupMPC()
     }
 
     private func startupMPC() {
@@ -245,11 +247,11 @@ final class ArchViewController: UIViewController {
             #if targetEnvironment(simulator)
             mpc = MPCSession(service: "nisample",
                              identity: "com.example.apple-samplecode.simulator.peekaboo-nearbyinteraction",
-                             maxPeers: 1)
+                             maxPeers: 3)
             #else
             mpc = MPCSession(service: "nisample",
                              identity: "com.example.apple-samplecode.peekaboo-nearbyinteraction",
-                             maxPeers: 1)
+                             maxPeers: 3)
             #endif
             mpc?.peerConnectedHandler = { [weak self] peer in self?.connectedToPeer(peer: peer) }
             mpc?.peerDataHandler = { [weak self] data, peer in self?.dataReceivedHandler(data: data, peer: peer) }
@@ -260,49 +262,89 @@ final class ArchViewController: UIViewController {
     }
 
     private func connectedToPeer(peer: MCPeerID) {
-        guard let myToken = niSession?.discoveryToken else { return }
-        if connectedPeer != nil { return }
-        if !sharedTokenWithPeer { shareMyDiscoveryToken(token: myToken) }
-        connectedPeer = peer
-        statusLabel.text = role == .supporter ? "求援者と接続しました" : nil
-        if role == .requester, helpSent {
-            requesterStatusLabel.text = "サポーターに伝えました"
-            if let help = pendingHelpToSend { sendHelp(help) }
+        guard links[peer] == nil else { return }
+        let link = PeerLink(peerID: peer)
+        let session = NISession()
+        session.delegate = self
+        link.session = session
+        links[peer] = link
+        sessionOwners[ObjectIdentifier(session)] = peer
+
+        // Say which side we are, then hand over this session's own token.
+        if let hello = try? JSONEncoder().encode(HelloMessage(role: role == .supporter ? "supporter" : "requester")) {
+            mpc?.sendData(data: hello, peers: [peer], mode: .reliable)
         }
+        if let token = session.discoveryToken,
+           let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) {
+            mpc?.sendData(data: data, peers: [peer], mode: .reliable)
+        }
+        refreshSupporterList()
     }
 
     private func disconnectedFromPeer(peer: MCPeerID) {
-        if connectedPeer == peer {
-            connectedPeer = nil
-            sharedTokenWithPeer = false
+        if let session = links[peer]?.session {
+            sessionOwners.removeValue(forKey: ObjectIdentifier(session))
+            session.invalidate()
         }
+        links.removeValue(forKey: peer)
+        if activePeerID == peer {
+            activePeerID = nil
+            latestDistance = nil
+            latestDirection = nil
+            latestWorldTransform = nil
+            if role == .supporter, !isDemo { statusLabel.text = "相手との接続が切れました。再探索中…" }
+        }
+        if selectedSupporterID == peer { selectedSupporterID = nil }
+        refreshSupporterList()
+    }
+
+    private func runConfig(for link: PeerLink, cameraAssist: Bool = false) {
+        guard let session = link.session, let token = link.peerToken else { return }
+        let config = NINearbyPeerConfiguration(peerToken: token)
+        if #available(iOS 16.0, *), cameraAssistance, cameraAssist {
+            config.isCameraAssistanceEnabled = true
+            startARIfNeeded()
+            session.setARSession(sceneView.session)
+        }
+        session.run(config)
     }
 
     private func dataReceivedHandler(data: Data, peer: MCPeerID) {
-        if connectedPeer != peer { return }
-        // Envelope: either an archived NIDiscoveryToken, or a JSON app message.
+        guard let link = links[peer] else { return }
+
+        // Envelope: an archived NIDiscoveryToken, or one of the JSON app messages.
         if let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: data) {
-            peerDiscoveryToken = token
-            runConfig(peerToken: token)
+            link.peerToken = token
+            runConfig(for: link, cameraAssist: activePeerID == peer && phase == .guiding)
+            return
+        }
+        if let hello = try? JSONDecoder().decode(HelloMessage.self, from: data), hello.type == "hello" {
+            link.peerRole = hello.role
+            refreshSupporterList()
             return
         }
         if let help = try? JSONDecoder().decode(HelpMessage.self, from: data), help.type == "help" {
+            guard role == .supporter, activePeerID == nil || activePeerID == peer else { return }
+            activePeerID = peer
             activeHelp = help
-            if role == .supporter { applyHelp(help) }
+            latestDistance = link.distance
+            applyHelp(help)
             return
         }
         if let msg = try? JSONDecoder().decode(CancelMessage.self, from: data), msg.type == "cancel" {
+            guard role == .supporter, activePeerID == peer else { return }
             activeHelp = nil
-            if role == .supporter {
-                statusLabel.text = "求援は取り下げられました"
-                if phase == .guiding || phase == .arrived { phase = .ready }
-            }
+            activePeerID = nil
+            arrivalOverlay.isHidden = true
+            setSupporterActive(false)
+            phase = .searching
+            statusLabel.text = "求援は取り下げられました"
         }
     }
 
-    private func sendHelp(_ help: HelpMessage) {
+    private func sendHelp(_ help: HelpMessage, to peer: MCPeerID) {
         guard let data = try? JSONEncoder().encode(help) else { return }
-        mpc?.sendDataToAllPeers(data: data)
+        mpc?.sendData(data: data, peers: [peer], mode: .reliable)
         pendingHelpToSend = nil
         activeHelp = help
     }
@@ -319,12 +361,6 @@ final class ArchViewController: UIViewController {
         setSupporterActive(true)
         if latestDistance != nil { phase = .ready }
         impactGenerator.impactOccurred()
-    }
-
-    private func shareMyDiscoveryToken(token: NIDiscoveryToken) {
-        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) else { return }
-        mpc?.sendDataToAllPeers(data: data)
-        sharedTokenWithPeer = true
     }
 
     // MARK: - Measurement funnel (real NI and demo both land here)
@@ -404,6 +440,7 @@ final class ArchViewController: UIViewController {
 
     @objc private func startGuidanceTapped() {
         startARIfNeeded()
+        if let id = activePeerID, let link = links[id] { runConfig(for: link, cameraAssist: true) }
         phase = .guiding
         updateGuidance()
     }
@@ -431,6 +468,7 @@ final class ArchViewController: UIViewController {
 
     @objc private func demoTapped() {
         if isDemo { stopDemo(); return }
+        if role == .requester { startRequesterDemo(); return }
         isDemo = true
         demoDistance = 7.4
         setSupporterActive(true)
@@ -450,16 +488,59 @@ final class ArchViewController: UIViewController {
         }
     }
 
+    // Requester demo: three simulated supporters at different distances, so the
+    // list and the choice can be shown on a single device.
+    private func startRequesterDemo() {
+        isDemo = true
+        requesterDemoButton.setTitle("デモ停止", for: .normal)
+        let demoPeers: [(String, Float)] = [("会場スタッフのiPhone", 7.4), ("となりの席のiPhone", 15.6), ("受付のiPhone", 24.1)]
+        for (name, distance) in demoPeers {
+            let peerID = MCPeerID(displayName: name)
+            let link = PeerLink(peerID: peerID)
+            link.isDemo = true
+            link.peerRole = "supporter"
+            link.distance = distance
+            links[peerID] = link
+        }
+        refreshSupporterList()
+        demoTimer?.invalidate()
+        demoTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            for (peerID, link) in self.links where link.isDemo {
+                if self.helpSent, peerID == self.activePeerID {
+                    link.distance = max(0.4, (link.distance ?? 7.4) - 0.11)
+                    let azimuth: Float = 0.18 * sinf(Float(Date().timeIntervalSince1970) * 0.7)
+                    link.direction = simd_float3(sinf(azimuth), 0, -cosf(azimuth))
+                    self.updateMeasurement(distance: link.distance, direction: link.direction, world: nil)
+                } else {
+                    link.distance = max(1.0, (link.distance ?? 10) + Float.random(in: -0.2...0.2))
+                }
+            }
+            self.refreshSupporterList()
+        }
+    }
+
     private func stopDemo() {
         isDemo = false
         demoTimer?.invalidate()
         demoTimer = nil
         demoButton.setTitle("デモモード", for: .normal)
+        requesterDemoButton.setTitle("デモモード", for: .normal)
         demoDistance = 7.4
+
+        for (peerID, link) in links where link.isDemo {
+            link.session?.invalidate()
+            links.removeValue(forKey: peerID)
+            if activePeerID == peerID { activePeerID = nil }
+            if selectedSupporterID == peerID { selectedSupporterID = nil }
+        }
+        refreshSupporterList()
+
+        if role == .requester { return }
         if activeHelp == nil { setSupporterActive(false) }
         if supportsUWB {
-            statusLabel.text = connectedPeer == nil ? "近くの求援者を探しています…" : nil
-            if connectedPeer == nil { phase = .searching }
+            statusLabel.text = activePeerID == nil ? "近くの求援者を待ち受けています…" : nil
+            if activePeerID == nil { phase = .searching }
         } else {
             phase = .searching
             statusLabel.text = "この端末はUWB非対応です"
@@ -1179,13 +1260,15 @@ final class ArchViewController: UIViewController {
         requesterStatusLabel.text = "内容を選んで、助けを求めてください"
         setSelectionEnabled(true)
 
-        niSession?.invalidate()
-        niSession = nil
+        for link in links.values { link.session?.invalidate() }
+        links.removeAll()
+        sessionOwners.removeAll()
+        supporterRows.removeAll()
+        supporterOrder.removeAll()
+        activePeerID = nil
+        selectedSupporterID = nil
         mpc?.invalidate()
         mpc = nil
-        connectedPeer = nil
-        sharedTokenWithPeer = false
-        peerDiscoveryToken = nil
         latestDistance = nil
         latestDirection = nil
         latestWorldTransform = nil
@@ -1251,6 +1334,13 @@ final class ArchViewController: UIViewController {
         requesterScreen.addSubview(cancelHelpButton)
         cancelHelpButton.translatesAutoresizingMaskIntoConstraints = false
 
+        requesterDemoButton.setTitle("デモモード", for: .normal)
+        requesterDemoButton.setTitleColor(UIColor.white.withAlphaComponent(0.45), for: .normal)
+        requesterDemoButton.titleLabel?.font = .systemFont(ofSize: 13)
+        requesterDemoButton.addTarget(self, action: #selector(demoTapped), for: .touchUpInside)
+        requesterScreen.addSubview(requesterDemoButton)
+        requesterDemoButton.translatesAutoresizingMaskIntoConstraints = false
+
         // Scrolling body.
         let scroll = UIScrollView()
         scroll.alwaysBounceVertical = true
@@ -1289,10 +1379,21 @@ final class ArchViewController: UIViewController {
         modeStack.spacing = 8
         modeStack.distribution = .fillEqually
 
-        selectionContainer = UIStackView(arrangedSubviews: [kindTitle, kindStack, modeTitle, modeStack])
+        // Section 3: which nearby supporter to ask.
+        let supporterTitle = sectionLabel("近くのサポーター")
+        supporterListStack.axis = .vertical
+        supporterListStack.spacing = 8
+        supporterEmptyLabel.text = "近くのサポーターを探しています…"
+        supporterEmptyLabel.textColor = UIColor.white.withAlphaComponent(0.45)
+        supporterEmptyLabel.font = .systemFont(ofSize: 13)
+        supporterEmptyLabel.numberOfLines = 0
+
+        selectionContainer = UIStackView(arrangedSubviews: [kindTitle, kindStack, modeTitle, modeStack,
+                                                            supporterTitle, supporterListStack, supporterEmptyLabel])
         selectionContainer.axis = .vertical
         selectionContainer.spacing = 10
         selectionContainer.setCustomSpacing(18, after: kindStack)
+        selectionContainer.setCustomSpacing(18, after: modeStack)
         content.addSubview(selectionContainer)
         selectionContainer.translatesAutoresizingMaskIntoConstraints = false
 
@@ -1331,7 +1432,9 @@ final class ArchViewController: UIViewController {
             back.widthAnchor.constraint(equalToConstant: 44),
             back.heightAnchor.constraint(equalToConstant: 44),
 
-            cancelHelpButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12),
+            requesterDemoButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -4),
+            requesterDemoButton.centerXAnchor.constraint(equalTo: requesterScreen.centerXAnchor),
+            cancelHelpButton.bottomAnchor.constraint(equalTo: requesterDemoButton.topAnchor, constant: -2),
             cancelHelpButton.centerXAnchor.constraint(equalTo: requesterScreen.centerXAnchor),
 
             scroll.topAnchor.constraint(equalTo: back.bottomAnchor, constant: 8),
@@ -1367,6 +1470,7 @@ final class ArchViewController: UIViewController {
         ])
 
         refreshSelectionStyles()
+        refreshSupporterList()
     }
 
     private func sectionLabel(_ text: String) -> UILabel {
@@ -1431,6 +1535,57 @@ final class ArchViewController: UIViewController {
         refreshSelectionStyles()
     }
 
+    // Rebuild only when the set of supporters changes; otherwise just refresh
+    // the distances, so tapping a row doesn't fight with live NI updates.
+    private func refreshSupporterList() {
+        guard role == .requester else { return }
+
+        let supporters = links.values
+            .filter { $0.peerRole == "supporter" || $0.isDemo }
+            .sorted { ($0.distance ?? .greatestFiniteMagnitude, $0.peerID.displayName)
+                    < ($1.distance ?? .greatestFiniteMagnitude, $1.peerID.displayName) }
+        let ids = supporters.map { $0.peerID }
+
+        if ids != supporterOrder {
+            supporterOrder = ids
+            supporterListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            supporterRows.removeAll()
+            for link in supporters {
+                let row = selectableCard(title: link.peerID.displayName)
+                row.addTarget(self, action: #selector(supporterTapped(_:)), for: .touchUpInside)
+                supporterRows[link.peerID] = row
+                supporterListStack.addArrangedSubview(row)
+            }
+        }
+
+        if selectedSupporterID == nil || !ids.contains(where: { $0 == selectedSupporterID }) {
+            selectedSupporterID = ids.first
+        }
+
+        for link in supporters {
+            guard let row = supporterRows[link.peerID] else { continue }
+            row.configuration?.title = link.peerID.displayName
+            row.configuration?.subtitle = link.distance.map { "距離 \(formatMeters($0))" } ?? "距離を測定中…"
+            let selected = link.peerID == selectedSupporterID
+            row.layer.borderColor = (selected ? accentBlue : UIColor.clear).cgColor
+            row.backgroundColor = selected ? accentBlue.withAlphaComponent(0.18) : cardColor
+        }
+
+        supporterListStack.isHidden = supporters.isEmpty
+        supporterEmptyLabel.isHidden = !supporters.isEmpty
+        if !helpSent {
+            sendHelpButton.isEnabled = !supporters.isEmpty
+            sendHelpButton.alpha = supporters.isEmpty ? 0.45 : 1.0
+        }
+    }
+
+    @objc private func supporterTapped(_ sender: UIButton) {
+        guard let peerID = supporterRows.first(where: { $0.value === sender })?.key else { return }
+        selectedSupporterID = peerID
+        impactGenerator.impactOccurred()
+        refreshSupporterList()
+    }
+
     private func refreshSelectionStyles() {
         let kinds = HelpMessage.Kind.allCases
         for (index, button) in kindButtons.enumerated() {
@@ -1454,28 +1609,35 @@ final class ArchViewController: UIViewController {
     }
 
     @objc private func sendHelpTapped() {
+        guard let target = selectedSupporterID, let link = links[target] else {
+            requesterStatusLabel.text = "近くにサポーターが見つかりません"
+            return
+        }
         let help = HelpMessage(kind: selectedKind, mode: selectedMode)
         helpSent = true
+        activePeerID = target
         sendHelpButton.isHidden = true
         cancelHelpButton.isHidden = false
         setSelectionEnabled(false)
         impactGenerator.impactOccurred()
-        if connectedPeer != nil {
-            sendHelp(help)
-            requesterStatusLabel.text = "サポーターに伝えました"
+        if link.isDemo {
+            requesterStatusLabel.text = "\(target.displayName) に伝えました(デモ)"
         } else {
-            pendingHelpToSend = help
-            requesterStatusLabel.text = "近くのサポーターを探しています…"
+            sendHelp(help, to: target)
+            requesterStatusLabel.text = "\(target.displayName) に伝えました"
         }
+        updateMeasurement(distance: link.distance, direction: link.direction, world: nil)
     }
 
     @objc private func cancelHelpTapped() {
         helpSent = false
         pendingHelpToSend = nil
         activeHelp = nil
-        if let data = try? JSONEncoder().encode(CancelMessage()) {
-            mpc?.sendDataToAllPeers(data: data)
+        if let target = activePeerID, links[target]?.isDemo != true,
+           let data = try? JSONEncoder().encode(CancelMessage()) {
+            mpc?.sendData(data: data, peers: [target], mode: .reliable)
         }
+        activePeerID = nil
         sendHelpButton.isHidden = false
         cancelHelpButton.isHidden = true
         setSelectionEnabled(true)
@@ -1671,60 +1833,58 @@ private final class AccordionView: UIView, UIGestureRecognizerDelegate {
 extension ArchViewController: NISessionDelegate {
 
     func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
-        guard let peerToken = peerDiscoveryToken else { return }
-        guard let peer = nearbyObjects.first(where: { $0.discoveryToken == peerToken }) else { return }
+        guard let peerID = sessionOwners[ObjectIdentifier(session)], let link = links[peerID] else { return }
+        guard let token = link.peerToken,
+              let object = nearbyObjects.first(where: { $0.discoveryToken == token }) else { return }
 
-        var world: simd_float4x4?
-        if #available(iOS 16.0, *), cameraAssistance {
-            world = session.worldTransform(for: peer)
+        link.distance = object.distance
+        link.direction = object.direction
+        if #available(iOS 16.0, *), cameraAssistance, peerID == activePeerID {
+            link.world = session.worldTransform(for: object)
         }
-        updateMeasurement(distance: peer.distance, direction: peer.direction, world: world)
+
+        if peerID == activePeerID {
+            updateMeasurement(distance: link.distance, direction: link.direction, world: link.world)
+        } else {
+            refreshSupporterList()
+        }
     }
 
     @available(iOS 16.0, *)
     func session(_ session: NISession, didUpdateAlgorithmConvergence convergence: NIAlgorithmConvergence, for object: NINearbyObject?) {
         switch convergence.status {
-        case .converged:
-            converged = true
-        case .notConverged:
-            converged = false
-        @unknown default:
-            break
+        case .converged: converged = true
+        case .notConverged: converged = false
+        @unknown default: break
         }
         if phase == .guiding { updateGuidance() }
     }
 
     func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject], reason: NINearbyObject.RemovalReason) {
-        guard let peerToken = peerDiscoveryToken else { return }
-        guard nearbyObjects.contains(where: { $0.discoveryToken == peerToken }) else { return }
+        guard let peerID = sessionOwners[ObjectIdentifier(session)], let link = links[peerID] else { return }
+        guard let token = link.peerToken, nearbyObjects.contains(where: { $0.discoveryToken == token }) else { return }
 
         switch reason {
         case .peerEnded:
-            peerDiscoveryToken = nil
+            link.peerToken = nil
+            link.distance = nil
             session.invalidate()
-            startup()
-            if !isDemo {
-                phase = .searching
-                statusLabel.text = "相手との接続が切れました。再探索中…"
-            }
+            if peerID == activePeerID, !isDemo { statusLabel.text = "相手との接続が切れました。再探索中…" }
+            refreshSupporterList()
         case .timeout:
             if let config = session.configuration { session.run(config) }
-            if !isDemo { statusLabel.text = "相手を見失いました…" }
+            if peerID == activePeerID, !isDemo { statusLabel.text = "相手を見失いました…" }
         default:
             break
         }
     }
 
     func sessionWasSuspended(_ session: NISession) {
-        if !isDemo { statusLabel.text = "一時停止中" }
+        if !isDemo, sessionOwners[ObjectIdentifier(session)] == activePeerID { statusLabel.text = "一時停止中" }
     }
 
     func sessionSuspensionEnded(_ session: NISession) {
-        if let config = session.configuration {
-            session.run(config)
-        } else {
-            startup()
-        }
+        if let config = session.configuration { session.run(config) }
     }
 
     func session(_ session: NISession, didInvalidateWith error: Error) {
@@ -1742,7 +1902,14 @@ extension ArchViewController: NISessionDelegate {
             present(alert, animated: true)
             return
         }
-        startup()
+        // Drop the broken link; MultipeerConnectivity will reconnect and rebuild it.
+        if let peerID = sessionOwners[ObjectIdentifier(session)] {
+            sessionOwners.removeValue(forKey: ObjectIdentifier(session))
+            links.removeValue(forKey: peerID)
+            if activePeerID == peerID { activePeerID = nil }
+            if selectedSupporterID == peerID { selectedSupporterID = nil }
+            refreshSupporterList()
+        }
     }
 }
 
