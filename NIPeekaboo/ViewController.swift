@@ -203,6 +203,10 @@ final class ArchViewController: UIViewController {
     private let supporterEmptyLabel = UILabel()
     private var supporterRows: [MCPeerID: UIButton] = [:]
     private var supporterOrder: [MCPeerID] = []
+    private let compassContainer = UIView()
+    private let compassRing = UIView()
+    private let compassArrow = UIImageView()
+    private let compassHint = UILabel()
     private let requesterDemoButton = UIButton(type: .system)
     private let requesterStatusLabel = UILabel()
     private let requesterDistanceLabel = UILabel()
@@ -410,6 +414,7 @@ final class ArchViewController: UIViewController {
         if let d = distance {
             distanceLabel.text = formatMeters(d)
             if role == .requester && helpSent {
+                updateRequesterCompass(distance: d, direction: direction)
                 requesterDistanceLabel.text = d < arrivalThreshold
                     ? "サポーターが到着しました\nスマホから顔を上げてください"
                     : "サポーターが向かっています  あと \(formatMeters(d))"
@@ -697,6 +702,39 @@ final class ArchViewController: UIViewController {
             }
         }
         SCNTransaction.commit()
+    }
+
+    // MARK: - Requester compass
+
+    private func updateRequesterCompass(distance: Float, direction: simd_float3?) {
+        compassContainer.isHidden = false
+
+        let band: ProximityBand
+        if distance < arrivalThreshold { band = .arrived }
+        else if distance < nearThreshold { band = .near }
+        else if distance < 5.0 { band = .mid }
+        else { band = .far }
+        compassArrow.tintColor = band.color
+        compassRing.layer.borderColor = band.color.withAlphaComponent(0.4).cgColor
+
+        guard let direction else {
+            // Direction needs the peer roughly in front of the phone.
+            compassArrow.alpha = 0.25
+            compassHint.text = "方向を測定中…\n端末をゆっくり動かしてください"
+            return
+        }
+        compassArrow.alpha = 1.0
+        compassHint.text = distance < arrivalThreshold ? "すぐそばにいます" : "この方向から来ています"
+        let angle = atan2(direction.x, -direction.z)
+        UIView.animate(withDuration: 0.18) {
+            self.compassArrow.transform = CGAffineTransform(rotationAngle: CGFloat(angle))
+        }
+    }
+
+    private func hideRequesterCompass() {
+        compassContainer.isHidden = true
+        compassHint.text = nil
+        compassArrow.transform = .identity
     }
 
     // MARK: - Proximity feedback
@@ -1348,6 +1386,7 @@ final class ArchViewController: UIViewController {
 
     @objc private func backToRoleSelect() {
         stopProximityFeedback()
+        hideRequesterCompass()
         // Tear down the whole session so the next role starts clean.
         if isDemo { stopDemo() }
         demoTimer?.invalidate()
@@ -1521,7 +1560,37 @@ final class ArchViewController: UIViewController {
         requesterDistanceLabel.textAlignment = .center
         requesterDistanceLabel.numberOfLines = 2
 
-        for v in [sendHelpButton, requesterStatusLabel, requesterDistanceLabel] {
+        // Which way the chosen supporter is, so the requester isn't left with a
+        // bare number while waiting.
+        compassContainer.isHidden = true
+        compassRing.layer.borderWidth = 1.5
+        compassRing.layer.borderColor = accentBlue.withAlphaComponent(0.4).cgColor
+        compassRing.layer.cornerRadius = 70
+        compassArrow.image = UIImage(systemName: "location.north.fill")
+        compassArrow.tintColor = accentBlue
+        compassArrow.contentMode = .scaleAspectFit
+        compassHint.text = nil
+        compassHint.textColor = UIColor.white.withAlphaComponent(0.5)
+        compassHint.font = .systemFont(ofSize: 12)
+        compassHint.textAlignment = .center
+        compassHint.numberOfLines = 2
+
+        for v in [compassRing, compassArrow] {
+            compassContainer.addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+        NSLayoutConstraint.activate([
+            compassRing.centerXAnchor.constraint(equalTo: compassContainer.centerXAnchor),
+            compassRing.centerYAnchor.constraint(equalTo: compassContainer.centerYAnchor),
+            compassRing.widthAnchor.constraint(equalToConstant: 140),
+            compassRing.heightAnchor.constraint(equalToConstant: 140),
+            compassArrow.centerXAnchor.constraint(equalTo: compassContainer.centerXAnchor),
+            compassArrow.centerYAnchor.constraint(equalTo: compassContainer.centerYAnchor),
+            compassArrow.widthAnchor.constraint(equalToConstant: 64),
+            compassArrow.heightAnchor.constraint(equalToConstant: 64),
+        ])
+
+        for v in [sendHelpButton, requesterStatusLabel, compassContainer, compassHint, requesterDistanceLabel] {
             content.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -1563,7 +1632,16 @@ final class ArchViewController: UIViewController {
             requesterStatusLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             requesterStatusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
 
-            requesterDistanceLabel.topAnchor.constraint(equalTo: requesterStatusLabel.bottomAnchor, constant: 14),
+            compassContainer.topAnchor.constraint(equalTo: requesterStatusLabel.bottomAnchor, constant: 14),
+            compassContainer.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            compassContainer.widthAnchor.constraint(equalToConstant: 150),
+            compassContainer.heightAnchor.constraint(equalToConstant: 150),
+
+            compassHint.topAnchor.constraint(equalTo: compassContainer.bottomAnchor, constant: 6),
+            compassHint.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            compassHint.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
+
+            requesterDistanceLabel.topAnchor.constraint(equalTo: compassHint.bottomAnchor, constant: 10),
             requesterDistanceLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             requesterDistanceLabel.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 16),
             requesterDistanceLabel.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
@@ -1741,6 +1819,7 @@ final class ArchViewController: UIViewController {
         sendHelpButton.isHidden = false
         cancelHelpButton.isHidden = true
         setSelectionEnabled(true)
+        hideRequesterCompass()
         requesterDistanceLabel.text = nil
         requesterStatusLabel.text = "内容を選んで、助けを求めてください"
     }
