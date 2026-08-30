@@ -373,7 +373,9 @@ final class ArchViewController: UIViewController {
         if let d = distance {
             distanceLabel.text = formatMeters(d)
             if role == .requester && helpSent {
-                requesterDistanceLabel.text = "サポーターが向かっています  あと \(formatMeters(d))"
+                requesterDistanceLabel.text = d < arrivalThreshold
+                    ? "サポーターが到着しました\nスマホから顔を上げてください"
+                    : "サポーターが向かっています  あと \(formatMeters(d))"
             }
             // The supporter stays in the waiting state until a request arrives.
             if phase == .searching, role == .requester || activeHelp != nil || isDemo {
@@ -493,6 +495,7 @@ final class ArchViewController: UIViewController {
     private func startRequesterDemo() {
         isDemo = true
         requesterDemoButton.setTitle("デモ停止", for: .normal)
+        requesterStatusLabel.text = "デモモード(シミュレーション)\n距離は実測ではありません
         let demoPeers: [(String, Float)] = [("会場スタッフのiPhone", 7.4), ("となりの席のiPhone", 15.6), ("受付のiPhone", 24.1)]
         for (name, distance) in demoPeers {
             let peerID = MCPeerID(displayName: name)
