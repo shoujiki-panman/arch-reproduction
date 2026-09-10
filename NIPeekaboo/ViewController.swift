@@ -210,6 +210,9 @@ final class MeetViewController: UIViewController {
 
     private var mpc: MPCSession?
     private var links: [MCPeerID: PeerLink] = [:]
+    /// Sessions we (or the system) have invalidated. NISession exposes no
+    /// isValid, and a dead session silently ignores run().
+    private var deadSessions = Set<ObjectIdentifier>()
     private var sessionOwners: [ObjectIdentifier: MCPeerID] = [:]
     private var activePeerID: MCPeerID?
     private var selectedHelperID: MCPeerID?
@@ -260,6 +263,10 @@ final class MeetViewController: UIViewController {
     private var demoTimer: Timer?
     private var demoDistance: Float = 7.4
     private var isDemo = false
+
+    // DEBUG-only automation flags for the two-simulator reconnect check.
+    private var previewAutoSend = false
+    private var previewAutoFinish = false
 
     // MARK: - AR
 
@@ -372,6 +379,26 @@ final class MeetViewController: UIViewController {
                 print("CAPS os=\(UIDevice.current.systemVersion) preciseDistance=\(c.supportsPreciseDistanceMeasurement) direction=\(c.supportsDirectionMeasurement) cameraAssist=\(c.supportsCameraAssistance)")
             }
         }
+        if args.contains("-previewLog") {
+            // Two-simulator reconnect check: a line every 2s with the link state.
+            Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                let rows = self.links.values.map { link -> String in
+                    let dead = link.session.map { self.deadSessions.contains(ObjectIdentifier($0)) } ?? true
+                    let d = link.distance.map { String(format: "%.2f", $0) } ?? "nil"
+                    return "\(link.peerID.displayName)[role=\(link.peerRole ?? "?") token=\(link.peerToken != nil) dead=\(dead) dist=\(d)]"
+                }
+                print("RECON role=\(self.role) phase=\(self.phase) active=\(self.activePeerID?.displayName ?? "-") sent=\(self.requestSent) links=\(rows.joined(separator: " "))")
+            }
+        }
+        if args.contains("-previewAutoSend") {
+            // Waiter: send as soon as the first helper shows up.
+            previewAutoSend = true
+        }
+        if args.contains("-previewAutoFinish") {
+            // Finder: end the meet-up 8s after a request arrives (exercises restartLink).
+            previewAutoFinish = true
+        }
         if args.contains("-previewMeasure") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 print("MEASURE rows=\(self.peerListStack.arrangedSubviews.count) listFrame=\(self.peerListStack.frame) selectionFrame=\(self.waiterSelection.frame) panelFrame=\(self.waiterPanel.frame) dialFrame=\(self.waiterDial.frame)")
@@ -430,10 +457,7 @@ final class MeetViewController: UIViewController {
     }
 
     private func disconnectedFromPeer(peer: MCPeerID) {
-        if let session = links[peer]?.session {
-            sessionOwners.removeValue(forKey: ObjectIdentifier(session))
-            session.invalidate()
-        }
+        if let session = links[peer]?.session { killSession(session) }
         links.removeValue(forKey: peer)
         if activePeerID == peer {
             activePeerID = nil
@@ -447,8 +471,34 @@ final class MeetViewController: UIViewController {
         refreshDials()
     }
 
+    /// Returns a live session for the link, creating one (and sending our fresh
+    /// token to the peer) if the current one has been invalidated.
+    @discardableResult
+    private func ensureLiveSession(for link: PeerLink) -> NISession {
+        if let session = link.session, !deadSessions.contains(ObjectIdentifier(session)) {
+            return session
+        }
+        let session = NISession()
+        session.delegate = self
+        link.session = session
+        sessionOwners[ObjectIdentifier(session)] = link.peerID
+        if let token = session.discoveryToken,
+           let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) {
+            mpc?.sendData(data: data, peers: [link.peerID], mode: .reliable)
+        }
+        return session
+    }
+
+    private func killSession(_ session: NISession) {
+        deadSessions.insert(ObjectIdentifier(session))
+        sessionOwners.removeValue(forKey: ObjectIdentifier(session))
+        session.invalidate()
+    }
+
     private func runConfig(for link: PeerLink, cameraAssist: Bool = false) {
-        guard let session = link.session, let token = link.peerToken else { return }
+        guard link.peerToken != nil else { return }
+        let session = ensureLiveSession(for: link)
+        guard let token = link.peerToken else { return }
         let config = NINearbyPeerConfiguration(peerToken: token)
         if #available(iOS 16.0, *), cameraAssistance, cameraAssist {
             config.isCameraAssistanceEnabled = true
@@ -461,26 +511,21 @@ final class MeetViewController: UIViewController {
     /// Ends ranging with a peer and starts a fresh session, so "終わったら共有も終わる"
     /// is real rather than a label.
     private func restartLink(_ link: PeerLink) {
-        if let old = link.session {
-            sessionOwners.removeValue(forKey: ObjectIdentifier(old))
-            old.invalidate()
-        }
-        link.peerToken = nil
+        if let old = link.session { killSession(old) }
         link.distance = nil
         link.direction = nil
         link.world = nil
-
-        let session = NISession()
-        session.delegate = self
-        link.session = session
-        sessionOwners[ObjectIdentifier(session)] = link.peerID
-        if let token = session.discoveryToken,
-           let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) {
-            mpc?.sendData(data: data, peers: [link.peerID], mode: .reliable)
-        }
+        // The peer's token stays valid as long as *their* session is alive, so
+        // keep it and resume straight away with our new session. The peer will
+        // receive our fresh token and re-run on their side.
+        ensureLiveSession(for: link)
+        runConfig(for: link)
     }
 
     private func dataReceivedHandler(data: Data, peer: MCPeerID) {
+        #if DEBUG
+        print("RECON recv from=\(peer.displayName) bytes=\(data.count) known=\(links[peer] != nil) head=\(String(data: data.prefix(60), encoding: .utf8) ?? "<bin>")")
+        #endif
         guard let link = links[peer] else { return }
 
         if let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: data) {
@@ -516,6 +561,9 @@ final class MeetViewController: UIViewController {
 
     private func sendMeetRequest(_ request: MeetRequest, to peer: MCPeerID) {
         guard let data = try? JSONEncoder().encode(request) else { return }
+        #if DEBUG
+        print("RECON send meet to=\(peer.displayName) bytes=\(data.count) mpc=\(mpc != nil)")
+        #endif
         mpc?.sendData(data: data, peers: [peer], mode: .reliable)
         activeRequest = request
     }
@@ -533,6 +581,15 @@ final class MeetViewController: UIViewController {
         if latestDistance != nil { phase = .ready }
         impactGenerator.impactOccurred()
         refreshDials()
+        #if DEBUG
+        if previewAutoFinish {
+            previewAutoFinish = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                print("RECON finder: finishMeet()")
+                self?.finishMeet()
+            }
+        }
+        #endif
     }
 
     // MARK: - Measurement funnel (real NI and demo both land here)
@@ -639,9 +696,10 @@ final class MeetViewController: UIViewController {
     private func resetSession() {
         stopProximityFeedback()
         if isDemo { stopDemo() }
-        for link in links.values { link.session?.invalidate() }
+        for link in links.values { if let session = link.session { killSession(session) } }
         links.removeAll()
         sessionOwners.removeAll()
+        deadSessions.removeAll()
         peerRows.removeAll()
         peerOrder.removeAll()
         peerListStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -777,7 +835,7 @@ final class MeetViewController: UIViewController {
         demoDistance = 7.4
 
         for (peerID, link) in links where link.isDemo {
-            link.session?.invalidate()
+            if let session = link.session { killSession(session) }
             links.removeValue(forKey: peerID)
             if activePeerID == peerID { activePeerID = nil }
             if selectedHelperID == peerID { selectedHelperID = nil }
@@ -1439,6 +1497,13 @@ final class MeetViewController: UIViewController {
 
         peerListStack.isHidden = helpers.isEmpty
         peerEmptyLabel.isHidden = !helpers.isEmpty
+        #if DEBUG
+        if previewAutoSend, !requestSent, let first = helpers.first, first.distance != nil {
+            previewAutoSend = false
+            selectedHelperID = first.peerID
+            DispatchQueue.main.async { self.sendTapped() }
+        }
+        #endif
         if !requestSent {
             sendButton.isEnabled = !helpers.isEmpty
             sendButton.alpha = helpers.isEmpty ? 0.4 : 1
@@ -1641,9 +1706,17 @@ extension MeetViewController: NISessionDelegate {
 
         switch reason {
         case .peerEnded:
-            link.peerToken = nil
+            // The peer invalidated their session (they finished/cancelled, or
+            // restarted). Our session is still fine. Keep it and keep their old
+            // token; their new token arrives over MPC and runConfig replaces it.
             link.distance = nil
-            session.invalidate()
+            link.direction = nil
+            link.world = nil
+            if peerID == activePeerID {
+                latestDistance = nil
+                latestDirection = nil
+                latestWorldTransform = nil
+            }
             refreshPeerList()
             refreshDials()
         case .timeout:
@@ -1673,6 +1746,7 @@ extension MeetViewController: NISessionDelegate {
             present(alert, animated: true)
             return
         }
+        deadSessions.insert(ObjectIdentifier(session))
         if let peerID = sessionOwners[ObjectIdentifier(session)] {
             sessionOwners.removeValue(forKey: ObjectIdentifier(session))
             links.removeValue(forKey: peerID)
