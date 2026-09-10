@@ -13,6 +13,9 @@ import SceneKit
 import NearbyInteraction
 import MultipeerConnectivity
 import simd
+#if DEBUG
+import CoreMotion
+#endif
 
 // MARK: - Meet-up protocol (the waiting side -> the side coming to find them)
 
@@ -218,6 +221,22 @@ final class MeetViewController: UIViewController {
     private var selectedHelperID: MCPeerID?
     private var supportsUWB = true
     private var cameraAssistance = false
+    private var supportsDirection = true
+
+    // Measurement HUD state (values are cheap to keep; the HUD itself is DEBUG-only).
+    private var convergenceText = "-"
+    private var convergenceReasons = "-"
+    private var lastNIError = "-"
+    private var callbackCounter = 0
+    private var callbacksPerSecond = 0
+    private var activeCameraAssist = false
+    private var anonNames: [MCPeerID: String] = [:]
+    #if DEBUG
+    private let hud = MeasureHUD()
+    private var hudTimer: Timer?
+    private let altimeter = CMAltimeter()
+    private var relativeAltitude: Double?
+    #endif
 
     private var latestDistance: Float?
     private var latestDirection: simd_float3?
@@ -334,12 +353,16 @@ final class MeetViewController: UIViewController {
         if #available(iOS 16.0, *) {
             supportsUWB = NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
             cameraAssistance = NISession.deviceCapabilities.supportsCameraAssistance
+            supportsDirection = NISession.deviceCapabilities.supportsDirectionMeasurement
         } else {
             supportsUWB = NISession.isSupported
         }
 
         buildARScreen()
         buildHome()
+        #if DEBUG
+        setupMeasureHUD()
+        #endif
         applyPhase()
         refreshSelectionStyles()
         refreshPeerList()
@@ -500,6 +523,7 @@ final class MeetViewController: UIViewController {
         let session = ensureLiveSession(for: link)
         guard let token = link.peerToken else { return }
         let config = NINearbyPeerConfiguration(peerToken: token)
+        if link.peerID == activePeerID { activeCameraAssist = cameraAssist && cameraAssistance }
         if #available(iOS 16.0, *), cameraAssistance, cameraAssist {
             config.isCameraAssistanceEnabled = true
             startARIfNeeded()
@@ -635,7 +659,7 @@ final class MeetViewController: UIViewController {
                 if let d = latestDistance, d < arrivalThreshold {
                     caption = "顔を上げてください"
                 } else if latestDirection == nil {
-                    caption = "方向を測定中\n端末をゆっくり動かして"
+                    caption = supportsDirection ? "方向を測定中\n端末をゆっくり動かして" : "この端末は方向を出せません\n距離だけで案内します"
                 } else {
                     caption = "相手はこの方向"
                 }
@@ -654,7 +678,7 @@ final class MeetViewController: UIViewController {
             } else if let d = latestDistance, d < arrivalThreshold {
                 caption = "顔を上げてください"
             } else if latestDirection == nil {
-                caption = "方向を測定中\n端末をゆっくり動かして"
+                caption = supportsDirection ? "方向を測定中\n端末をゆっくり動かして" : "この端末は方向を出せません\nカメラで探すと方向が出ることがあります"
             } else {
                 caption = "この方向にいます"
             }
@@ -1673,6 +1697,155 @@ final class MeetViewController: UIViewController {
     }
 }
 
+#if DEBUG
+// MARK: - Measurement HUD (実測日の計測器。DEBUGビルドのみ)
+
+extension MeetViewController {
+
+    private func setupMeasureHUD() {
+        view.addSubview(hud)
+        hud.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            hud.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            hud.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            hud.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        hud.onShare = { [weak self] url in
+            let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+            self?.present(sheet, animated: true)
+        }
+
+        // A 60-second still test must not be cut short by auto-lock.
+        UIApplication.shared.isIdleTimerDisabled = true
+
+        if CMAltimeter.isRelativeAltitudeAvailable() {
+            altimeter.startRelativeAltitudeUpdates(to: .main) { [weak self] data, _ in
+                self?.relativeAltitude = data?.relativeAltitude.doubleValue
+            }
+        }
+
+        hudTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.callbacksPerSecond = self.callbackCounter
+            self.callbackCounter = 0
+            self.hud.record(self.hudRow())
+        }
+    }
+
+    /// Peers are logged as 端末A/B/… so CSVs and screenshots carry no names.
+    private func anon(_ peer: MCPeerID) -> String {
+        if let n = anonNames[peer] { return n }
+        let letters = ["A", "B", "C", "D", "E", "F"]
+        let n = "端末" + (letters.indices.contains(anonNames.count) ? letters[anonNames.count] : "\(anonNames.count)")
+        anonNames[peer] = n
+        return n
+    }
+
+    private func hudRow() -> [String] {
+        let link = activePeerID.flatMap { links[$0] }
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
+        let dist = (link?.distance ?? latestDistance).map { String(format: "%.2f", $0) } ?? "-"
+        let dir = link?.direction ?? latestDirection
+        let hAngle = dir.map { String(format: "%.0f", atan2($0.x, -$0.z) * 180 / .pi) } ?? "-"
+        var supDir = "-", supCam = "-"
+        if #available(iOS 16.0, *) {
+            supDir = NISession.deviceCapabilities.supportsDirectionMeasurement ? "1" : "0"
+            supCam = NISession.deviceCapabilities.supportsCameraAssistance ? "1" : "0"
+        }
+        return [
+            f.string(from: Date()),
+            role == .supporter ? "finder" : "waiter",
+            String(describing: phase),
+            activePeerID.map { anon($0) } ?? "-",
+            String(links.count),
+            dist,
+            dir == nil ? "1" : "0",
+            hAngle,
+            activeCameraAssist ? "1" : "0",
+            (link?.world ?? latestWorldTransform) == nil ? "1" : "0",
+            convergenceText,
+            convergenceReasons,
+            supDir,
+            supCam,
+            lastNIError,
+            String(callbacksPerSecond),
+            relativeAltitude.map { String(format: "%.2f", $0) } ?? "-",
+            UIDevice.current.model,
+            UIDevice.current.systemVersion,
+        ]
+    }
+}
+
+/// One dark strip at the bottom of the screen. Triple-tap expands every column;
+/// long-press shares the whole log as CSV.
+final class MeasureHUD: UIView {
+    static let header = ["time", "role", "phase", "peer", "mpc", "dist_m", "dir_nil", "h_angle_deg", "cam_assist",
+                         "world_nil", "conv", "conv_reasons", "sup_dir", "sup_cam", "ni_error", "cb_per_s",
+                         "rel_alt_m", "device", "os"]
+    private let label = UILabel()
+    private(set) var rows: [[String]] = []
+    private var lastRow: [String] = []
+    private var expanded = false
+    var onShare: ((URL) -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = UIColor.black.withAlphaComponent(0.72)
+        label.font = UIFont.monospacedSystemFont(ofSize: 9, weight: .regular)
+        label.textColor = UIColor.white.withAlphaComponent(0.9)
+        label.numberOfLines = 1
+        label.lineBreakMode = .byTruncatingTail
+        addSubview(label)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+        ])
+        let triple = UITapGestureRecognizer(target: self, action: #selector(toggle))
+        triple.numberOfTapsRequired = 3
+        addGestureRecognizer(triple)
+        addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(share(_:))))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func record(_ row: [String]) {
+        rows.append(row)
+        lastRow = row
+        render()
+        print("HUD " + row.joined(separator: ","))
+    }
+
+    private func render() {
+        guard lastRow.count == Self.header.count else { return }
+        if expanded {
+            label.numberOfLines = 0
+            label.text = zip(Self.header, lastRow).map { "\($0)=\($1)" }.joined(separator: "  ")
+        } else {
+            label.numberOfLines = 1
+            let r = lastRow
+            label.text = "d=\(r[5]) dirNil=\(r[6]) ang=\(r[7]) cam=\(r[8]) worldNil=\(r[9]) conv=\(r[10]) cb/s=\(r[15]) err=\(r[14]) alt=\(r[16]) mpc=\(r[4])"
+        }
+    }
+
+    @objc private func toggle() {
+        expanded.toggle()
+        render()
+    }
+
+    @objc private func share(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
+        let escape: (String) -> String = { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
+        let csv = ([Self.header] + rows).map { $0.map(escape).joined(separator: ",") }.joined(separator: "\n")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("kokodayo-measure.csv")
+        try? csv.data(using: .utf8)?.write(to: url)
+        onShare?(url)
+    }
+}
+#endif
+
 // MARK: - NISessionDelegate
 
 extension MeetViewController: NISessionDelegate {
@@ -1682,6 +1855,7 @@ extension MeetViewController: NISessionDelegate {
         guard let token = link.peerToken,
               let object = nearbyObjects.first(where: { $0.discoveryToken == token }) else { return }
 
+        callbackCounter += 1
         link.distance = object.distance
         link.direction = object.direction
         if #available(iOS 16.0, *), cameraAssistance, peerID == activePeerID {
@@ -1697,6 +1871,17 @@ extension MeetViewController: NISessionDelegate {
 
     @available(iOS 16.0, *)
     func session(_ session: NISession, didUpdateAlgorithmConvergence convergence: NIAlgorithmConvergence, for object: NINearbyObject?) {
+        switch convergence.status {
+        case .converged:
+            convergenceText = "converged"; convergenceReasons = "-"
+        case .notConverged(let reasons):
+            convergenceText = "notConverged"
+            convergenceReasons = reasons.map { String(describing: $0) }.joined(separator: "|")
+        case .unknown:
+            convergenceText = "unknown"; convergenceReasons = "-"
+        @unknown default:
+            convergenceText = "?"; convergenceReasons = "-"
+        }
         if phase == .guiding { updateGuidance() }
     }
 
@@ -1733,6 +1918,8 @@ extension MeetViewController: NISessionDelegate {
     }
 
     func session(_ session: NISession, didInvalidateWith error: Error) {
+        let ns = error as NSError
+        lastNIError = "\(ns.domain)#\(ns.code)"
         if case NIError.userDidNotAllow = error {
             let alert = UIAlertController(title: "許可が必要です",
                                           message: "近くの人との距離を測る許可(Nearby Interaction)が必要です。設定を開いて許可してください。",
