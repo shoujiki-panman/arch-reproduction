@@ -361,6 +361,17 @@ final class MeetViewController: UIViewController {
         if args.contains("-previewAR") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.startGuidance() }
         }
+        if args.contains("-previewCaps") {
+            // One-shot capability dump for the real device: the answer to
+            // "can this iPhone return a direction at all in Japan".
+            if #available(iOS 17.0, *) {
+                let c = NISession.deviceCapabilities
+                print("CAPS device=\(UIDevice.current.model) os=\(UIDevice.current.systemVersion) preciseDistance=\(c.supportsPreciseDistanceMeasurement) direction=\(c.supportsDirectionMeasurement) cameraAssist=\(c.supportsCameraAssistance) extendedDistance=\(c.supportsExtendedDistanceMeasurement)")
+            } else if #available(iOS 16.0, *) {
+                let c = NISession.deviceCapabilities
+                print("CAPS os=\(UIDevice.current.systemVersion) preciseDistance=\(c.supportsPreciseDistanceMeasurement) direction=\(c.supportsDirectionMeasurement) cameraAssist=\(c.supportsCameraAssistance)")
+            }
+        }
         if args.contains("-previewMeasure") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 print("MEASURE rows=\(self.peerListStack.arrangedSubviews.count) listFrame=\(self.peerListStack.frame) selectionFrame=\(self.waiterSelection.frame) panelFrame=\(self.waiterPanel.frame) dialFrame=\(self.waiterDial.frame)")
