@@ -90,12 +90,17 @@ v1と完成の間に立っているのは開発作業ではなくこの1日。�
 - [ ] 多人数: 複数サポーター競合時の受諾制御
 - [ ] Zenn記事化(公開判断とセット。公開するならApple LICENSE維持+Archクレジット+シホさんへの一報)
 
+## 事実(実測・機械確認したもの)
+
+- 2026-09-11: **シミュレータ2台でMultipeerConnectivity接続とNearbyInteractionの模擬測距(0.04m固定)が動く**。hello→トークン→meet→finish→再接続の全経路をログで確認(`-previewFinder -previewAutoFinish -previewLog` / `-previewAutoSend -previewLog`)。実機2台が無くても状態遷移の回帰確認はここでできる。方向・実距離は模擬なので実測の代わりにはならない
+- 2026-09-11: Apple 109512 原文確認: 日本では規制で一部UWB周波数が不可、Find People・拡張Precision Finding・Apple WatchのPrecision Findingが利用不可、前世代チップ相当の性能(2026-03-27公開)
+
 ## 監査の処理状況(PLAN-2026-09-11 の表に対応)
 
 | # | 欠陥 | 状態 |
 |---|---|---|
 | 1 | デモボタンが実測を乗っ取る | ✅ 直した(PR#1, 2026-09-11): 接続中・発報中・相手あり のいずれかならデモは押せない(グレー表示) |
-| 3 | peerEnded後に再接続できない | ⏳ PR#2 |
+| 3 | peerEnded後に再接続できない | ✅ 直した(PR#2, 2026-09-11): peerEndedでは自セッションもトークンも壊さない／トークン受信時に自セッションが死んでいれば作り直して自トークンを返す／終える・やめるは新セッションで即再開。**シミュレータ2台で検証済み**(終える→張り直し→両側とも測距継続) |
 | 12a | DEVELOPMENT_TEAMが空 | ✅ 直した(PR#4, 2026-09-11): Debug/Releaseとも 59FNRWS2H8。XcodeのSigning手番が不要に |
 | 他 | PLAN-2026-09-11.md の表を参照 | Phase 2以降 |
 
