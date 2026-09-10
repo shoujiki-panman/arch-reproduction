@@ -566,6 +566,7 @@ final class MeetViewController: UIViewController {
 
     /// Every dial on screen reads the same measurement.
     private func refreshDials() {
+        refreshDemoButton()
         let colour = latestDistance.map { band(for: $0).colour } ?? UIColor.white.withAlphaComponent(0.35)
         let idleColour = UIColor.white.withAlphaComponent(0.35)
 
@@ -620,6 +621,7 @@ final class MeetViewController: UIViewController {
         finderPanel.isHidden = role != .supporter
         arrivalOverlay.isHidden = phase != .arrived
         if phase != .guiding { stopProximityFeedback() }
+        refreshDemoButton()
     }
 
     @objc private func roleChanged() {
@@ -703,8 +705,21 @@ final class MeetViewController: UIViewController {
 
     // MARK: - Demo
 
+    /// Demo is only allowed while nothing real is going on: no active peer,
+    /// no request out, still searching. Otherwise a tap would feed simulated
+    /// distances into the same funnel as real UWB measurements.
+    private var demoAllowed: Bool {
+        isDemo || (phase == .searching && activePeerID == nil && !requestSent)
+    }
+
+    private func refreshDemoButton() {
+        demoButton.isEnabled = demoAllowed
+        demoButton.alpha = demoAllowed ? 1.0 : 0.3
+    }
+
     @objc private func demoTapped() {
         if isDemo { stopDemo(); return }
+        guard demoAllowed else { return }
         isDemo = true
         demoButton.setTitle("デモ停止", for: .normal)
 
