@@ -93,6 +93,7 @@ v1と完成の間に立っているのは開発作業ではなくこの1日。�
 ## 事実(実測・機械確認したもの)
 
 - 2026-09-11: **シミュレータ2台でMultipeerConnectivity接続とNearbyInteractionの模擬測距(0.04m固定)が動く**。hello→トークン→meet→finish→再接続の全経路をログで確認(`-previewFinder -previewAutoFinish -previewLog` / `-previewAutoSend -previewLog`)。実機2台が無くても状態遷移の回帰確認はここでできる。方向・実距離は模擬なので実測の代わりにはならない
+- 2026-09-11: **実機 iPhone 16 Pro (iOS 26.6) の NISession.deviceCapabilities**(`-previewCaps` で機械取得): `supportsPreciseDistanceMeasurement=true / supportsDirectionMeasurement=false / supportsCameraAssistance=true / supportsExtendedDistanceMeasurement=true`。→ この端末では生の `direction` は出ない(Forums 802948 が日本の16 Proで事実に)。方向が出る可能性が残るのは**迎える側のカメラアシスト(worldTransform)だけ**。待つ側のダイヤル矢印は成立しない。実測日は項目0の分岐(supportsDirection=false)からスタート
 - 2026-09-11: Apple 109512 原文確認: 日本では規制で一部UWB周波数が不可、Find People・拡張Precision Finding・Apple WatchのPrecision Findingが利用不可、前世代チップ相当の性能(2026-03-27公開)
 
 ## 監査の処理状況(PLAN-2026-09-11 の表に対応)
