@@ -1,113 +1,86 @@
-# ここだよ — 人混みの最後の10m
+# ここだよ — 現在地と実測表
 
-> **2026-09-11**: 最強プラン(4視点立案→3審査→統合→批評)を [PLAN-2026-09-11.md](PLAN-2026-09-11.md) に置いた。以後の日程・完了条件・降りる条件はそちらが正。このファイルは現在地と実測表の置き場として残す。
-> ⚠️ 競合調査の訂正: 「AppleのPrecision Findingは人には未提供」は誤り。iOS 17以降、iPhone 15以降同士なら純正「探す」に人の精密検索がある。**日本では規制でFind Peopleが使えない**(Apple 109512、2026-03-27公開、原文確認済み)。空き地は「日本限定」。
+> 計画(日程・完了条件・降りる条件)の正本は [PLAN-2026-09-11.md](PLAN-2026-09-11.md)。
+> このファイルは「いま何ができていて、何が残っていて、誰の手番か」と「実測の数字」だけを置く。コミットごとに更新する。
 
+## プロダクト
 
-**現在のプロダクト**: 待ち合わせで「もう着いてる」「どこ?」の電話をなくすアプリ「ここだよ」。
-片方が「ここで待つ」、もう片方が「迎えに行く」。UWBで相手の方向と残り距離が出る。
+待ち合わせで「もう着いてる」「どこ?」の電話をなくすアプリ。片方が**待つ**、もう片方が**迎えに行く**。UWBで相手までの残り距離(と、出る端末なら方向)が同じダイヤルに出る。
 
-**出自**: 41h0(シホ)さんの支援アプリ「Arch」(#都知事杯オープンデータハッカソン)をUWBから再現したものが土台。
-2026-08-31にコンセプトを合流アプリへ転換し、題材・文言・配色・アイコン・バンドルIDをすべて変更した。
-救援/#7119/対応のポイント等のArch固有の要素は削除済み。**出自を語るときはArch再現から始まったと明示する。**
+- 出自: 41h0(シホ)さんの支援アプリ「Arch」(#都知事杯オープンデータハッカソン)をUWBから再現したものが土台(2026-08-29)。8/31に合流アプリへ転換し、題材・文言・配色・アイコン・バンドルID・画面構成をすべて変更。**対外的に語るときは出自を明示する**
+- バンドルID `jp.shutanuma.kokodayo` / 表示名「ここだよ」/ private repo `shoujiki-panman/arch-reproduction`
+- 技術: NearbyInteraction + MultipeerConnectivity + ARKitカメラアシスト。1ピア1NIセッション。役割はセグメント切替。デモモード(実測なしの模擬)あり
 
-## 競合調査(2026-08-31)
+## Phase 0 の記録欄(本人が3行埋める)
 
-- 位置共有アプリ(Whoo/NauNau/Snap Map/Life360)は**GPS+地図の街規模**。屋内誤差10〜50mで最後の10mは未解決
-- ~~Appleの Precision Finding(UWB・1m未満)はAirTagとデバイス向け。人には提供されていない=空き地~~ → **訂正(9/11)**: 純正「探す」に人の精密検索(iOS 17+、iPhone 15以降同士)はある。**日本では規制で利用不可**(Apple 109512)。空き地は日本限定
-- OSSはサンプル止まり(uwb-radar-ios / multi-platform-uwb / OpenUWB)。完成した「人を見つけるアプリ」は見つからず
-- 他候補は見送り: 会場スタッフ呼び出し=RTLS(サトー/ドコモ/村田)が据付型で強い・個人検証不可 / 配達=UberがBeaconと色マッチで解決済み・UWB不使用 / 迷子=タグ市場がレッドオーシャン+AppleがAirTagの人追跡を非推奨
-- 残る弱点(消えない): 両者インストールが必要 / iPhone 11以降限定 / 届くのは数十m
-
-## 現在地(2026-08-29 深夜時点)
-
-芯は本物、物語はモック。
-
-| 部分 | 状態 |
-|---|---|
-| UWB測距(NearbyInteraction+MultipeerConnectivity) | ✅ 本物(実機起動確認済み・2台測定は未) |
-| ARカメラアシスト+3D矢印/点線/円/到着演出 | ✅ 実装済み(方向精度は未検証) |
-| デモモード(1台でフル体験シミュレーション) | ✅ 動作確認済み |
-| ヘルプ内容 | ❌ ハードコード(発報の概念なし) |
-| マッチング | ❌ 自動接続のみ(受諾/拒否なし) |
-| 求援者側UI | ❌ 未実装(本家動画にも映っておらず自分たちで設計する) |
-| 対応のポイント | ❌ 固定文 |
-| オープンデータ | ❌ 未接続 |
-
-## 方針(8/29に本人決定)
-
-**まず本物と同じに作る。** 動画に映っているものは一字一句そのまま(困りごとは「体調が悪いので付き添ってほしい」の一種類、タグは「手話で伝えて」)。映っていない求援者側だけ同じデザイン言語で最小に設計。独自拡張(困りごと3種・自販機・AED等)はすべてPhase 2。
-
-## Phase 1: ハッカソン当日(8/29、隙間時間) — 終了
-
-会場では別作業がメインのため、実装は事前にAI側で完了済み。当日は隙間時間の3ステップのみ:
-
-- [x] **役割選択画面**(助けを求める/サポーターになる)
-- [x] **求援者側画面**(ヘルプカード+手話で伝えてトグル+「助けを求める」発報+「もう大丈夫」取り下げ+接近距離表示)
-- [x] **発報プロトコル**(MPCでHelpMessage/CancelMessage送受信、サポーター側の全表示が受信内容に連動)
-- [ ] **隙間1(15分)**: 自分のiPhoneに最新ビルドをインストール(Macに繋ぐだけ)+2台目iPhoneにインストール
-- [ ] **隙間2(10分)**: 2台で通し検証(発報→駆けつけ→到着)。矢印の方向精度を確認
-- [ ] **隙間3(5分)**: デモ(見せる相手がいれば)。1台しか無いときはデモモードで
-
-**8/29 ハッカソン終了時点の状態**: 1台のデモモードで全画面が通る。当日追加した分=アコーディオン開閉/スクロール/#7119の発信確認/求援者の選択項目(困りごと3種・伝え方3種)/複数サポーターの一覧と選択(1ピア1NIセッション)/Find My式の近接フィードバック(色+触覚4段階)/求援者側の方向コンパス/対応終了で測距を止める共有ライフサイクル。**未検証=実機2台でのUWB実測**(距離の実値・方向の安定度・1m到着判定の妥当性)。
-
-**発表構成(5分)**: ①「先週バズったArchを一晩で再現した」実演 → ②今日足した相手側+オープンデータ → ③問い「一晩でパクれる時代、堀は何か。実装が一人でできる時代、チームは何のためか」
-
-## Phase 1.5: 実測日 — 「完成できるか」を数字で決める1日(2026-09-05策定)
-
-**ゴール**: v1(矢印と距離で人に会える)が成立するかを実測で判定する。この日は開発しない、測るだけ。
-v1と完成の間に立っているのは開発作業ではなくこの1日。以降の全設計(矢印表示開始距離・VPS/PDRへの切替閾値・画面の段組み)がこの数字に乗る。
-
-**前提(本人の一手)**: 2台目のiPhone(11以降)を確保する(借りる/中古)。これが無いと何も始まらない。
-
-**準備(実測日の前にAI側で、30分)**:
-- [ ] CMAltimeterの相対高度をデバッグ表示に出す(数行。気圧メニュー4のため)
-- [ ] 距離・方向・接続状態を画面かログで読める状態にする(既存表示で足りるか確認)
-
-**当日メニュー(半日・記録はメモに数字1個ずつ)**:
-1. **見通し距離**: 何mで接続し何mで切れるか。まっすぐ離れて5m刻みで記録
-2. **方向の安定度**: 静止/歩行/相手が人混みの中、の3条件で矢印の暴れを3段階目視
-3. **1m到着判定**: 10回中何回正しく発火するか
-4. **気圧差分**: 階段1フロア挟んで両端末の相対高度差を記録 → 階の判別が成立するか
-5. **(余力)壁1枚**: ガラス・柱を挟んだときの距離と方向の挙動 → 壁問題の実痛度
-
-**判定基準(その場で決める)**:
-- 接続が10m以上維持 → v1成立。矢印表示開始距離=実測値の8割で仕様確定
-- 方向が歩行中も使える → 平滑化は後回し / 暴れる → コンバージェンス表示を最優先に繰り上げ
-- 気圧で1フロアが判別できる → v2に「相手は2階上にいる」表示を採用
-- 数字が出たら → Phase 2のTestFlight項目へ直行
-
-## Phase 2: ハッカソン後
-
-- [ ] **配布をTestFlightに切り替える**(有料Developer Program加入済み=利用可)。バンドルIDを自分のものに変更 → 1024pxアイコン用意 → App Store Connectにアプリ登録 → アーカイブ&アップロード。内部テスターは審査なし、外部配布はBeta App Review。⚠️外部に配るならArchの再現である旨の明記+ご本人への一報
-- [ ] 実機2台でのUWB実測(Phase 1の積み残し。ケーブル配布でもTestFlightでも可)
-- [ ] 困りごとの種類を増やす(熱中症・道案内など。HelpMessage.Kindは実装済みでUIだけ絞ってある)
-- [ ] オープンデータ層: AED(区のCSV・デジタル庁推奨データセット準拠)/自販機(OSM Overpass API amenity=vending_machine)を到着画面に
-- [ ] 壁・階段への対応(2026-09-05調査で全面更新): **屋外**=ARCore Geospatial API(無料・iOS対応・位置1m前後/方位5度以内)+Streetscape Geometry(半径100mの建物メッシュ=壁の位置がタダで手に入る)。**地図**=OSM(渋谷駅周辺の実測: footway 764・level付き385・indoor 303・階段156・EV 37・level -4〜+5=地下街も描かれている)。国交省ほこナビDPは薄かった(渋谷+新宿でリンク7,921/ノード7,155だが地下ノード37点のみ・stair/handrail等は全行空・2021年更新停止)→属性の肉付け用に格下げ。**屋内の自己位置**=PDR(CoreMotion)×OSMグラフのマップマッチング(v3・重い)。**階の判別**=気圧の差分(CMAltimeter相対高度0.3〜1m・階変化検出は研究で感度95%超)が最安で本命。MultiSet AIは特定会場のデモ用に格下げ。⚠️Wi-Fiスキャン/生GNSSはiOSが非公開で使用不可(Apple公式)。⚠️OSMはODbLライセンス=派生DB公開義務の範囲を実装前に要確認。核心の発見: **必要なのは座標精度ではなく「相手がグラフのどのノードにいるか」**。ノードIDを送り合えば5cm精度は不要になる
-- [ ] 矢印方向の安定化(コンバージェンス状態の表示、平滑化)
-- [ ] 通知: アプリを開いていなくても発報が届く(プッシュ+バックグラウンドMPC見直し)
-- [ ] App Clip調査: QRから求援者側だけ即起動できるか(UWBがApp Clipで使えるかの裏取りから)
-- [ ] 多人数: 複数サポーター競合時の受諾制御
-- [ ] Zenn記事化(公開判断とセット。公開するならApple LICENSE維持+Archクレジット+シホさんへの一報)
+- 貸し手 = (誰 / 機種 / iOS)
+- 実測日 = (日付)
+- BootCamp発表会 = (日付。一次情報で確認)
 
 ## 事実(実測・機械確認したもの)
 
-- 2026-09-11: **シミュレータ2台でMultipeerConnectivity接続とNearbyInteractionの模擬測距(0.04m固定)が動く**。hello→トークン→meet→finish→再接続の全経路をログで確認(`-previewFinder -previewAutoFinish -previewLog` / `-previewAutoSend -previewLog`)。実機2台が無くても状態遷移の回帰確認はここでできる。方向・実距離は模擬なので実測の代わりにはならない
-- 2026-09-11: **実機 iPhone 16 Pro (iOS 26.6) の NISession.deviceCapabilities**(`-previewCaps` で機械取得): `supportsPreciseDistanceMeasurement=true / supportsDirectionMeasurement=false / supportsCameraAssistance=true / supportsExtendedDistanceMeasurement=true`。→ この端末では生の `direction` は出ない(Forums 802948 が日本の16 Proで事実に)。方向が出る可能性が残るのは**迎える側のカメラアシスト(worldTransform)だけ**。待つ側のダイヤル矢印は成立しない。実測日は項目0の分岐(supportsDirection=false)からスタート
-- 2026-09-11: Apple 109512 原文確認: 日本では規制で一部UWB周波数が不可、Find People・拡張Precision Finding・Apple WatchのPrecision Findingが利用不可、前世代チップ相当の性能(2026-03-27公開)
+- 2026-09-11: **実機 iPhone 16 Pro (iOS 26.6) の NISession.deviceCapabilities**(`-previewCaps` で機械取得): `supportsPreciseDistanceMeasurement=true / supportsDirectionMeasurement=false / supportsCameraAssistance=true / supportsExtendedDistanceMeasurement=true`。→ この端末では生の `direction` は出ない。方向が出る可能性が残るのは**迎える側のカメラアシスト(worldTransform)だけ**。待つ側のダイヤル矢印は成立しない
+- 2026-09-11: **シミュレータ2台でMultipeerConnectivity接続とNearbyInteractionの模擬測距(0.04m固定)が動く**。hello→トークン→meet→finish→再接続の全経路をログで確認。実機2台が無くても状態遷移の回帰確認はできる(方向・実距離は模擬なので実測の代わりにはならない)。シミュレータも `sup_dir=0`
+- 2026-09-11: Apple 109512 原文: 日本では規制で一部UWB周波数が不可、**Find People**・拡張Precision Finding・Apple WatchのPrecision Findingが利用不可、前世代チップ相当の性能(2026-03-27公開)。→ 純正「探す」の人の精密検索(iOS 17+、iPhone 15以降同士)は日本では使えない。空き地は日本限定
+- 2026-09-11: CMAltimeter は `NSMotionUsageDescription` 必須(Apple原文: 無いとクラッシュ)。追加済み
+- 2026-08-31: App Clip では Nearby Interaction が実行時無効(Apple公式)。iOS Safari に Web Bluetooth / WebXR / UWB API なし。→ 配布は TestFlight / App Store のみ
 
-## 監査の処理状況(PLAN-2026-09-11 の表に対応)
+## 残っているもの(番号は PLAN-2026-09-11 の監査表に対応)
 
-| # | 欠陥 | 状態 |
+| # | 何 | 状態 | 手番 |
+|---|---|---|---|
+| 1 | デモボタンが実測を乗っ取る | ✅ PR#1 (9/11) | — |
+| 3 | peerEnded後に再接続できない | ✅ PR#2 (9/11) シミュレータ2台で検証 | — |
+| 12a | DEVELOPMENT_TEAM が空 | ✅ PR#4 (9/11) | — |
+| HUD | 計測HUD(実測日の計測器) | ✅ PR#3 (9/11) DEBUGのみ | — |
+| 2 | 切断してもAR画面から戻らない | Phase 2 必須 | AI |
+| 4 | 「見つけた」から戻れない | Phase 2 必須(閾値+ヒステリシス) | AI |
+| 8 | 同じ相手の再送でAR画面が閉じる | Phase 2 必須 | AI |
+| 配布 | ITSAppUsesNonExemptEncryption=NO / armv7→arm64 / DEPLOYMENT_TARGET=15.0固定 / CFBundleVersionを上げる / URLSession等の不使用grep / PrivacyInfo(UserDefaults時) | Phase 2 必須 | AI |
+| MPC | 識別子が Apple サンプルのまま(`nisample`)→ `_kokodayo._tcp` | Phase 2 必須。合流1件で検証 | AI |
+| 5 | 待つ側が切断に気づけない | Phase 2 次点 | AI |
+| 13 | 迎える側の「合流を終える」が待つ側に届かない(DoneMessage) | Phase 2 次点 | AI |
+| 14 | didInvalidateWith が権限以外のエラーで link を消す | Phase 2 次点(HUDのエラーコードを見てから) | AI |
+| 7 | AR画面でデモと実測の区別がつかない | Phase 2 次点(デモバッジ) | AI |
+| 9 | 「合流」「見つけた」の呼び方割れ | Phase 2 次点 | AI |
+| 11 | README が Apple サンプルの英文 | Phase 2 次点(出自明記) | AI |
+| 文言 | 「伝えている間だけ届く」と実装(常時測距・表示だけ隠す)のずれ | 問2で本人が決める(推奨=文言側を直す) | 本人 |
+| 表示名 | UIDevice.name が「iPhone」になりうる【推測】 | 実測 項目0で確認してから | AI |
+| 6 | 小画面で見出しが潰れる(13 mini 確認済み) | Phase 3(mini級のテスターがいる時) | AI |
+| 16 | maxPeers=3 で4台目から相手が出ない | Phase 3(4台以上の場で起きたら) | AI |
+| 10 | VoiceOver / Dynamic Type | Phase 4以降 | — |
+| 12c | ターゲット名 NIPeekaboo / アイコンのファイル名 / Main.storyboard 残骸 | Phase 4以降 | — |
+| 15 | MeetRequest の ack が無い | Phase 4以降 | — |
+
+## 実測表(Phase 1、空欄を埋める)
+
+実測日: ____ / 場所: ____ / 端末A: 16 Pro (iOS 26.6) / 端末B: ____ (iOS ____) / 貸し手の記事掲載可否: ____
+
+| # | 項目 | 結果 |
 |---|---|---|
-| 1 | デモボタンが実測を乗っ取る | ✅ 直した(PR#1, 2026-09-11): 接続中・発報中・相手あり のいずれかならデモは押せない(グレー表示) |
-| 3 | peerEnded後に再接続できない | ✅ 直した(PR#2, 2026-09-11): peerEndedでは自セッションもトークンも壊さない／トークン受信時に自セッションが死んでいれば作り直して自トークンを返す／終える・やめるは新セッションで即再開。**シミュレータ2台で検証済み**(終える→張り直し→両側とも測距継続) |
-| 12a | DEVELOPMENT_TEAMが空 | ✅ 直した(PR#4, 2026-09-11): Debug/Releaseとも 59FNRWS2H8。XcodeのSigning手番が不要に |
-| HUD | 計測HUD(実測日の計測器) | ✅ 入れた(PR#3, 2026-09-11): DEBUGビルドのみ。画面最下段に1行(3回タップで全列、長押しでCSV共有)。列=time,role,phase,peer(端末A/B匿名),mpc,dist_m,dir_nil,h_angle_deg,cam_assist,world_nil,conv,conv_reasons,sup_dir,sup_cam,ni_error,cb_per_s,rel_alt_m,device,os。同じ行をXcodeログにも `HUD ` 接頭辞で出力。DEBUG時は自動ロック無効。CMAltimeter用に NSMotionUsageDescription を追加(Apple原文: 無いとクラッシュ)。方向非対応端末では待つ側/迎える側のダイヤル説明を「この端末は方向を出せません」に |
-| 他 | PLAN-2026-09-11.md の表を参照 | Phase 2以降 |
+| 0 | 冒頭: 権限3つ(ローカルネットワーク/NI/カメラ)両端末で許可・自動ロックなし・相手一覧の名前が区別できるか・HUD の sup_dir/sup_cam(端末B)・他端末の混入なし・距離1つ出る | |
+| 0' | 端末Bの sup_dir が 0 → 項目1は省略し、迎える側AR画面で world_nil が 0 になるか(端末を左右に振る) | |
+| 1 | 方向: 3m/5m/10m × 60秒静止。迎える側=AR画面の world_nil と conv/conv_reasons、待つ側=ダイヤルの dir_nil。役割入替でもう1周 | |
+| 1' | 補助: 同じ2台に findme を入れて矢印が出るか(断定には使わない) | |
+| 2 | 見通し距離: 5m刻みで接続維持/切断 ×3。戻って再接続するか。固まったら ni_error | |
+| 3 | 1m到着判定: 10回中の発火回数 / 1.5m以上での誤発火回数 | |
+| 4 | 歩行中・人混みでの矢印の暴れ(方向が出た場合のみ、3段階目視) | |
+| 5 | 気圧: 階段1フロアで rel_alt_m の差 | |
+| 6 | 余力: 壁1枚 | |
+| 7 | 両端末とも Wi-Fi 未接続(モバイル通信のみ、Wi-Fi/BT の電波は ON)で相手一覧に出るか | |
+| 8 | 合流の瞬間 ×3: 待つ側が画面を見ずに先に見つけた回数 / 迎える側が最後に頼ったのは 矢印・距離・目印 のどれ | |
+| 9 | 失敗の再現: 圏外→戻る / 相手がアプリを閉じる→開き直す / 迎える側が「合流を終える」→ 各画面が戻れたか固まったか | |
+| 10 | 任意: 実機2台を横から30秒撮る(了承後) / 純正「探す」で人の精密検索が出ないことの写真(両方15以降のときだけ) | |
+| 判定 | 接続(10m以上/5〜10m/5m未満)・方向(出る/カメラアシスト後のみ/出ない)・1m判定(n/10) | |
+
+CSVは HUD を長押しして共有→ `measurements/` に置く。端末名・持ち主名は「端末A/B」に置換してからコミット。
 
 ## 運用メモ
 
-- ビルド: `xcodebuild -project NIPeekaboo.xcodeproj -scheme NIPeekaboo -destination 'platform=iOS,id=<UDID>' -allowProvisioningUpdates -allowProvisioningDeviceRegistration DEVELOPMENT_TEAM=59FNRWS2H8 CODE_SIGN_STYLE=Automatic build`
-- 新しい端末の追加: Macに接続→信頼→設定>プライバシーとセキュリティ>デベロッパモードON→再起動→ロック解除状態でビルド
-- 実測は屋内OK(UWBはGPS不要)。エミュレータ不可・実機のみ
+- ビルド(実機): `xcodebuild -project NIPeekaboo.xcodeproj -scheme NIPeekaboo -destination 'platform=iOS,id=<UDID>' -allowProvisioningUpdates -allowProvisioningDeviceRegistration DEVELOPMENT_TEAM=59FNRWS2H8 CODE_SIGN_STYLE=Automatic build` → `xcrun devicectl device install app --device <UDID> <.app>`
+- 機械確認(端末不要): `xcodebuild ... -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build`
+- 借りた端末にケーブルで入れる: ①設定→プライバシーとセキュリティ→デベロッパモードON→再起動 ②ロック解除したままMacに接続→「信頼」 ③上のビルドコマンドでインストール(初回は「デベロッパを信頼」)
+- 実機の能力フラグ: `xcrun devicectl device process launch --console --terminate-existing --device <UDID> jp.shutanuma.kokodayo -- -previewCaps`
+- シミュレータ2台の回帰確認: 片方 `-previewFinder -previewAutoFinish -previewLog`、もう片方 `-previewAutoSend -previewLog`(`--console-pty` でログ取得、`RECON` 行を見る)
+- 実測日まで 16 Pro は iOS 26.6 のまま(Xcode 26.6 / SDK 26.5 と揃える)。iOS 27 には上げない
+- 匿名化: CSV・スクショ・記事の端末名は「端末A/B」に置換してからコミット
