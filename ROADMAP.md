@@ -103,6 +103,7 @@ v1と完成の間に立っているのは開発作業ではなくこの1日。�
 | 1 | デモボタンが実測を乗っ取る | ✅ 直した(PR#1, 2026-09-11): 接続中・発報中・相手あり のいずれかならデモは押せない(グレー表示) |
 | 3 | peerEnded後に再接続できない | ✅ 直した(PR#2, 2026-09-11): peerEndedでは自セッションもトークンも壊さない／トークン受信時に自セッションが死んでいれば作り直して自トークンを返す／終える・やめるは新セッションで即再開。**シミュレータ2台で検証済み**(終える→張り直し→両側とも測距継続) |
 | 12a | DEVELOPMENT_TEAMが空 | ✅ 直した(PR#4, 2026-09-11): Debug/Releaseとも 59FNRWS2H8。XcodeのSigning手番が不要に |
+| HUD | 計測HUD(実測日の計測器) | ✅ 入れた(PR#3, 2026-09-11): DEBUGビルドのみ。画面最下段に1行(3回タップで全列、長押しでCSV共有)。列=time,role,phase,peer(端末A/B匿名),mpc,dist_m,dir_nil,h_angle_deg,cam_assist,world_nil,conv,conv_reasons,sup_dir,sup_cam,ni_error,cb_per_s,rel_alt_m,device,os。同じ行をXcodeログにも `HUD ` 接頭辞で出力。DEBUG時は自動ロック無効。CMAltimeter用に NSMotionUsageDescription を追加(Apple原文: 無いとクラッシュ)。方向非対応端末では待つ側/迎える側のダイヤル説明を「この端末は方向を出せません」に |
 | 他 | PLAN-2026-09-11.md の表を参照 | Phase 2以降 |
 
 ## 運用メモ
