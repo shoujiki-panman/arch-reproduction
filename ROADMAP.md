@@ -90,6 +90,15 @@ v1と完成の間に立っているのは開発作業ではなくこの1日。�
 - [ ] 多人数: 複数サポーター競合時の受諾制御
 - [ ] Zenn記事化(公開判断とセット。公開するならApple LICENSE維持+Archクレジット+シホさんへの一報)
 
+## 監査の処理状況(PLAN-2026-09-11 の表に対応)
+
+| # | 欠陥 | 状態 |
+|---|---|---|
+| 1 | デモボタンが実測を乗っ取る | ✅ 直した(PR#1, 2026-09-11): 接続中・発報中・相手あり のいずれかならデモは押せない(グレー表示) |
+| 3 | peerEnded後に再接続できない | ⏳ PR#2 |
+| 12a | DEVELOPMENT_TEAMが空 | ⏳ PR#4 |
+| 他 | PLAN-2026-09-11.md の表を参照 | Phase 2以降 |
+
 ## 運用メモ
 
 - ビルド: `xcodebuild -project NIPeekaboo.xcodeproj -scheme NIPeekaboo -destination 'platform=iOS,id=<UDID>' -allowProvisioningUpdates -allowProvisioningDeviceRegistration DEVELOPMENT_TEAM=59FNRWS2H8 CODE_SIGN_STYLE=Automatic build`
