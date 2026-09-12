@@ -101,11 +101,11 @@ final class MeetDial: UIView {
         arrow.contentMode = .scaleAspectFit
         arrow.alpha = 0.22
 
-        valueLabel.font = .systemFont(ofSize: 30, weight: .bold)
+        valueLabel.font = Type.reading
         valueLabel.textColor = .white
         valueLabel.textAlignment = .center
 
-        captionLabel.font = .systemFont(ofSize: 12)
+        captionLabel.font = Type.caption
         captionLabel.textColor = UIColor.white.withAlphaComponent(0.5)
         captionLabel.textAlignment = .center
         captionLabel.numberOfLines = 2
@@ -147,7 +147,7 @@ final class MeetDial: UIView {
     }
 
     func set(distance: Float?, direction: simd_float3?, colour: UIColor, value: String, caption: String) {
-        valueLabel.text = value
+        valueLabel.attributedText = Type.tracked(value, font: Type.reading)
         captionLabel.text = caption
         arrow.tintColor = colour
         bar.strokeColor = colour.cgColor
@@ -379,6 +379,10 @@ final class MeetViewController: UIViewController {
     private let arDialBackdrop = UIView()
     private let arHint = PaddedLabel()
     private let arMarkerChip = PaddedLabel()
+    /// Held so it can stand down while the arrival overlay owns the screen: its
+    /// material is meant for camera video, and over an opaque colour it leaves
+    /// white text on a bright ground.
+    private let arCloseButton = UIButton(type: .system)
     private let arrivalOverlay = UIView()
     private let arrivalMarker = UILabel()
 
@@ -412,6 +416,7 @@ final class MeetViewController: UIViewController {
         #if DEBUG
         setupMeasureHUD()
         #endif
+        followTextSize(from: view)
         applyPhase()
         refreshSelectionStyles()
         refreshPeerList()
@@ -903,6 +908,8 @@ final class MeetViewController: UIViewController {
         waiterPanel.isHidden = role != .requester
         finderPanel.isHidden = role != .supporter
         arrivalOverlay.isHidden = phase != .arrived
+        // One action at a time: the arrival screen has its own way out.
+        arCloseButton.isHidden = phase == .arrived
         if phase != .guiding { stopProximityFeedback() }
         refreshDemoButton()
     }
@@ -1261,13 +1268,13 @@ final class MeetViewController: UIViewController {
         let safe = homeScreen.safeAreaLayoutGuide
 
         let title = UILabel()
-        title.text = "ここだよ"
-        title.font = .systemFont(ofSize: 17, weight: .bold)
+        title.font = Type.appName
+        title.attributedText = Type.tracked("ここだよ", font: Type.appName)
         title.textColor = .white
 
         demoButton.setTitle("デモ", for: .normal)
         demoButton.setTitleColor(UIColor.white.withAlphaComponent(0.45), for: .normal)
-        demoButton.titleLabel?.font = .systemFont(ofSize: 13)
+        demoButton.titleLabel?.font = Type.label
         demoButton.addTarget(self, action: #selector(demoTapped), for: .touchUpInside)
         respondOnPress(demoButton)
 
@@ -1275,9 +1282,9 @@ final class MeetViewController: UIViewController {
         roleSwitch.selectedSegmentTintColor = amber
         roleSwitch.backgroundColor = cardColour
         roleSwitch.setTitleTextAttributes([.foregroundColor: UIColor.white.withAlphaComponent(0.7),
-                                           .font: UIFont.systemFont(ofSize: 15, weight: .semibold)], for: .normal)
+                                           .font: Type.button], for: .normal)
         roleSwitch.setTitleTextAttributes([.foregroundColor: UIColor.black,
-                                           .font: UIFont.systemFont(ofSize: 15, weight: .bold)], for: .selected)
+                                           .font: Type.font(15, .bold, .body)], for: .selected)
         roleSwitch.addTarget(self, action: #selector(roleChanged), for: .valueChanged)
 
         for v in [title, demoButton, roleSwitch] {
@@ -1327,7 +1334,7 @@ final class MeetViewController: UIViewController {
         peerListStack.clipsToBounds = true
 
         peerEmptyLabel.text = "近くで「迎えに行く」にしている人を探しています…"
-        peerEmptyLabel.font = .systemFont(ofSize: 13)
+        peerEmptyLabel.font = Type.label
         peerEmptyLabel.textColor = UIColor.white.withAlphaComponent(0.4)
         peerEmptyLabel.numberOfLines = 0
 
@@ -1359,7 +1366,7 @@ final class MeetViewController: UIViewController {
         respondOnPress(cancelButton)
 
         waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
-        waiterStatus.font = .systemFont(ofSize: 12)
+        waiterStatus.font = Type.caption
         waiterStatus.textColor = UIColor.white.withAlphaComponent(0.45)
         waiterStatus.textAlignment = .center
         waiterStatus.numberOfLines = 3
@@ -1378,6 +1385,9 @@ final class MeetViewController: UIViewController {
         // The list keeps its natural height; the dial gives way instead of squashing it.
         waiterSelection.setContentCompressionResistancePriority(.required, for: .vertical)
         peerListStack.setContentCompressionResistancePriority(.required, for: .vertical)
+        // Same rank as the list it stands in for. Left at the default it tied with
+        // the dial's centring and lost, and the line was crushed to nothing.
+        peerEmptyLabel.setContentCompressionResistancePriority(.required, for: .vertical)
         let dialCentre = waiterDial.centerYAnchor.constraint(equalTo: waiterPanel.centerYAnchor, constant: -10)
         dialCentre.priority = .defaultHigh
         dialCentre.isActive = true
@@ -1429,18 +1439,18 @@ final class MeetViewController: UIViewController {
         cameraButton.isEnabled = false
         cameraButton.alpha = 0.4
 
-        finderStatus.font = .systemFont(ofSize: 12)
+        finderStatus.font = Type.caption
         finderStatus.textColor = UIColor.white.withAlphaComponent(0.45)
         finderStatus.textAlignment = .center
         finderStatus.numberOfLines = 2
 
-        finderTip.font = .systemFont(ofSize: 12)
+        finderTip.font = Type.caption
         finderTip.textColor = UIColor.white.withAlphaComponent(0.45)
         finderTip.textAlignment = .center
         finderTip.numberOfLines = 2
         finderTip.isHidden = true
 
-        finderHeadline.font = .systemFont(ofSize: 20, weight: .semibold)
+        finderHeadline.font = Type.headline
         finderHeadline.textColor = UIColor.white.withAlphaComponent(0.9)
         finderHeadline.textAlignment = .center
         finderHeadline.numberOfLines = 1
@@ -1501,10 +1511,10 @@ final class MeetViewController: UIViewController {
 
         let safe = arScreen.safeAreaLayoutGuide
 
-        let close = UIButton(type: .system)
+        let close = arCloseButton
         var closeConf = UIButton.Configuration.filled()
         closeConf.title = "閉じる"
-        closeConf.baseBackgroundColor = UIColor.black.withAlphaComponent(0.5)
+        closeConf.baseBackgroundColor = .clear
         closeConf.baseForegroundColor = .white
         closeConf.cornerStyle = .capsule
         closeConf.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)
@@ -1512,20 +1522,20 @@ final class MeetViewController: UIViewController {
         close.addTarget(self, action: #selector(closeAR), for: .touchUpInside)
         respondOnPress(close)
 
-        style(chip: arMarkerChip, background: UIColor.black.withAlphaComponent(0.55), text: .white)
+        style(chip: arMarkerChip, background: .clear, text: .white)
         arMarkerChip.text = "手を振ってる"
 
         // Camera video sits behind these, so both need their own ground.
-        arHint.font = .systemFont(ofSize: 14, weight: .semibold)
+        arHint.font = Type.font(14, .semibold, .subheadline)
         arHint.textColor = .white
         arHint.textAlignment = .center
         arHint.numberOfLines = 2
         arHint.insets = UIEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
-        arHint.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        arHint.backgroundColor = .clear
         arHint.layer.cornerRadius = 12
         arHint.clipsToBounds = true
 
-        arDialBackdrop.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        arDialBackdrop.backgroundColor = .clear
         arDialBackdrop.layer.cornerRadius = 83
         arDial.lineWidth = 10
 
@@ -1562,6 +1572,14 @@ final class MeetViewController: UIViewController {
             arDialBackdrop.heightAnchor.constraint(equalToConstant: 166),
         ])
 
+        // Camera video is behind these, which is the one place on this app where
+        // a blurred material earns its keep: it separates the chrome from the
+        // scene without hiding it. Bigger surface, heavier material.
+        putMaterial(behind: close, cornerRadius: 18)
+        putMaterial(behind: arMarkerChip, cornerRadius: 16)
+        putMaterial(behind: arHint, cornerRadius: 12)
+        putMaterial(behind: arDialBackdrop, cornerRadius: 83, style: .systemMaterialDark)
+
         arScreen.sendSubviewToBack(sceneView)
         arScreen.bringSubviewToFront(close)
     }
@@ -1573,25 +1591,25 @@ final class MeetViewController: UIViewController {
         arrivalOverlay.translatesAutoresizingMaskIntoConstraints = false
 
         let headline = UILabel()
-        headline.text = "見つけた"
-        headline.font = .systemFont(ofSize: 40, weight: .heavy)
+        headline.font = Type.display
+        headline.attributedText = Type.tracked("見つけた", font: Type.display)
         headline.textColor = .black
         headline.textAlignment = .center
 
         let sub = UILabel()
         sub.text = "スマホをしまって顔を上げましょう"
-        sub.font = .systemFont(ofSize: 15, weight: .semibold)
+        sub.font = Type.button
         sub.textColor = UIColor.black.withAlphaComponent(0.7)
         sub.textAlignment = .center
 
         let markerCaption = UILabel()
         markerCaption.text = "相手の目印"
-        markerCaption.font = .systemFont(ofSize: 12)
+        markerCaption.font = Type.caption
         markerCaption.textColor = UIColor.black.withAlphaComponent(0.55)
         markerCaption.textAlignment = .center
 
         arrivalMarker.text = "手を振ってる"
-        arrivalMarker.font = .systemFont(ofSize: 26, weight: .bold)
+        arrivalMarker.font = Type.title
         arrivalMarker.textColor = .black
         arrivalMarker.textAlignment = .center
 
@@ -1846,16 +1864,53 @@ final class MeetViewController: UIViewController {
     @objc private func pressDown(_ sender: UIButton) { Motion.press(sender, down: true) }
     @objc private func pressUp(_ sender: UIButton) { Motion.press(sender, down: false) }
 
+    /// A blurred material instead of a flat black plate. Only worth it where
+    /// something is actually behind the surface — over the camera, not over the
+    /// home screen's own background. Falls back to a solid ground when the
+    /// reader has asked for less transparency.
+    private func putMaterial(behind view: UIView, cornerRadius: CGFloat,
+                             style: UIBlurEffect.Style = .systemThinMaterialDark) {
+        guard let parent = view.superview else { return }
+        let backing: UIView
+        if UIAccessibility.isReduceTransparencyEnabled {
+            let solid = UIView()
+            solid.backgroundColor = UIColor.black.withAlphaComponent(0.86)
+            backing = solid
+        } else {
+            backing = UIVisualEffectView(effect: UIBlurEffect(style: style))
+        }
+        backing.layer.cornerRadius = cornerRadius
+        backing.clipsToBounds = true
+        backing.isUserInteractionEnabled = false
+        backing.translatesAutoresizingMaskIntoConstraints = false
+        parent.insertSubview(backing, belowSubview: view)
+        NSLayoutConstraint.activate([
+            backing.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backing.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            backing.topAnchor.constraint(equalTo: view.topAnchor),
+            backing.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+    }
+
+    /// Type only follows the reader's size setting if each label opts in.
+    private func followTextSize(from root: UIView) {
+        for sub in root.subviews {
+            (sub as? UILabel)?.adjustsFontForContentSizeCategory = true
+            (sub as? UIButton)?.titleLabel?.adjustsFontForContentSizeCategory = true
+            followTextSize(from: sub)
+        }
+    }
+
     private func sectionLabel(_ text: String) -> UILabel {
         let label = UILabel()
         label.text = text
-        label.font = .systemFont(ofSize: 12, weight: .semibold)
+        label.font = Type.captionStrong
         label.textColor = UIColor.white.withAlphaComponent(0.45)
         return label
     }
 
     private func chipRow(titles: [String], action: Selector, store: inout [UIButton]) -> UIView {
-        let scroll = UIScrollView()
+        let scroll = FadingScrollView()
         scroll.showsHorizontalScrollIndicator = false
         let stack = UIStackView()
         stack.axis = .horizontal
@@ -1869,21 +1924,28 @@ final class MeetViewController: UIViewController {
             stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
         ])
-        scroll.heightAnchor.constraint(equalToConstant: 40).isActive = true
+        // Grows with the reader's text size instead of clipping: at the
+        // accessibility sizes a fixed 40pt row swallowed the label below it.
+        let rowHeight = scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 40)
+        rowHeight.priority = .required
+        rowHeight.isActive = true
+        scroll.setContentHuggingPriority(.defaultHigh, for: .vertical)
 
         for (index, title) in titles.enumerated() {
-            let button = UIButton(type: .system)
+            let button = CapsuleButton(type: .system)
             var conf = UIButton.Configuration.plain()
             conf.title = title
             conf.contentInsets = NSDirectionalEdgeInsets(top: 9, leading: 16, bottom: 9, trailing: 16)
             conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
                 var a = attrs
-                a.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+                a.font = Type.font(14, .semibold, .subheadline)
                 return a
             }
             button.configuration = conf
             button.tag = index
-            button.layer.cornerRadius = 20
+            // cornerRadius is set from the height on every layout pass: the row
+            // now grows with the reader's text size, and a fixed radius would
+            // stop matching it.
             button.layer.borderWidth = 1
             button.addTarget(self, action: action, for: .touchUpInside)
             respondOnPress(button)
@@ -1902,7 +1964,7 @@ final class MeetViewController: UIViewController {
     private func style(chip: PaddedLabel, background: UIColor, text: UIColor) {
         chip.backgroundColor = background
         chip.textColor = text
-        chip.font = .systemFont(ofSize: 13, weight: .semibold)
+        chip.font = Type.chip
         chip.insets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
         chip.layer.cornerRadius = 14
         chip.clipsToBounds = true
@@ -1917,12 +1979,12 @@ final class MeetViewController: UIViewController {
         conf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
         conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
             var a = attrs
-            a.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+            a.font = Type.button
             return a
         }
         conf.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
             var a = attrs
-            a.font = UIFont.systemFont(ofSize: 12)
+            a.font = Type.caption
             return a
         }
         button.configuration = conf
@@ -1942,7 +2004,7 @@ final class MeetViewController: UIViewController {
         conf.contentInsets = NSDirectionalEdgeInsets(top: 18, leading: 24, bottom: 18, trailing: 24)
         conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
             var a = attrs
-            a.font = UIFont.systemFont(ofSize: 17, weight: .bold)
+            a.font = Type.appName
             return a
         }
         return conf
@@ -2234,6 +2296,71 @@ extension MeetViewController: NISessionDelegate {
         if peerID == activePeerID { activeCameraAssist = false }
         runConfig(for: link)
         refreshPeerList()
+    }
+}
+
+/// Fades its trailing edge instead of chopping a pill in half, so the row reads
+/// as "there is more over there" rather than as a broken shape.
+final class FadingScrollView: UIScrollView {
+    private let fade = CAGradientLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        fade.colors = [UIColor.white.cgColor, UIColor.white.cgColor, UIColor.clear.cgColor]
+        fade.locations = [0, 0.88, 1]
+        fade.startPoint = CGPoint(x: 0, y: 0.5)
+        fade.endPoint = CGPoint(x: 1, y: 0.5)
+        layer.mask = fade
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fade.frame = bounds
+        // Nothing to hint at once the row fits, so stop dimming the last pill.
+        let scrolls = contentSize.width > bounds.width + 1
+        fade.locations = scrolls ? [0, 0.88, 1] : [0, 1, 1]
+        CATransaction.commit()
+    }
+}
+
+/// A pill whose corner follows its height, so it stays a pill when the reader
+/// enlarges text.
+final class CapsuleButton: UIButton {
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layer.cornerRadius = bounds.height / 2
+    }
+}
+
+// MARK: - Type
+
+/// One scale instead of a dozen loose sizes. Every face scales with the reader's
+/// text-size setting, and the large ones are tracked in the way Apple tightens
+/// display type (about -0.02em; body stays at 0).
+enum Type {
+    static func font(_ size: CGFloat, _ weight: UIFont.Weight, _ style: UIFont.TextStyle) -> UIFont {
+        UIFontMetrics(forTextStyle: style).scaledFont(for: .systemFont(ofSize: size, weight: weight))
+    }
+
+    static var display: UIFont { font(40, .heavy, .largeTitle) }   // 到着の一言
+    static var reading: UIFont { font(30, .bold, .title1) }        // ダイヤルの距離
+    static var title: UIFont { font(26, .bold, .title2) }          // 到着の目印
+    static var headline: UIFont { font(20, .semibold, .title3) }   // 画面の状態
+    static var appName: UIFont { font(17, .bold, .headline) }
+    static var button: UIFont { font(15, .semibold, .body) }
+    static var body: UIFont { font(15, .regular, .body) }
+    static var chip: UIFont { font(13, .semibold, .subheadline) }
+    static var label: UIFont { font(13, .regular, .subheadline) }
+    static var caption: UIFont { font(12, .regular, .caption1) }
+    static var captionStrong: UIFont { font(12, .semibold, .caption1) }
+
+    /// -0.02em, the amount Apple tightens large text by. Body is left alone.
+    static func tracked(_ text: String, font: UIFont) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [.font: font, .kern: font.pointSize * -0.02])
     }
 }
 
