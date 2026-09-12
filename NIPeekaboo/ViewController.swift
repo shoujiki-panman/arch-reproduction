@@ -348,6 +348,19 @@ final class MeetViewController: UIViewController {
     private let finderDial = MeetDial()
     private let cameraButton = UIButton(type: .system)
     private let finderStatus = UILabel()
+    private let finderHeadline = UILabel()
+    /// The measuring HUD is a DEBUG overlay pinned to the safe area, so the
+    /// panels have to keep out from under it or the bottom line is unreadable.
+    private static var hudInset: CGFloat {
+        #if DEBUG
+        return 34
+        #else
+        return 0
+        #endif
+    }
+    /// A passing message (disconnected, they cancelled). Outranks the standby
+    /// copy until something replaces it, so the two do not fight over one label.
+    private var finderNotice: String?
     private let finderTip = UILabel()
 
     private let arScreen = UIView()
@@ -494,7 +507,6 @@ final class MeetViewController: UIViewController {
     // MARK: - The name the other phone sees
 
     private static let displayNameKey = "kokodayo.displayName"
-    private let waitingForRequestText = "相手が「ここだよ」を送ると、ここに距離が出ます"
 
 
     static var myDisplayName: String {
@@ -599,7 +611,7 @@ final class MeetViewController: UIViewController {
             latestDistance = nil
             latestDirection = nil
             latestWorldTransform = nil
-            if role == .supporter, !isDemo { finderStatus.text = "相手との接続が切れました。探し直しています…" }
+            if role == .supporter, !isDemo { finderNotice = "相手との接続が切れました。探し直しています…" }
             // The peer is gone, so the AR screen has nothing left to point at.
             // Fall back to the home screen, where the disconnect line is visible.
             if role == .supporter {
@@ -694,6 +706,9 @@ final class MeetViewController: UIViewController {
         if let hello = try? JSONDecoder().decode(HelloMessage.self, from: data), hello.type == "hello" {
             link.peerRole = hello.role
             refreshPeerList()
+            // refreshPeerList is the waiting side's list and returns early for the
+            // finder, whose standby copy names this peer. Redraw it too.
+            refreshDials()
             return
         }
         if let request = try? JSONDecoder().decode(MeetRequest.self, from: data), request.type == "meet" {
@@ -712,7 +727,7 @@ final class MeetViewController: UIViewController {
             phase = .searching
             finderChips.isHidden = true
             finderTip.isHidden = true
-            finderStatus.text = "相手が合流をやめました"
+            finderNotice = "相手が合流をやめました"
             refreshDials()
         }
     }
@@ -735,7 +750,7 @@ final class MeetViewController: UIViewController {
         finderTip.text = request.kind.tip
         finderChips.isHidden = false
         finderTip.isHidden = false
-        finderStatus.text = nil
+        finderNotice = nil
         // A re-send from the same waiter must not yank the finder out of the AR
         // screen, so only lift the home screen out of `.searching`.
         if latestDistance != nil, phase == .searching { phase = .ready }
@@ -832,15 +847,29 @@ final class MeetViewController: UIViewController {
                            direction: waiting ? nil : latestDirection,
                            colour: waiting ? idleColour : colour,
                            value: value, caption: caption)
+            // A button that is permanently greyed out reads as broken. It only
+            // exists once there is something to point the camera at.
             let ready = activeRequest != nil && latestDistance != nil
+            cameraButton.isHidden = !ready
             cameraButton.isEnabled = ready
-            cameraButton.alpha = ready ? 1 : 0.4
-            // Before a request lands there is nothing to press and nothing moves
-            // on screen. Say why, or it reads as a frozen app.
-            if waiting, !isDemo, finderStatus.text == nil || finderStatus.text == waitingForRequestText {
-                finderStatus.text = links.isEmpty
-                    ? "近くで「待つ」にしている人を探しています…"
-                    : waitingForRequestText
+            cameraButton.alpha = 1
+
+            // Standby is a state of its own, not the absence of one. Until the
+            // waiting side sends, this side has nothing to do and must say so.
+            finderHeadline.isHidden = !waiting || isDemo || !supportsUWB
+            if waiting, !isDemo, supportsUWB {
+                let waiter = links.values.first { $0.peerRole == "requester" }
+                if let waiter {
+                    finderHeadline.text = "待っています"
+                    finderStatus.text = finderNotice
+                        ?? "\(waiter.peerID.displayName)が「ここだよ」を送ると、ここに距離が出ます"
+                } else {
+                    finderHeadline.text = "相手を探しています"
+                    finderStatus.text = finderNotice
+                        ?? "相手にも「ここだよ」を開いて、「待つ」にしてもらってください"
+                }
+            } else if !isDemo, supportsUWB {
+                finderStatus.text = finderNotice
             }
         }
     }
@@ -897,6 +926,7 @@ final class MeetViewController: UIViewController {
         waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
         finderChips.isHidden = true
         finderTip.isHidden = true
+        finderNotice = nil
         finderStatus.text = nil
         arrivalOverlay.isHidden = true
         waiterDial.reset()
@@ -933,6 +963,7 @@ final class MeetViewController: UIViewController {
         arrivalOverlay.isHidden = true
         finderChips.isHidden = true
         finderTip.isHidden = true
+        finderNotice = nil
         finderStatus.text = nil
         phase = .searching
         refreshDials()
@@ -1242,7 +1273,8 @@ final class MeetViewController: UIViewController {
                 panel.topAnchor.constraint(equalTo: roleSwitch.bottomAnchor, constant: 18),
                 panel.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
                 panel.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
-                panel.bottomAnchor.constraint(equalTo: safe.bottomAnchor),
+                panel.bottomAnchor.constraint(equalTo: safe.bottomAnchor,
+                                              constant: -Self.hudInset),
             ])
         }
 
@@ -1384,7 +1416,13 @@ final class MeetViewController: UIViewController {
         finderTip.numberOfLines = 2
         finderTip.isHidden = true
 
-        for v in [finderChips, finderDial, cameraButton, finderTip, finderStatus] {
+        finderHeadline.font = .systemFont(ofSize: 20, weight: .semibold)
+        finderHeadline.textColor = UIColor.white.withAlphaComponent(0.9)
+        finderHeadline.textAlignment = .center
+        finderHeadline.numberOfLines = 1
+        finderHeadline.isHidden = true
+
+        for v in [finderChips, finderHeadline, finderDial, cameraButton, finderTip, finderStatus] {
             finderPanel.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -1393,6 +1431,10 @@ final class MeetViewController: UIViewController {
             finderChips.topAnchor.constraint(equalTo: finderPanel.topAnchor, constant: 4),
             finderChips.leadingAnchor.constraint(equalTo: finderPanel.leadingAnchor, constant: 20),
             finderChips.trailingAnchor.constraint(equalTo: finderPanel.trailingAnchor, constant: -20),
+
+            finderHeadline.bottomAnchor.constraint(equalTo: finderDial.topAnchor, constant: -20),
+            finderHeadline.leadingAnchor.constraint(equalTo: finderPanel.leadingAnchor, constant: 24),
+            finderHeadline.trailingAnchor.constraint(equalTo: finderPanel.trailingAnchor, constant: -24),
 
             finderDial.centerXAnchor.constraint(equalTo: finderPanel.centerXAnchor),
             finderDial.centerYAnchor.constraint(equalTo: finderPanel.centerYAnchor, constant: -20),
@@ -2042,6 +2084,7 @@ extension MeetViewController: NISessionDelegate {
             updateMeasurement(distance: link.distance, direction: link.direction, world: link.world)
         } else {
             refreshPeerList()
+            if role == .supporter, activeRequest == nil { refreshDials() }
         }
     }
 
