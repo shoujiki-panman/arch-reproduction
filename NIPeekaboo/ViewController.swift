@@ -194,6 +194,9 @@ final class MeetViewController: UIViewController {
 
     private let arrivalThreshold: Float = 1.0
     private let nearThreshold: Float = 2.5
+    /// How far the pair has to drift back apart before we leave `.arrived`.
+    /// Provisional until the field test gives us the real jitter band.
+    private let arrivalHysteresis: Float = 0.5
 
     // MARK: - Nearby Interaction state
 
@@ -286,6 +289,8 @@ final class MeetViewController: UIViewController {
     // DEBUG-only automation flags for the two-simulator reconnect check.
     private var previewAutoSend = false
     private var previewAutoFinish = false
+    private var previewAutoGuide = false
+    private var previewResend = false
 
     // MARK: - AR
 
@@ -422,6 +427,30 @@ final class MeetViewController: UIViewController {
             // Finder: end the meet-up 8s after a request arrives (exercises restartLink).
             previewAutoFinish = true
         }
+        if args.contains("-previewAutoGuide") {
+            // Finder: open the AR screen 2s after a request arrives, so the
+            // two-simulator run reaches .guiding / .arrived.
+            previewAutoGuide = true
+        }
+        if args.contains("-previewDrift") {
+            // Finder: once we have arrived, feed one out-of-range distance so the
+            // .arrived -> .guiding recovery is checkable without two UWB phones
+            // (the simulator's own mock distance is pinned at 0.04 m).
+            var fired = false
+            Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                guard let self, !fired, self.phase == .arrived else { return }
+                fired = true
+                let out = self.arrivalThreshold + self.arrivalHysteresis + 0.1
+                print("RECON drift: feeding \(out)m")
+                self.updateMeasurement(distance: out, direction: nil, world: nil)
+                print("RECON drift: phase=\(self.phase)")
+            }
+        }
+        if args.contains("-previewResend") {
+            // Waiter: send the same request a second time 14s later, which is
+            // what used to close the finder's AR screen.
+            previewResend = true
+        }
         if args.contains("-previewMeasure") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 print("MEASURE rows=\(self.peerListStack.arrangedSubviews.count) listFrame=\(self.peerListStack.frame) selectionFrame=\(self.waiterSelection.frame) panelFrame=\(self.waiterPanel.frame) dialFrame=\(self.waiterDial.frame)")
@@ -488,6 +517,14 @@ final class MeetViewController: UIViewController {
             latestDirection = nil
             latestWorldTransform = nil
             if role == .supporter, !isDemo { finderStatus.text = "相手との接続が切れました。探し直しています…" }
+            // The peer is gone, so the AR screen has nothing left to point at.
+            // Fall back to the home screen, where the disconnect line is visible.
+            if role == .supporter {
+                activeRequest = nil
+                finderChips.isHidden = true
+                finderTip.isHidden = true
+            }
+            if phase == .guiding || phase == .arrived { phase = .searching }
         }
         if selectedHelperID == peer { selectedHelperID = nil }
         refreshPeerList()
@@ -602,10 +639,19 @@ final class MeetViewController: UIViewController {
         finderChips.isHidden = false
         finderTip.isHidden = false
         finderStatus.text = nil
-        if latestDistance != nil { phase = .ready }
+        // A re-send from the same waiter must not yank the finder out of the AR
+        // screen, so only lift the home screen out of `.searching`.
+        if latestDistance != nil, phase == .searching { phase = .ready }
         impactGenerator.impactOccurred()
         refreshDials()
         #if DEBUG
+        if previewAutoGuide {
+            previewAutoGuide = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                print("RECON finder: startGuidance()")
+                self?.startGuidance()
+            }
+        }
         if previewAutoFinish {
             previewAutoFinish = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
@@ -628,6 +674,9 @@ final class MeetViewController: UIViewController {
         }
         refreshDials()
 
+        if phase == .arrived, let d = distance, d > arrivalThreshold + arrivalHysteresis {
+            phase = .guiding
+        }
         if phase == .guiding {
             updateGuidance()
             if let d = distance, d < arrivalThreshold { arrive() }
@@ -1526,6 +1575,15 @@ final class MeetViewController: UIViewController {
             previewAutoSend = false
             selectedHelperID = first.peerID
             DispatchQueue.main.async { self.sendTapped() }
+            if previewResend {
+                previewResend = false
+                let peer = first.peerID
+                DispatchQueue.main.asyncAfter(deadline: .now() + 14) { [weak self] in
+                    guard let self, let request = self.activeRequest else { return }
+                    print("RECON waiter: resend meet")
+                    self.sendMeetRequest(request, to: peer)
+                }
+            }
         }
         #endif
         if !requestSent {

@@ -20,6 +20,7 @@
 ## 事実(実測・機械確認したもの)
 
 - 2026-09-11: **実機 iPhone 16 Pro (iOS 26.6) の NISession.deviceCapabilities**(`-previewCaps` で機械取得): `supportsPreciseDistanceMeasurement=true / supportsDirectionMeasurement=false / supportsCameraAssistance=true / supportsExtendedDistanceMeasurement=true`。→ この端末では生の `direction` は出ない。方向が出る可能性が残るのは**迎える側のカメラアシスト(worldTransform)だけ**。待つ側のダイヤル矢印は成立しない
+- 2026-09-12: **迎える側のPhase復帰3件をシミュレータ2台で実測**。(2) `arrived` → 相手アプリ終了 → `searching` に戻りAR画面が閉じる。(8) `arrived` 中に同じ待ち手が meet を再送 → `arrived` のまま(以前は `ready` に落ちて閉じた)。(4) `arrived` 中に 1.6m(=到着1.0m+ヒステリシス0.5m+0.1) を流す → `guiding` に戻る。ヒステリシス0.5mは暫定で、実測表4行目の揺れ幅が出たら置き換える
 - 2026-09-11: **シミュレータ2台でMultipeerConnectivity接続とNearbyInteractionの模擬測距(0.04m固定)が動く**。hello→トークン→meet→finish→再接続の全経路をログで確認。実機2台が無くても状態遷移の回帰確認はできる(方向・実距離は模擬なので実測の代わりにはならない)。シミュレータも `sup_dir=0`
 - 2026-09-11: Apple 109512 原文: 日本では規制で一部UWB周波数が不可、**Find People**・拡張Precision Finding・Apple WatchのPrecision Findingが利用不可、前世代チップ相当の性能(2026-03-27公開)。→ 純正「探す」の人の精密検索(iOS 17+、iPhone 15以降同士)は日本では使えない。空き地は日本限定
 - 2026-09-11: CMAltimeter は `NSMotionUsageDescription` 必須(Apple原文: 無いとクラッシュ)。追加済み
@@ -33,9 +34,9 @@
 | 3 | peerEnded後に再接続できない | ✅ PR#2 (9/11) シミュレータ2台で検証 | — |
 | 12a | DEVELOPMENT_TEAM が空 | ✅ PR#4 (9/11) | — |
 | HUD | 計測HUD(実測日の計測器) | ✅ PR#3 (9/11) DEBUGのみ | — |
-| 2 | 切断してもAR画面から戻らない | Phase 2 必須 | AI |
-| 4 | 「見つけた」から戻れない | Phase 2 必須(閾値+ヒステリシス) | AI |
-| 8 | 同じ相手の再送でAR画面が閉じる | Phase 2 必須 | AI |
+| 2 | 切断してもAR画面から戻らない | ✅ PR#6 (9/12) シミュレータ2台で検証 | — |
+| 4 | 「見つけた」から戻れない | ✅ PR#6 (9/12) ヒステリシス0.5m(暫定)・シミュレータで検証 | — |
+| 8 | 同じ相手の再送でAR画面が閉じる | ✅ PR#6 (9/12) シミュレータ2台で検証 | — |
 | 配布 | ITSAppUsesNonExemptEncryption=NO / armv7→arm64 / DEPLOYMENT_TARGET=15.0固定 / CFBundleVersionを上げる / URLSession等の不使用grep / PrivacyInfo(UserDefaults時) | Phase 2 必須 | AI |
 | MPC | 識別子が Apple サンプルのまま(`nisample`)→ `_kokodayo._tcp` | Phase 2 必須。合流1件で検証 | AI |
 | 5 | 待つ側が切断に気づけない | Phase 2 次点 | AI |
@@ -82,5 +83,6 @@ CSVは HUD を長押しして共有→ `measurements/` に置く。端末名・�
 - 借りた端末にケーブルで入れる: ①設定→プライバシーとセキュリティ→デベロッパモードON→再起動 ②ロック解除したままMacに接続→「信頼」 ③上のビルドコマンドでインストール(初回は「デベロッパを信頼」)
 - 実機の能力フラグ: `xcrun devicectl device process launch --console --terminate-existing --device <UDID> jp.shutanuma.kokodayo -- -previewCaps`
 - シミュレータ2台の回帰確認: 片方 `-previewFinder -previewAutoFinish -previewLog`、もう片方 `-previewAutoSend -previewLog`(`--console-pty` でログ取得、`RECON` 行を見る)
+- Phase復帰の確認(欠陥2/4/8): 迎える側 `-previewFinder -previewAutoGuide -previewDrift -previewLog` ＋ 待つ側 `-previewAutoSend -previewResend -previewLog`。`-previewAutoGuide`=meet受信2秒後にAR画面へ / `-previewDrift`=到着後に1回だけ範囲外の距離を流す(シミュレータの模擬距離は0.04m固定で動かせないため) / `-previewResend`=14秒後に同じ meet を再送。切断は `xcrun simctl terminate <UDID> jp.shutanuma.kokodayo`
 - 実測日まで 16 Pro は iOS 26.6 のまま(Xcode 26.6 / SDK 26.5 と揃える)。iOS 27 には上げない
 - 匿名化: CSV・スクショ・記事の端末名は「端末A/B」に置換してからコミット
