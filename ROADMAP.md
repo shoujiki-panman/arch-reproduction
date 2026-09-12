@@ -19,6 +19,7 @@
 
 ## 事実(実測・機械確認したもの)
 
+- 2026-09-12: **借りた2台目も iPhone 16 Pro (iOS 26.6.2)**。`-previewCaps` で機械取得: `preciseDistance=true / direction=false / cameraAssist=true / extendedDistance=true`。端末Aと同一。→ **生の方向は2台とも出ないことが確定**。実測表の項目1(方向 3m/5m/10m)は実施せず、項目0'(迎える側のカメラアシストで world_nil が 0 になるか)に置き換える
 - 2026-09-11: **実機 iPhone 16 Pro (iOS 26.6) の NISession.deviceCapabilities**(`-previewCaps` で機械取得): `supportsPreciseDistanceMeasurement=true / supportsDirectionMeasurement=false / supportsCameraAssistance=true / supportsExtendedDistanceMeasurement=true`。→ この端末では生の `direction` は出ない。方向が出る可能性が残るのは**迎える側のカメラアシスト(worldTransform)だけ**。待つ側のダイヤル矢印は成立しない
 - 2026-09-12: **迎える側のPhase復帰3件をシミュレータ2台で実測**。(2) `arrived` → 相手アプリ終了 → `searching` に戻りAR画面が閉じる。(8) `arrived` 中に同じ待ち手が meet を再送 → `arrived` のまま(以前は `ready` に落ちて閉じた)。(4) `arrived` 中に 1.6m(=到着1.0m+ヒステリシス0.5m+0.1) を流す → `guiding` に戻る。ヒステリシス0.5mは暫定で、実測表4行目の揺れ幅が出たら置き換える
 - 2026-09-11: **シミュレータ2台でMultipeerConnectivity接続とNearbyInteractionの模擬測距(0.04m固定)が動く**。hello→トークン→meet→finish→再接続の全経路をログで確認。実機2台が無くても状態遷移の回帰確認はできる(方向・実距離は模擬なので実測の代わりにはならない)。シミュレータも `sup_dir=0`
@@ -55,7 +56,7 @@
 
 ## 実測表(Phase 1、空欄を埋める)
 
-実測日: ____ / 場所: ____ / 端末A: 16 Pro (iOS 26.6) / 端末B: **16 Pro** (iOS ____) / 貸し手の記事掲載可否: ____
+実測日: ____ / 場所: ____ / 端末A: 16 Pro (iOS 26.6) / 端末B: **16 Pro (iOS 26.6.2)** / 貸し手の記事掲載可否: ____
 
 > 2026-09-12: 借りられる端末が**同じ16 Pro**と判明。両方 `direction=false` が確定しているので、項目1(方向 3m/5m/10m)は測らず項目0'(カメラアシストのworld_nil)に置き換える。当日の順番と記入欄は **MEASURE-SHEET.md** にまとめた。
 
