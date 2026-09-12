@@ -610,12 +610,14 @@ final class MeetViewController: UIViewController {
     private func startupMPC() {
         if mpc == nil {
             #if targetEnvironment(simulator)
-            mpc = MPCSession(service: "nisample",
-                             identity: "com.example.apple-samplecode.simulator.peekaboo-nearbyinteraction",
+            // Our own service name. On Apple's sample identifiers, anyone nearby
+            // running the NIPeekaboo sample showed up in our list, and we in theirs.
+            mpc = MPCSession(service: "kokodayo",
+                             identity: "jp.shutanuma.kokodayo.simulator",
                              maxPeers: 3, displayName: Self.myDisplayName)
             #else
-            mpc = MPCSession(service: "nisample",
-                             identity: "com.example.apple-samplecode.peekaboo-nearbyinteraction",
+            mpc = MPCSession(service: "kokodayo",
+                             identity: "jp.shutanuma.kokodayo",
                              maxPeers: 3, displayName: Self.myDisplayName)
             #endif
             mpc?.peerConnectedHandler = { [weak self] peer in self?.connectedToPeer(peer: peer) }
