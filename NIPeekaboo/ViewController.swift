@@ -357,6 +357,9 @@ final class MeetViewController: UIViewController {
     private let peerEmptyLabel = UILabel()
     private var peerRows: [MCPeerID: UIButton] = [:]
     private var peerOrder: [MCPeerID] = []
+    /// Who sent the link that opened this app, if it was opened that way.
+    private var invitedBy: String?
+    private let callButton = UIButton(type: .system)
     private var selectedKind: MeetRequest.Kind = .here
     private var selectedMarker: MeetRequest.MarkerHint = .wave
 
@@ -504,6 +507,12 @@ final class MeetViewController: UIViewController {
             // -5883 is our AR configuration or camera assistance itself.
             provideOwnARSession = false
         }
+        if let arg = args.first(where: { $0.hasPrefix("-previewInvite=") }),
+           let url = URL(string: String(arg.dropFirst("-previewInvite=".count))) {
+            // iOS asks "Open in ここだよ?" before handing over a custom scheme, and
+            // a simulator run cannot tap that. This is the same entry point.
+            DispatchQueue.main.async { self.handleInvite(url) }
+        }
         if args.contains("-previewAutoGuide") {
             // Finder: open the AR screen 2s after a request arrives, so the
             // two-simulator run reaches .guiding / .arrived.
@@ -545,6 +554,73 @@ final class MeetViewController: UIViewController {
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+
+    // MARK: - Inviting the other phone
+
+    /// `kokodayo://meet?name=…&kind=here&mode=wave`
+    ///
+    /// Sent over whatever messenger the pair already uses, so the buzz on the
+    /// other phone comes from LINE rather than from a push service we would have
+    /// to run. Tapping it opens this app already on the finding side, with the
+    /// waiting side's place and marker filled in. Apple's own Precision Finding
+    /// works the same way round: notify, the other person taps, then it measures.
+    private func inviteURL() -> URL? {
+        var c = URLComponents()
+        c.scheme = "kokodayo"
+        c.host = "meet"
+        c.queryItems = [
+            URLQueryItem(name: "name", value: Self.myDisplayName),
+            URLQueryItem(name: "kind", value: selectedKind.rawValue),
+            URLQueryItem(name: "mode", value: selectedMarker.rawValue),
+        ]
+        return c.url
+    }
+
+    /// Opened from the link. Puts this phone on the finding side and shows what
+    /// the sender chose, before any radio has found anybody.
+    func handleInvite(_ url: URL) {
+        #if DEBUG
+        print("INVITE url=\(url) scheme=\(url.scheme ?? "-") host=\(url.host ?? "-")")
+        #endif
+        guard url.scheme == "kokodayo", url.host == "meet",
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return }
+        let value = { (key: String) in items.first { $0.name == key }?.value }
+
+        if let kind = value("kind").flatMap(MeetRequest.Kind.init(rawValue:)) { selectedKind = kind }
+        if let mode = value("mode").flatMap(MeetRequest.MarkerHint.init(rawValue:)) { selectedMarker = mode }
+        // After roleChanged(), which clears it: switching sides by hand means the
+        // invite no longer applies, but arriving *through* the invite does.
+        if role != .supporter {
+            roleSwitch.selectedSegmentIndex = 1
+            roleChanged()
+        }
+        invitedBy = value("name")
+        showInvitedChips()
+        refreshSelectionStyles()
+        refreshDials()
+        impactGenerator.impactOccurred()
+    }
+
+    /// The sender's choices, shown before MPC has found them. The real request
+    /// replaces these the moment it arrives.
+    private func showInvitedChips() {
+        finderKindChip.text = selectedKind.text
+        finderMarkerChip.text = selectedMarker.text
+        arMarkerChip.text = selectedMarker.text
+        arrivalMarker.text = selectedMarker.text
+        finderTip.text = selectedKind.tip
+        finderChips.isHidden = false
+        finderTip.isHidden = false
+    }
+
+    @objc private func callPartnerTapped() {
+        guard let url = inviteURL() else { return }
+        let text = "「ここだよ」で迎えに来て。このリンクを開くとアプリが立ち上がります。\n\(url.absoluteString)"
+        let sheet = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+        sheet.popoverPresentationController?.sourceView = callButton
+        sheet.popoverPresentationController?.sourceRect = callButton.bounds
+        present(sheet, animated: true)
+    }
 
     // MARK: - The name the other phone sees
 
@@ -914,6 +990,10 @@ final class MeetViewController: UIViewController {
                     finderHeadline.text = "待っています"
                     finderStatus.text = finderNotice
                         ?? "\(waiter.peerID.displayName)が「ここだよ」を送ると、ここに距離が出ます"
+                } else if let invitedBy {
+                    finderHeadline.text = "\(invitedBy)を探しています"
+                    finderStatus.text = finderNotice
+                        ?? "\(invitedBy)の「ここだよ」を待っています。そのままお待ちください"
                 } else {
                     finderHeadline.text = "相手を探しています"
                     finderStatus.text = finderNotice ?? guidanceWhenNoPartner()
@@ -942,6 +1022,7 @@ final class MeetViewController: UIViewController {
     @objc private func roleChanged() {
         let next: Role = roleSwitch.selectedSegmentIndex == 0 ? .requester : .supporter
         guard next != role else { return }
+        invitedBy = nil
         resetSession()
         role = next
         phase = .searching
@@ -1390,6 +1471,16 @@ final class MeetViewController: UIViewController {
         sendButton.addTarget(self, action: #selector(sendTapped), for: .touchUpInside)
         respondOnPress(sendButton)
 
+        var callConf = UIButton.Configuration.plain()
+        callConf.title = "相手を呼ぶ"
+        callConf.image = UIImage(systemName: "paperplane.fill")
+        callConf.imagePadding = 6
+        callConf.baseForegroundColor = amber
+        callButton.configuration = callConf
+        callButton.titleLabel?.font = Type.button
+        callButton.addTarget(self, action: #selector(callPartnerTapped), for: .touchUpInside)
+        respondOnPress(callButton)
+
         var cancelConf = UIButton.Configuration.plain()
         cancelConf.title = "合流をやめる"
         cancelConf.baseForegroundColor = UIColor.white.withAlphaComponent(0.65)
@@ -1409,7 +1500,7 @@ final class MeetViewController: UIViewController {
         waiterCard.layer.borderWidth = 1
         waiterCard.layer.borderColor = UIColor.white.withAlphaComponent(0.07).cgColor
 
-        for v in [waiterCard, waiterDial, sendButton, cancelButton, waiterStatus] {
+        for v in [waiterCard, waiterDial, sendButton, callButton, cancelButton, waiterStatus] {
             waiterPanel.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -1457,7 +1548,10 @@ final class MeetViewController: UIViewController {
 
             sendButton.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 24),
             sendButton.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -24),
-            sendButton.bottomAnchor.constraint(equalTo: waiterStatus.topAnchor, constant: -12),
+            sendButton.bottomAnchor.constraint(equalTo: callButton.topAnchor, constant: -4),
+
+            callButton.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
+            callButton.bottomAnchor.constraint(equalTo: waiterStatus.topAnchor, constant: -6),
 
             waiterStatus.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 24),
             waiterStatus.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -24),
