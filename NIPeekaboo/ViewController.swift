@@ -1424,6 +1424,11 @@ final class MeetViewController: UIViewController {
         dialCentre.priority = .defaultHigh
         dialCentre.isActive = true
 
+        // Preferred size, not a demand: on a short screen it gives way.
+        let dialSize = waiterDial.heightAnchor.constraint(equalToConstant: 210)
+        dialSize.priority = .defaultHigh
+        dialSize.isActive = true
+
         NSLayoutConstraint.activate([
             waiterCard.topAnchor.constraint(equalTo: waiterPanel.topAnchor),
             waiterCard.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 20),
@@ -1436,8 +1441,11 @@ final class MeetViewController: UIViewController {
 
             waiterDial.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
             waiterDial.topAnchor.constraint(greaterThanOrEqualTo: waiterCard.bottomAnchor, constant: 24),
-            waiterDial.widthAnchor.constraint(equalToConstant: 210),
-            waiterDial.heightAnchor.constraint(equalToConstant: 210),
+            // Never allowed to reach the button. A short screen shrinks the dial
+            // instead of stacking it on top of what you are meant to press.
+            waiterDial.bottomAnchor.constraint(lessThanOrEqualTo: sendButton.topAnchor, constant: -16),
+            waiterDial.widthAnchor.constraint(equalTo: waiterDial.heightAnchor),
+            waiterDial.heightAnchor.constraint(greaterThanOrEqualToConstant: 132),
 
             sendButton.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 24),
             sendButton.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -24),
@@ -1967,6 +1975,9 @@ final class MeetViewController: UIViewController {
 
     private func sectionLabel(_ text: String) -> UILabel {
         let label = UILabel()
+        // Squeezed to nothing on a real 16 Pro, which left the chips with no
+        // question above them.
+        label.setContentCompressionResistancePriority(.required, for: .vertical)
         label.text = text
         label.font = Type.captionStrong
         label.textColor = UIColor.white.withAlphaComponent(0.45)
