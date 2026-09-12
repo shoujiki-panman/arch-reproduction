@@ -93,4 +93,5 @@ CSVは HUD を長押しして共有→ `measurements/` に置く。端末名・�
 - Phase復帰の確認(欠陥2/4/8): 迎える側 `-previewFinder -previewAutoGuide -previewDrift -previewLog` ＋ 待つ側 `-previewAutoSend -previewResend -previewLog`。`-previewAutoGuide`=meet受信2秒後にAR画面へ / `-previewDrift`=到着後に1回だけ範囲外の距離を流す(シミュレータの模擬距離は0.04m固定で動かせないため) / `-previewResend`=14秒後に同じ meet を再送。切断は `xcrun simctl terminate <UDID> jp.shutanuma.kokodayo`
 - 実測日まで 16 Pro は iOS 26.6 のまま(Xcode 26.6 / SDK 26.5 と揃える)。iOS 27 には上げない
 - 🚨実機の署名ビルドで `-derivedDataPath` をこのリポジトリの中に向けてはいけない。リポジトリが同期フォルダ配下(`com.apple.fileprovider.*` が付く)にあるため、成果物に `com.apple.FinderInfo` が付いて `CodeSign` が `resource fork, Finder information, or similar detritus not allowed` で落ちる。既定のDerivedData(`~/Library/Developer/Xcode/DerivedData`)に出せば通る。シミュレータ向けは署名しないので影響なし(2026-09-12 実測)
+- 🚨**端末Aは画面表示ズームが入っている**(2026-09-12 実測: panelFrame=320×501、標準の16 Proは402×641)。文字サイズは最小(XS)。シミュレータの16 Pro/17 Proでは2割広いので、レイアウトの検証はこれだけでは足りない。溢れの確認は iPhone SE 級(375×667)か実機で行う
 - 匿名化: CSV・スクショ・記事の端末名は「端末A/B」に置換してからコミット
