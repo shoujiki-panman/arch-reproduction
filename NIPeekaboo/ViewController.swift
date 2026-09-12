@@ -327,6 +327,8 @@ final class MeetViewController: UIViewController {
 
     private let bgColour = UIColor(red: 0.06, green: 0.06, blue: 0.07, alpha: 1)
     private let cardColour = UIColor(red: 0.13, green: 0.13, blue: 0.15, alpha: 1)
+    /// One step above the background. Dark interfaces need surfaces, not lines.
+    private let surfaceColour = UIColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 1)
     private let amber = UIColor(red: 1.00, green: 0.65, blue: 0.24, alpha: 1)
     private let mint = UIColor(red: 0.21, green: 0.82, blue: 0.54, alpha: 1)
 
@@ -345,6 +347,9 @@ final class MeetViewController: UIViewController {
     private let waiterStatus = UILabel()
     private var kindButtons: [UIButton] = []
     private var markerButtons: [UIButton] = []
+    /// The choices sit on a raised surface instead of floating on the ground:
+    /// on a flat black screen a column of small labels reads as a settings form.
+    private let waiterCard = UIView()
     private let peerListStack = UIStackView()
     private let peerEmptyLabel = UILabel()
     private var peerRows: [MCPeerID: UIButton] = [:]
@@ -838,7 +843,9 @@ final class MeetViewController: UIViewController {
         let idleColour = UIColor.white.withAlphaComponent(0.35)
 
         if role == .requester {
-            waiterDial.isHidden = !requestSent
+            // Always on screen. Hiding it until the request went out left the
+            // screen with no subject and a screenful of empty black.
+            waiterDial.isHidden = false
             if requestSent {
                 let value = latestDistance.map { $0 < arrivalThreshold ? "合流" : formatMeters($0) } ?? "—"
                 let caption: String
@@ -1371,14 +1378,21 @@ final class MeetViewController: UIViewController {
         waiterStatus.textAlignment = .center
         waiterStatus.numberOfLines = 3
 
-        for v in [waiterSelection, waiterDial, sendButton, cancelButton, waiterStatus] {
+        waiterCard.backgroundColor = surfaceColour
+        waiterCard.layer.cornerRadius = 22
+        waiterCard.layer.borderWidth = 1
+        waiterCard.layer.borderColor = UIColor.white.withAlphaComponent(0.07).cgColor
+
+        for v in [waiterCard, waiterDial, sendButton, cancelButton, waiterStatus] {
             waiterPanel.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
+        waiterCard.addSubview(waiterSelection)
+        waiterSelection.translatesAutoresizingMaskIntoConstraints = false
 
         // Hidden views still hold their space, so collapse the selection outright
         // once the request is out — otherwise it keeps pushing the dial down.
-        let collapse = waiterSelection.heightAnchor.constraint(equalToConstant: 0)
+        let collapse = waiterCard.heightAnchor.constraint(equalToConstant: 0)
         collapse.priority = .required
         waiterSelectionCollapse = collapse
 
@@ -1393,12 +1407,17 @@ final class MeetViewController: UIViewController {
         dialCentre.isActive = true
 
         NSLayoutConstraint.activate([
-            waiterSelection.topAnchor.constraint(equalTo: waiterPanel.topAnchor),
-            waiterSelection.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 20),
-            waiterSelection.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -20),
+            waiterCard.topAnchor.constraint(equalTo: waiterPanel.topAnchor),
+            waiterCard.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 20),
+            waiterCard.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -20),
+
+            waiterSelection.topAnchor.constraint(equalTo: waiterCard.topAnchor, constant: 18),
+            waiterSelection.bottomAnchor.constraint(equalTo: waiterCard.bottomAnchor, constant: -18),
+            waiterSelection.leadingAnchor.constraint(equalTo: waiterCard.leadingAnchor, constant: 18),
+            waiterSelection.trailingAnchor.constraint(equalTo: waiterCard.trailingAnchor, constant: -18),
 
             waiterDial.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
-            waiterDial.topAnchor.constraint(greaterThanOrEqualTo: waiterSelection.bottomAnchor, constant: 16),
+            waiterDial.topAnchor.constraint(greaterThanOrEqualTo: waiterCard.bottomAnchor, constant: 24),
             waiterDial.widthAnchor.constraint(equalToConstant: 210),
             waiterDial.heightAnchor.constraint(equalToConstant: 210),
 
@@ -1849,7 +1868,7 @@ final class MeetViewController: UIViewController {
     // MARK: - Small builders
 
     private func setWaiterSelection(hidden: Bool) {
-        waiterSelection.isHidden = hidden
+        waiterCard.isHidden = hidden
         waiterSelectionCollapse?.isActive = hidden
     }
 
