@@ -84,4 +84,5 @@ CSVは HUD を長押しして共有→ `measurements/` に置く。端末名・�
 - 実機の能力フラグ: `xcrun devicectl device process launch --console --terminate-existing --device <UDID> jp.shutanuma.kokodayo -- -previewCaps`
 - シミュレータ2台の回帰確認: 片方 `-previewFinder -previewAutoFinish -previewLog`、もう片方 `-previewAutoSend -previewLog`(`--console-pty` でログ取得、`RECON` 行を見る)
 - 実測日まで 16 Pro は iOS 26.6 のまま(Xcode 26.6 / SDK 26.5 と揃える)。iOS 27 には上げない
+- 🚨実機の署名ビルドで `-derivedDataPath` をこのリポジトリの中に向けてはいけない。リポジトリが同期フォルダ配下(`com.apple.fileprovider.*` が付く)にあるため、成果物に `com.apple.FinderInfo` が付いて `CodeSign` が `resource fork, Finder information, or similar detritus not allowed` で落ちる。既定のDerivedData(`~/Library/Developer/Xcode/DerivedData`)に出せば通る。シミュレータ向けは署名しないので影響なし(2026-09-12 実測)
 - 匿名化: CSV・スクショ・記事の端末名は「端末A/B」に置換してからコミット
