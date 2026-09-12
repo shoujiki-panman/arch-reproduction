@@ -240,6 +240,9 @@ final class MeetViewController: UIViewController {
     // Measurement HUD state (values are cheap to keep; the HUD itself is DEBUG-only).
     private var convergenceText = "-"
     private var convergenceReasons = "-"
+    /// What NI is actually waiting for, in words. It asks for these in turn, so
+    /// showing one at a time turns 30 seconds of waving into a set of steps.
+    private var sweepHint: String?
     private var lastNIError = "-"
     private var callbackCounter = 0
     private var callbacksPerSecond = 0
@@ -380,8 +383,17 @@ final class MeetViewController: UIViewController {
     private let finderTip = UILabel()
 
     private let arScreen = UIView()
-    private let arDial = MeetDial()
-    private let arDialBackdrop = UIView()
+    /// Camera is the screen; the read-out is a thin layer on top of it. A dial in
+    /// the middle made the camera a backdrop, which is backwards for a screen
+    /// whose whole job is "which way".
+    private let arScrim = GradientView(colors: [UIColor.black.withAlphaComponent(0.72),
+                                                UIColor.black.withAlphaComponent(0.35),
+                                                .clear],
+                                       locations: [0, 0.55, 1])
+    private let arReadout = UIStackView()
+    private let arDistanceCaption = UILabel()
+    private let arDistanceValue = UILabel()
+    private let arPeerName = UILabel()
     private let arHint = PaddedLabel()
     private let arMarkerChip = PaddedLabel()
     /// Held so it can stand down while the arrival overlay owns the screen: its
@@ -1123,6 +1135,15 @@ final class MeetViewController: UIViewController {
         arRunning = true
     }
 
+    /// Distance, then who. The number carries the screen, so it is tracked the
+    /// way display type is and coloured by how close the pair has got.
+    private func setReadout(distance: Float?) {
+        let text = distance.map { $0 < arrivalThreshold ? "合流" : formatMeters($0) } ?? "—"
+        arDistanceValue.attributedText = Type.tracked(text, font: Type.display)
+        arDistanceValue.textColor = distance.map { band(for: $0).colour } ?? .white
+        arPeerName.text = activePeerID?.displayName ?? (isDemo ? "デモの相手" : "相手")
+    }
+
     private func setARGuidesHidden(_ hidden: Bool) {
         arrowContainer.isHidden = hidden
         dotsContainer.isHidden = hidden
@@ -1134,18 +1155,15 @@ final class MeetViewController: UIViewController {
         updateProximityFeedback(distance: latestDistance)
 
         guard let distance = latestDistance else {
-            arHint.text = "端末をゆっくり動かしてください"
+            arHint.text = sweepHint ?? "端末をゆっくり動かしてください"
             arHint.isHidden = false
-            arDial.set(distance: nil, direction: nil, colour: UIColor.white.withAlphaComponent(0.35),
-                       value: "—", caption: "測定中")
+            setReadout(distance: nil)
             setARGuidesHidden(true)
             return
         }
 
         let colour = band(for: distance).colour
-        arDial.set(distance: distance, direction: latestDirection, colour: colour,
-                   value: distance < arrivalThreshold ? "合流" : formatMeters(distance),
-                   caption: distance < nearThreshold ? "すぐそこ" : "")
+        setReadout(distance: distance)
 
         // Positioning source: AR world transform (best) > direction (good) > none.
         let cam = sceneView.pointOfView
@@ -1168,7 +1186,7 @@ final class MeetViewController: UIViewController {
         }
 
         guard let camNode = cam, let dir = horizontalDir else {
-            arHint.text = "端末をゆっくり動かしてください"
+            arHint.text = sweepHint ?? "端末をゆっくり動かしてください"
             arHint.isHidden = false
             setARGuidesHidden(true)
             return
@@ -1554,11 +1572,28 @@ final class MeetViewController: UIViewController {
         arHint.layer.cornerRadius = 12
         arHint.clipsToBounds = true
 
-        arDialBackdrop.backgroundColor = .clear
-        arDialBackdrop.layer.cornerRadius = 83
-        arDial.lineWidth = 10
+        // A read-out, not a dial: a caption, the number, then the person.
+        arDistanceCaption.text = "きょり"
+        arDistanceCaption.font = Type.captionStrong
+        arDistanceCaption.textColor = UIColor.white.withAlphaComponent(0.7)
 
-        for v in [close, arMarkerChip, arDialBackdrop, arHint, arDial] {
+        arDistanceValue.font = Type.display
+        arDistanceValue.textColor = .white
+
+        arPeerName.font = Type.button
+        arPeerName.textColor = UIColor.white.withAlphaComponent(0.85)
+
+        arReadout.axis = .vertical
+        arReadout.alignment = .leading
+        arReadout.spacing = 2
+        arReadout.addArrangedSubview(arDistanceCaption)
+        arReadout.addArrangedSubview(arDistanceValue)
+        arReadout.setCustomSpacing(10, after: arDistanceValue)
+        arReadout.addArrangedSubview(hairline())
+        arReadout.setCustomSpacing(10, after: arReadout.arrangedSubviews.last!)
+        arReadout.addArrangedSubview(arPeerName)
+
+        for v in [arScrim, close, arMarkerChip, arReadout, arHint] {
             arScreen.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -1576,19 +1611,18 @@ final class MeetViewController: UIViewController {
             arMarkerChip.centerYAnchor.constraint(equalTo: close.centerYAnchor),
             arMarkerChip.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -16),
 
+            arScrim.topAnchor.constraint(equalTo: arScreen.topAnchor),
+            arScrim.leadingAnchor.constraint(equalTo: arScreen.leadingAnchor),
+            arScrim.trailingAnchor.constraint(equalTo: arScreen.trailingAnchor),
+            arScrim.heightAnchor.constraint(equalToConstant: 320),
+
+            arReadout.topAnchor.constraint(equalTo: close.bottomAnchor, constant: 28),
+            arReadout.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 24),
+            arReadout.trailingAnchor.constraint(lessThanOrEqualTo: safe.trailingAnchor, constant: -24),
+
             arHint.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 24),
             arHint.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -24),
-            arHint.bottomAnchor.constraint(equalTo: arDial.topAnchor, constant: -12),
-
-            arDial.centerXAnchor.constraint(equalTo: arScreen.centerXAnchor),
-            arDial.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -24),
-            arDial.widthAnchor.constraint(equalToConstant: 150),
-            arDial.heightAnchor.constraint(equalToConstant: 150),
-
-            arDialBackdrop.centerXAnchor.constraint(equalTo: arDial.centerXAnchor),
-            arDialBackdrop.centerYAnchor.constraint(equalTo: arDial.centerYAnchor),
-            arDialBackdrop.widthAnchor.constraint(equalToConstant: 166),
-            arDialBackdrop.heightAnchor.constraint(equalToConstant: 166),
+            arHint.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -28),
         ])
 
         // Camera video is behind these, which is the one place on this app where
@@ -1597,8 +1631,7 @@ final class MeetViewController: UIViewController {
         putMaterial(behind: close, cornerRadius: 18)
         putMaterial(behind: arMarkerChip, cornerRadius: 16)
         putMaterial(behind: arHint, cornerRadius: 12)
-        putMaterial(behind: arDialBackdrop, cornerRadius: 83, style: .systemMaterialDark)
-
+        arScreen.sendSubviewToBack(arScrim)
         arScreen.sendSubviewToBack(sceneView)
         arScreen.bringSubviewToFront(close)
     }
@@ -1920,6 +1953,18 @@ final class MeetViewController: UIViewController {
         }
     }
 
+    /// The thin rule that separates the read-out's lines.
+    private func hairline() -> UIView {
+        let line = UIView()
+        line.backgroundColor = UIColor.white.withAlphaComponent(0.35)
+        line.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            line.heightAnchor.constraint(equalToConstant: 1),
+            line.widthAnchor.constraint(equalToConstant: 132),
+        ])
+        return line
+    }
+
     private func sectionLabel(_ text: String) -> UILabel {
         let label = UILabel()
         label.text = text
@@ -2213,9 +2258,21 @@ extension MeetViewController: NISessionDelegate {
         switch convergence.status {
         case .converged:
             convergenceText = "converged"; convergenceReasons = "-"
+            sweepHint = nil
         case .notConverged(let reasons):
             convergenceText = "notConverged"
             convergenceReasons = reasons.map { String(describing: $0) }.joined(separator: "|")
+            if reasons.contains(.insufficientLighting) {
+                sweepHint = "もう少し明るい場所へ"
+            } else if reasons.contains(.insufficientMovement) {
+                sweepHint = "端末を持って少し歩いてください"
+            } else if reasons.contains(.insufficientHorizontalSweep) {
+                sweepHint = "左右にゆっくり大きく振ってください"
+            } else if reasons.contains(.insufficientVerticalSweep) {
+                sweepHint = "上下にもゆっくり振ってください"
+            } else {
+                sweepHint = "そのまま少し動かしてください"
+            }
         case .unknown:
             convergenceText = "unknown"; convergenceReasons = "-"
         @unknown default:
@@ -2316,6 +2373,22 @@ extension MeetViewController: NISessionDelegate {
         runConfig(for: link)
         refreshPeerList()
     }
+}
+
+/// A one-way scrim. Text over camera video needs a ground that does not become
+/// a plate: a gradient keeps the scene visible where it matters.
+final class GradientView: UIView {
+    override class var layerClass: AnyClass { CAGradientLayer.self }
+
+    init(colors: [UIColor], locations: [NSNumber]) {
+        super.init(frame: .zero)
+        let layer = self.layer as! CAGradientLayer
+        layer.colors = colors.map(\.cgColor)
+        layer.locations = locations
+        isUserInteractionEnabled = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
 /// Fades its trailing edge instead of chopping a pill in half, so the row reads
