@@ -355,6 +355,14 @@ final class MeetViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = bgColour
 
+        #if DEBUG
+        // Read before anything builds an MCPeerID: the name is baked into the
+        // session at startup() and cannot be changed without rebuilding it.
+        if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("-previewName=") }) {
+            UserDefaults.standard.set(String(arg.dropFirst("-previewName=".count)), forKey: Self.displayNameKey)
+        }
+        #endif
+
         if #available(iOS 16.0, *) {
             supportsUWB = NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
             cameraAssistance = NISession.deviceCapabilities.supportsCameraAssistance
@@ -462,7 +470,68 @@ final class MeetViewController: UIViewController {
         #endif
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        askForDisplayNameIfNeeded()
+    }
+
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+
+    // MARK: - The name the other phone sees
+
+    private static let displayNameKey = "kokodayo.displayName"
+    private let waitingForRequestText = "相手が「ここだよ」を送ると、ここに距離が出ます"
+
+
+    static var myDisplayName: String {
+        UserDefaults.standard.string(forKey: Self.displayNameKey) ?? "iPhone"
+    }
+
+    private var hasDisplayName: Bool {
+        UserDefaults.standard.string(forKey: Self.displayNameKey)?.isEmpty == false
+    }
+
+    /// Asked once, on the first run. Two of the same iPhone both advertise as
+    /// "iPhone", which makes the waiting side's list unusable, and there is no
+    /// way to read the user's own device name without a special entitlement.
+    private func askForDisplayNameIfNeeded() {
+        guard !hasDisplayName else { return }
+        #if DEBUG
+        // An unattended run must not stop on a modal.
+        if CommandLine.arguments.contains(where: { $0.hasPrefix("-preview") }) {
+            UserDefaults.standard.set(UIDevice.current.name, forKey: Self.displayNameKey)
+            restartMPCForNewName()
+            return
+        }
+        #endif
+        let alert = UIAlertController(title: "相手に見せる名前",
+                                      message: "相手の一覧にこの名前で出ます。呼び名でも、ニックネームでも構いません。",
+                                      preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "たとえば たぬま"
+            field.autocorrectionType = .no
+            field.returnKeyType = .done
+        }
+        alert.addAction(UIAlertAction(title: "あとで", style: .cancel) { [weak self] _ in
+            UserDefaults.standard.set("iPhone", forKey: Self.displayNameKey)
+            self?.restartMPCForNewName()
+        })
+        alert.addAction(UIAlertAction(title: "決定", style: .default) { [weak self] _ in
+            let typed = alert.textFields?.first?.text ?? ""
+            let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+            UserDefaults.standard.set(trimmed.isEmpty ? "iPhone" : trimmed, forKey: Self.displayNameKey)
+            self?.restartMPCForNewName()
+        })
+        present(alert, animated: true)
+    }
+
+    /// MCPeerID is fixed when the session is built, so a new name needs a new one.
+    private func restartMPCForNewName() {
+        guard supportsUWB else { return }
+        resetSession()
+        startup()
+        refreshPeerList()
+    }
 
     // MARK: - Nearby Interaction (extended from the Apple sample to several peers)
 
@@ -475,11 +544,11 @@ final class MeetViewController: UIViewController {
             #if targetEnvironment(simulator)
             mpc = MPCSession(service: "nisample",
                              identity: "com.example.apple-samplecode.simulator.peekaboo-nearbyinteraction",
-                             maxPeers: 3)
+                             maxPeers: 3, displayName: Self.myDisplayName)
             #else
             mpc = MPCSession(service: "nisample",
                              identity: "com.example.apple-samplecode.peekaboo-nearbyinteraction",
-                             maxPeers: 3)
+                             maxPeers: 3, displayName: Self.myDisplayName)
             #endif
             mpc?.peerConnectedHandler = { [weak self] peer in self?.connectedToPeer(peer: peer) }
             mpc?.peerDataHandler = { [weak self] data, peer in self?.dataReceivedHandler(data: data, peer: peer) }
@@ -723,7 +792,7 @@ final class MeetViewController: UIViewController {
             let value = waiting ? "—" : (latestDistance.map { $0 < arrivalThreshold ? "合流" : formatMeters($0) } ?? "—")
             let caption: String
             if waiting {
-                caption = "「ここだよ」を待っています"
+                caption = "相手が送るまで待ちます"
             } else if let d = latestDistance, d < arrivalThreshold {
                 caption = "顔を上げてください"
             } else if latestDirection == nil {
@@ -738,6 +807,13 @@ final class MeetViewController: UIViewController {
             let ready = activeRequest != nil && latestDistance != nil
             cameraButton.isEnabled = ready
             cameraButton.alpha = ready ? 1 : 0.4
+            // Before a request lands there is nothing to press and nothing moves
+            // on screen. Say why, or it reads as a frozen app.
+            if waiting, !isDemo, finderStatus.text == nil || finderStatus.text == waitingForRequestText {
+                finderStatus.text = links.isEmpty
+                    ? "近くで「待つ」にしている人を探しています…"
+                    : waitingForRequestText
+            }
         }
     }
 
@@ -1766,7 +1842,11 @@ extension MeetViewController {
         NSLayoutConstraint.activate([
             hud.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             hud.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            hud.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            hud.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            // The bottom strip is the home indicator's, so the HUD sat where a
+            // tap never reached it: its 3-tap expand and long-press share were
+            // both unusable on a real phone.
+            hud.heightAnchor.constraint(greaterThanOrEqualToConstant: 32),
         ])
         hud.onShare = { [weak self] url in
             let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
