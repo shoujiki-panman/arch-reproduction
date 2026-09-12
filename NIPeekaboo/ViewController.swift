@@ -74,6 +74,9 @@ final class MeetDial: UIView {
     private let track = CAShapeLayer()
     private let bar = CAShapeLayer()
     private let arrow = UIImageView(image: UIImage(systemName: "location.north.fill"))
+    /// Kept so each new bearing re-targets the running spring instead of queuing
+    /// behind it: readings arrive up to 60 times a second.
+    private var arrowAnimator: UIViewPropertyAnimator?
     private let valueLabel = UILabel()
     private let captionLabel = UILabel()
 
@@ -160,17 +163,22 @@ final class MeetDial: UIView {
         CATransaction.commit()
 
         guard let direction else {
-            UIView.animate(withDuration: 0.2) { self.arrow.alpha = 0.22 }
+            Motion.animate(response: 0.2, interrupting: arrowAnimator) { self.arrow.alpha = 0.22 }
             return
         }
         let angle = atan2(direction.x, -direction.z)
-        UIView.animate(withDuration: 0.18) {
+        // Rotation gets a touch of overshoot (0.8) the way Apple's own dials do,
+        // and each new reading re-targets the running spring rather than queuing
+        // behind it — at 60 readings a second, a queue would lag visibly.
+        arrowAnimator = Motion.animate(damping: 0.8, response: 0.4, interrupting: arrowAnimator) {
             self.arrow.alpha = 1
             self.arrow.transform = CGAffineTransform(rotationAngle: CGFloat(angle))
         }
     }
 
     func reset() {
+        arrowAnimator?.stopAnimation(true)
+        arrowAnimator = nil
         bar.strokeEnd = 0
         arrow.alpha = 0.22
         arrow.transform = .identity
@@ -255,6 +263,9 @@ final class MeetViewController: UIViewController {
     private var latestWorldTransform: simd_float4x4?
 
     private let impactGenerator = UIImpactFeedbackGenerator(style: .medium)
+    /// The panel toggles between "choose and send" and "sent, cancel". Tapping
+    /// send then cancel quickly must reverse from where the panel actually is.
+    private var waiterPanelAnimator: UIViewPropertyAnimator?
 
     // MARK: - Proximity feedback (colour + haptics tighten as the gap closes)
 
@@ -393,6 +404,9 @@ final class MeetViewController: UIViewController {
             supportsUWB = NISession.isSupported
         }
 
+        impactGenerator.prepare()
+        arrivalGenerator.prepare()
+
         buildARScreen()
         buildHome()
         #if DEBUG
@@ -438,6 +452,12 @@ final class MeetViewController: UIViewController {
             }
         }
         if args.contains("-previewLog") {
+            // What the accessibility settings actually report to us, so a claim
+            // about reduced motion can be checked rather than assumed.
+            print("A11Y reduceMotion=\(UIAccessibility.isReduceMotionEnabled) "
+                  + "reduceTransparency=\(UIAccessibility.isReduceTransparencyEnabled) "
+                  + "darkerColors=\(UIAccessibility.isDarkerSystemColorsEnabled) "
+                  + "contentSize=\(traitCollection.preferredContentSizeCategory.rawValue)")
             // Two-simulator reconnect check: a line every 2s with the link state.
             Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
                 guard let self else { return }
@@ -1249,6 +1269,7 @@ final class MeetViewController: UIViewController {
         demoButton.setTitleColor(UIColor.white.withAlphaComponent(0.45), for: .normal)
         demoButton.titleLabel?.font = .systemFont(ofSize: 13)
         demoButton.addTarget(self, action: #selector(demoTapped), for: .touchUpInside)
+        respondOnPress(demoButton)
 
         roleSwitch.selectedSegmentIndex = 0
         roleSwitch.selectedSegmentTintColor = amber
@@ -1327,6 +1348,7 @@ final class MeetViewController: UIViewController {
                                                  background: amber,
                                                  foreground: .black)
         sendButton.addTarget(self, action: #selector(sendTapped), for: .touchUpInside)
+        respondOnPress(sendButton)
 
         var cancelConf = UIButton.Configuration.plain()
         cancelConf.title = "合流をやめる"
@@ -1334,6 +1356,7 @@ final class MeetViewController: UIViewController {
         cancelButton.configuration = cancelConf
         cancelButton.isHidden = true
         cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
+        respondOnPress(cancelButton)
 
         waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
         waiterStatus.font = .systemFont(ofSize: 12)
@@ -1402,6 +1425,7 @@ final class MeetViewController: UIViewController {
                                                    background: mint,
                                                    foreground: .black)
         cameraButton.addTarget(self, action: #selector(startGuidance), for: .touchUpInside)
+        respondOnPress(cameraButton)
         cameraButton.isEnabled = false
         cameraButton.alpha = 0.4
 
@@ -1486,6 +1510,7 @@ final class MeetViewController: UIViewController {
         closeConf.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16)
         close.configuration = closeConf
         close.addTarget(self, action: #selector(closeAR), for: .touchUpInside)
+        respondOnPress(close)
 
         style(chip: arMarkerChip, background: UIColor.black.withAlphaComponent(0.55), text: .white)
         arMarkerChip.text = "手を振ってる"
@@ -1579,6 +1604,7 @@ final class MeetViewController: UIViewController {
         doneConf.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 32, bottom: 14, trailing: 32)
         done.configuration = doneConf
         done.addTarget(self, action: #selector(finishMeet), for: .touchUpInside)
+        respondOnPress(done)
 
         for v in [headline, sub, markerCaption, arrivalMarker, done] {
             arrivalOverlay.addSubview(v)
@@ -1704,6 +1730,7 @@ final class MeetViewController: UIViewController {
                 let row = peerRow(name: link.peerID.displayName)
                 row.setContentCompressionResistancePriority(.required, for: .vertical)
                 row.addTarget(self, action: #selector(peerTapped(_:)), for: .touchUpInside)
+                respondOnPress(row)
                 peerRows[link.peerID] = row
                 peerListStack.addArrangedSubview(row)
             }
@@ -1764,7 +1791,7 @@ final class MeetViewController: UIViewController {
         activePeerID = target
         impactGenerator.impactOccurred()
 
-        UIView.animate(withDuration: 0.25) {
+        waiterPanelAnimator = Motion.animate(interrupting: waiterPanelAnimator) {
             self.setWaiterSelection(hidden: true)
             self.sendButton.isHidden = true
             self.cancelButton.isHidden = false
@@ -1790,7 +1817,7 @@ final class MeetViewController: UIViewController {
         activePeerID = nil
         latestDistance = nil
         latestDirection = nil
-        UIView.animate(withDuration: 0.25) {
+        waiterPanelAnimator = Motion.animate(interrupting: waiterPanelAnimator) {
             self.setWaiterSelection(hidden: false)
             self.sendButton.isHidden = false
             self.cancelButton.isHidden = true
@@ -1807,6 +1834,17 @@ final class MeetViewController: UIViewController {
         waiterSelection.isHidden = hidden
         waiterSelectionCollapse?.isActive = hidden
     }
+
+    /// Answer on touch-down. Waiting for the release is the single biggest
+    /// source of "this feels slow" on an otherwise fast screen.
+    private func respondOnPress(_ button: UIButton) {
+        button.addTarget(self, action: #selector(pressDown(_:)), for: [.touchDown, .touchDragEnter])
+        button.addTarget(self, action: #selector(pressUp(_:)),
+                         for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
+    }
+
+    @objc private func pressDown(_ sender: UIButton) { Motion.press(sender, down: true) }
+    @objc private func pressUp(_ sender: UIButton) { Motion.press(sender, down: false) }
 
     private func sectionLabel(_ text: String) -> UILabel {
         let label = UILabel()
@@ -1848,6 +1886,7 @@ final class MeetViewController: UIViewController {
             button.layer.cornerRadius = 20
             button.layer.borderWidth = 1
             button.addTarget(self, action: action, for: .touchUpInside)
+            respondOnPress(button)
             store.append(button)
             stack.addArrangedSubview(button)
         }
@@ -2195,6 +2234,56 @@ extension MeetViewController: NISessionDelegate {
         if peerID == activePeerID { activeCameraAssist = false }
         runConfig(for: link)
         refreshPeerList()
+    }
+}
+
+// MARK: - Motion
+
+/// Apple's fluid-interface numbers in one place: springs rather than durations,
+/// interruptible rather than fire-and-forget, and silent when the reader has
+/// asked for less movement.
+/// See ~/.claude/skills/apple-design-uikit (from emilkowalski/skills apple-design).
+enum Motion {
+    /// Damping 1.0 = no overshoot. Response 0.4s is the default for moving things.
+    static func spring(damping: CGFloat = 1.0, response: TimeInterval = 0.4) -> UISpringTimingParameters {
+        UISpringTimingParameters(dampingRatio: damping)
+    }
+
+    static var reduced: Bool { UIAccessibility.isReduceMotionEnabled }
+
+    /// An interruptible animator. Hand back the previous one to continue from
+    /// where it actually is on screen instead of snapping to its target first.
+    @discardableResult
+    static func animate(damping: CGFloat = 1.0,
+                        response: TimeInterval = 0.4,
+                        interrupting previous: UIViewPropertyAnimator? = nil,
+                        _ changes: @escaping () -> Void) -> UIViewPropertyAnimator? {
+        // Stopping at .current leaves the presentation values in place, which is
+        // what the next spring starts from.
+        if let previous, previous.state == .active {
+            previous.stopAnimation(false)
+            previous.finishAnimation(at: .current)
+        }
+        guard !reduced else {
+            changes()
+            return nil
+        }
+        let animator = UIViewPropertyAnimator(duration: response, timingParameters: spring(damping: damping,
+                                                                                          response: response))
+        animator.addAnimations(changes)
+        animator.startAnimation()
+        return animator
+    }
+
+    /// Press feedback that lands before the finger lifts.
+    static func press(_ view: UIView, down: Bool) {
+        guard !reduced else { return }
+        let animator = UIViewPropertyAnimator(duration: 0.1, timingParameters: spring(response: 0.1))
+        animator.addAnimations {
+            view.transform = down ? CGAffineTransform(scaleX: 0.97, y: 0.97) : .identity
+            view.alpha = down ? 0.85 : 1
+        }
+        animator.startAnimation()
     }
 }
 
