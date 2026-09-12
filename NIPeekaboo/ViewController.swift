@@ -239,6 +239,9 @@ final class MeetViewController: UIViewController {
     /// Set once NI has told us this device cannot do camera assistance with our
     /// ARSession, so we stop asking and say so on screen instead.
     private var cameraAssistFailed = false
+    /// Whether we hand NI our own ARSession (so the screen can show the camera)
+    /// or let it create one itself. `-previewNIOwnAR` flips this to compare.
+    private var provideOwnARSession = true
     private var anonNames: [MCPeerID: String] = [:]
     #if DEBUG
     private let hud = MeasureHUD()
@@ -433,6 +436,11 @@ final class MeetViewController: UIViewController {
             // Finder: end the meet-up 8s after a request arrives (exercises restartLink).
             previewAutoFinish = true
         }
+        if args.contains("-previewNIOwnAR") {
+            // Do not hand NI our ARSession; let it make its own. Tests whether
+            // -5883 is our AR configuration or camera assistance itself.
+            provideOwnARSession = false
+        }
         if args.contains("-previewAutoGuide") {
             // Finder: open the AR screen 2s after a request arrives, so the
             // two-simulator run reaches .guiding / .arrived.
@@ -579,8 +587,12 @@ final class MeetViewController: UIViewController {
         if link.peerID == activePeerID { activeCameraAssist = wantsCamera }
         if #available(iOS 16.0, *), wantsCamera {
             config.isCameraAssistanceEnabled = true
-            startARIfNeeded()
-            session.setARSession(sceneView.session)
+            if provideOwnARSession {
+                startARIfNeeded()
+                session.setARSession(sceneView.session)
+            }
+            // Otherwise NI creates and runs its own ARSession. No camera picture
+            // for us, but worldTransform(for:) still answers.
         }
         session.run(config)
     }
