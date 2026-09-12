@@ -909,8 +909,7 @@ final class MeetViewController: UIViewController {
                         ?? "\(waiter.peerID.displayName)が「ここだよ」を送ると、ここに距離が出ます"
                 } else {
                     finderHeadline.text = "相手を探しています"
-                    finderStatus.text = finderNotice
-                        ?? "相手にも「ここだよ」を開いて、「待つ」にしてもらってください"
+                    finderStatus.text = finderNotice ?? guidanceWhenNoPartner()
                 }
             } else if !isDemo, supportsUWB {
                 finderStatus.text = finderNotice
@@ -1358,7 +1357,9 @@ final class MeetViewController: UIViewController {
         peerListStack.layer.cornerRadius = 12
         peerListStack.clipsToBounds = true
 
-        peerEmptyLabel.text = "近くで「迎えに行く」にしている人を探しています…"
+        // Replaced on every refresh by guidanceWhenNoPartner(); this is only what
+        // shows for the instant before the first refresh.
+        peerEmptyLabel.text = "相手にも「ここだよ」を開いて、「迎えに行く」を選んでもらってください"
         peerEmptyLabel.font = Type.label
         peerEmptyLabel.textColor = UIColor.white.withAlphaComponent(0.4)
         peerEmptyLabel.numberOfLines = 0
@@ -1828,6 +1829,7 @@ final class MeetViewController: UIViewController {
             row.backgroundColor = selected ? amber.withAlphaComponent(0.22) : cardColour
         }
 
+        peerEmptyLabel.text = guidanceWhenNoPartner()
         peerListStack.isHidden = helpers.isEmpty
         peerEmptyLabel.isHidden = !helpers.isEmpty
         #if DEBUG
@@ -1971,6 +1973,24 @@ final class MeetViewController: UIViewController {
             line.widthAnchor.constraint(equalToConstant: 132),
         ])
         return line
+    }
+
+    /// What the person holding the other phone has to do, in words this side can
+    /// read out loud. Two people who have not agreed on roles beforehand cannot
+    /// work out "待つ / 迎えに行く" from two bare tabs — the first real pair
+    /// outdoors (2026-09-12) got stuck exactly here.
+    private func guidanceWhenNoPartner() -> String {
+        let mine = role == .requester ? "requester" : "supporter"
+        let sameRoleNearby = links.values.contains { $0.peerRole == mine }
+        if sameRoleNearby {
+            // Both sides picked the same thing. Name the rule rather than the tab.
+            return role == .requester
+                ? "相手も「待つ」になっています。先に着いた人が「待つ」、これから向かう人が「迎えに行く」です"
+                : "相手も「迎えに行く」になっています。先に着いた人が「待つ」、これから向かう人が「迎えに行く」です"
+        }
+        return role == .requester
+            ? "相手にも「ここだよ」を開いて、「迎えに行く」を選んでもらってください"
+            : "相手にも「ここだよ」を開いて、「待つ」を選んでもらってください"
     }
 
     private func sectionLabel(_ text: String) -> UILabel {
