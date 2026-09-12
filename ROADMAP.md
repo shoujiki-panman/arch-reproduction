@@ -19,6 +19,8 @@
 
 ## 事実(実測・機械確認したもの)
 
+- 2026-09-12: 🚨**両方がアプリを開いたままでないと成立しない**。Appleドキュメント: アプリが背面に回ると MultipeerConnectivity は広告も探索も止め、開いているセッションを切断する。つまり迎える側は歩いている間ずっと画面を見ている必要があり、ポケットに入れた瞬間に切れる。純正「探す」の Precision Finding はシステム側なのでこの制約を受けない（正面から勝てない差）
+- 2026-09-12 屋外・本人以外と初使用: ①**役割が分からない**（「相手が使い方わからないとどっちが何していいかわからない」）→ PR#24 で両画面に指示を出した ②**両方が最初に開くのが面倒**（本人の判断は「手数の話。使うのはいい」＝UWBの価値は認める）→ 迎える側は PR#25 のリンクで1タップに。待つ側の起動はまだ削れる（前回の選択を覚える／ウィジェット）
 - 2026-09-12: **カメラアシストは通る。ただし収束に32秒**（16 Pro 2台・室内・3m前後）。当初 `-5883 NIErrorCodeInvalidARConfiguration` で測距ごと死んでいたが、原因は**こちらが渡していた ARWorldTrackingConfiguration が NI と非互換**だったこと。NIに自前でARSessionを作らせると `err` なし・`cb/s=64〜67`・`world_nil=0` で収束する。ただしその経路では**カメラ映像がこちらに来ない**。`direction` は終始 nil のままで、**方向の出どころは worldTransform だけ**
 - 2026-09-12: **迎える側の名前が両方「iPhone」**。iOS 16以降 `UIDevice.current.name` は `com.apple.developer.device-information.user-assigned-device-name` entitlement なしでは機種名しか返さない。ROADMAPに【推測】で置いていた表示名の項目が実機で裏取りされた
 - 2026-09-12: **HUDが画面最下端でホームインジケータと重なり、タップできない**（3回タップの展開・長押しの共有が実機で使えない）
@@ -92,6 +94,8 @@ CSVは HUD を長押しして共有→ `measurements/` に置く。端末名・�
 - シミュレータ2台の回帰確認: 片方 `-previewFinder -previewAutoFinish -previewLog`、もう片方 `-previewAutoSend -previewLog`(`--console-pty` でログ取得、`RECON` 行を見る)
 - Phase復帰の確認(欠陥2/4/8): 迎える側 `-previewFinder -previewAutoGuide -previewDrift -previewLog` ＋ 待つ側 `-previewAutoSend -previewResend -previewLog`。`-previewAutoGuide`=meet受信2秒後にAR画面へ / `-previewDrift`=到着後に1回だけ範囲外の距離を流す(シミュレータの模擬距離は0.04m固定で動かせないため) / `-previewResend`=14秒後に同じ meet を再送。切断は `xcrun simctl terminate <UDID> jp.shutanuma.kokodayo`
 - 実測日まで 16 Pro は iOS 26.6 のまま(Xcode 26.6 / SDK 26.5 と揃える)。iOS 27 には上げない
+- 🚨**屋外で距離を測るときは2人とも画面を点けたままにする**。片方が画面を消すか他のアプリに行った瞬間にMPCが切れるので、そのままだと「5mで切れた」という嘘の数字になる。DEBUGビルドは `isIdleTimerDisabled` を立てているので自動ロックはしないが、手で消すと切れる
+- 🚨外出中の端末にMacからインストールはできない（同じLANが要る）。ケーブルは必須ではないが、Wi-Fiが別なら無理。これを解消するのはTestFlight（Phase 2の本人タスク）
 - 🚨実機の署名ビルドで `-derivedDataPath` をこのリポジトリの中に向けてはいけない。リポジトリが同期フォルダ配下(`com.apple.fileprovider.*` が付く)にあるため、成果物に `com.apple.FinderInfo` が付いて `CodeSign` が `resource fork, Finder information, or similar detritus not allowed` で落ちる。既定のDerivedData(`~/Library/Developer/Xcode/DerivedData`)に出せば通る。シミュレータ向けは署名しないので影響なし(2026-09-12 実測)
 - 🚨**端末Aは画面表示ズームが入っている**(2026-09-12 実測: panelFrame=320×501、標準の16 Proは402×641)。文字サイズは最小(XS)。シミュレータの16 Pro/17 Proでは2割広いので、レイアウトの検証はこれだけでは足りない。溢れの確認は iPhone SE 級(375×667)か実機で行う
 - 匿名化: CSV・スクショ・記事の端末名は「端末A/B」に置換してからコミット
