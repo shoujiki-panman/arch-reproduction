@@ -24,7 +24,8 @@
 	<true/>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_nisample._tcp</string>
+		<string>_kokodayo._tcp</string>
+		<string>_kokodayo._udp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>合流ガイドで相手の方向を実空間に表示するためにカメラを使用します</string>
