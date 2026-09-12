@@ -628,19 +628,13 @@ final class MeetViewController: UIViewController {
 
     private func connectedToPeer(peer: MCPeerID) {
         guard links[peer] == nil else { return }
-        let link = PeerLink(peerID: peer)
-        let session = NISession()
-        session.delegate = self
-        link.session = session
-        links[peer] = link
-        sessionOwners[ObjectIdentifier(session)] = peer
-
+        // Connected is not consented. Until one side sends 「ここだよ」 and the
+        // other accepts it, there is no NISession and no token on the wire, so
+        // nobody nearby can range us just by running the app. The screen has
+        // said as much ("伝えている間だけ…届きます") since 8/31; the code now agrees.
+        links[peer] = PeerLink(peerID: peer)
         if let hello = try? JSONEncoder().encode(HelloMessage(role: role == .supporter ? "supporter" : "requester")) {
             mpc?.sendData(data: hello, peers: [peer], mode: .reliable)
-        }
-        if let token = session.discoveryToken,
-           let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) {
-            mpc?.sendData(data: data, peers: [peer], mode: .reliable)
         }
         refreshPeerList()
     }
@@ -723,15 +717,16 @@ final class MeetViewController: UIViewController {
     /// Ends ranging with a peer and starts a fresh session, so "終わったら共有も終わる"
     /// is real rather than a label.
     private func restartLink(_ link: PeerLink) {
+        // Ending the meet-up ends the measuring. Invalidating our session sends
+        // the peer .peerEnded, and nothing restarts until the next 「ここだよ」.
+        // (Before 9/12 this resumed at once with a fresh token: the sharing
+        // never actually stopped.)
         if let old = link.session { killSession(old) }
+        link.session = nil
+        link.peerToken = nil
         link.distance = nil
         link.direction = nil
         link.world = nil
-        // The peer's token stays valid as long as *their* session is alive, so
-        // keep it and resume straight away with our new session. The peer will
-        // receive our fresh token and re-run on their side.
-        ensureLiveSession(for: link)
-        runConfig(for: link)
     }
 
     private func dataReceivedHandler(data: Data, peer: MCPeerID) {
@@ -742,7 +737,11 @@ final class MeetViewController: UIViewController {
 
         if let token = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: data) {
             link.peerToken = token
-            runConfig(for: link, cameraAssist: activePeerID == peer && phase == .guiding)
+            // A token from anyone else is filed and ignored. It only becomes a
+            // measurement once this peer is the one we chose or accepted.
+            if peer == activePeerID {
+                runConfig(for: link, cameraAssist: phase == .guiding)
+            }
             return
         }
         if let hello = try? JSONDecoder().decode(HelloMessage.self, from: data), hello.type == "hello" {
@@ -758,11 +757,17 @@ final class MeetViewController: UIViewController {
             activePeerID = peer
             activeRequest = request
             latestDistance = link.distance
+            // Accepting is consent: only now do we make a session and send our
+            // token back. Their token usually arrived just before this message;
+            // if it has not yet, the token handler starts ranging when it does.
+            ensureLiveSession(for: link)
+            runConfig(for: link)
             applyIncomingRequest(request)
             return
         }
         if let msg = try? JSONDecoder().decode(CancelMessage.self, from: data), msg.type == "cancel" {
             guard role == .supporter, activePeerID == peer else { return }
+            restartLink(link)
             activeRequest = nil
             activePeerID = nil
             arrivalOverlay.isHidden = true
@@ -1822,7 +1827,8 @@ final class MeetViewController: UIViewController {
         for link in helpers {
             guard let row = peerRows[link.peerID] else { continue }
             row.configuration?.title = link.peerID.displayName
-            row.configuration?.subtitle = link.distance.map { "あと \(formatMeters($0))" } ?? "測定中…"
+            row.configuration?.subtitle = link.distance.map { "あと \(formatMeters($0))" }
+                ?? (link.peerID == activePeerID ? "測定中…" : "近くにいます")
             let selected = link.peerID == selectedHelperID
             row.configuration?.baseForegroundColor = selected ? .white : UIColor.white.withAlphaComponent(0.6)
             row.backgroundColor = selected ? amber.withAlphaComponent(0.22) : cardColour
@@ -1831,7 +1837,7 @@ final class MeetViewController: UIViewController {
         peerListStack.isHidden = helpers.isEmpty
         peerEmptyLabel.isHidden = !helpers.isEmpty
         #if DEBUG
-        if previewAutoSend, !requestSent, let first = helpers.first, first.distance != nil {
+        if previewAutoSend, !requestSent, let first = helpers.first {
             previewAutoSend = false
             selectedHelperID = first.peerID
             DispatchQueue.main.async { self.sendTapped() }
@@ -1878,6 +1884,8 @@ final class MeetViewController: UIViewController {
         if link.isDemo {
             waiterStatus.text = "\(target.displayName) に伝えました(デモ)"
         } else {
+            // Sending is consent: our token goes to this peer and no other.
+            ensureLiveSession(for: link)
             sendMeetRequest(request, to: target)
             waiterStatus.text = "\(target.displayName) に「ここだよ」を伝えました\n伝えている間だけ、この相手に距離が届きます"
         }
@@ -2298,9 +2306,9 @@ extension MeetViewController: NISessionDelegate {
 
         switch reason {
         case .peerEnded:
-            // The peer invalidated their session (they finished/cancelled, or
-            // restarted). Our session is still fine. Keep it and keep their old
-            // token; their new token arrives over MPC and runConfig replaces it.
+            // The peer invalidated their session: they finished, cancelled, or
+            // restarted. Since 9/12 ranging is consent-gated, so we do not keep a
+            // session alive for them; a new 「ここだよ」 rebuilds everything.
             link.distance = nil
             link.direction = nil
             link.world = nil
