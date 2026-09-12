@@ -18,15 +18,21 @@ class MPCSession: NSObject, MCSessionDelegate, MCNearbyServiceBrowserDelegate, M
     var peerDisconnectedHandler: ((MCPeerID) -> Void)?
     private let serviceString: String
     private let mcSession: MCSession
-    private let localPeerID = MCPeerID(displayName: UIDevice.current.name)
+    private let localPeerID: MCPeerID
     private let mcAdvertiser: MCNearbyServiceAdvertiser
     private let identityString: String
     private let maxNumPeers: Int
     private var mcBrowser: MCNearbyServiceBrowser?
 
-    init(service: String, identity: String, maxPeers: Int) {
+    init(service: String, identity: String, maxPeers: Int, displayName: String) {
         serviceString = service
         identityString = identity
+        // iOS 16 and later return the model ("iPhone") from UIDevice.current.name
+        // unless the app carries the user-assigned-device-name entitlement, so on
+        // two of the same phone every row in the list reads the same. The caller
+        // supplies a name the pair can tell apart instead.
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        localPeerID = MCPeerID(displayName: trimmed.isEmpty ? "iPhone" : String(trimmed.prefix(20)))
         mcSession = MCSession(peer: localPeerID, securityIdentity: nil, encryptionPreference: .required)
         mcAdvertiser = MCNearbyServiceAdvertiser(peer: localPeerID,
                                                  discoveryInfo: [MPCSessionConstants.kKeyIdentity: identityString],
