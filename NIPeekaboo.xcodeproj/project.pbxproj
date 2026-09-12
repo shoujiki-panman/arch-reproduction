@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		KD0000000000000000000002 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = KD0000000000000000000001 /* PrivacyInfo.xcprivacy */; };
 		0A7C6E61248C5CEE00DEC871 /* MathUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7C6E60248C5CEE00DEC871 /* MathUtilities.swift */; };
 		71418B3224949358007DAB1C /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 71418B3124949358007DAB1C /* README.md */; };
 		AD026E6B248E77B10016A2B6 /* MPCSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD026E6A248E77B10016A2B6 /* MPCSession.swift */; };
@@ -21,6 +22,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		KD0000000000000000000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		0A7C6E60248C5CEE00DEC871 /* MathUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathUtilities.swift; sourceTree = "<group>"; };
 		43D6B566D60E1D86FC1BA04C /* SampleCode.xcconfig */ = {isa = PBXFileReference; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
 		62C8A7F1105E38E9FB343714 /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; path = LICENSE.txt; sourceTree = "<group>"; };
@@ -117,6 +119,7 @@
 				ADDB290624897F7E00F72056 /* Assets.xcassets */,
 				ADDB290824897F7E00F72056 /* LaunchScreen.storyboard */,
 				ADDB290B24897F7E00F72056 /* Info.plist */,
+				KD0000000000000000000001 /* PrivacyInfo.xcprivacy */,
 			);
 			path = NIPeekaboo;
 			sourceTree = "<group>";
@@ -183,6 +186,7 @@
 			files = (
 				ADDB290A24897F7E00F72056 /* LaunchScreen.storyboard in Resources */,
 				ADDB290724897F7E00F72056 /* Assets.xcassets in Resources */,
+				KD0000000000000000000002 /* PrivacyInfo.xcprivacy in Resources */,
 				71418B3224949358007DAB1C /* README.md in Resources */,
 				ADDB290524897F7D00F72056 /* Main.storyboard in Resources */,
 			);
@@ -277,7 +281,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				CURRENT_PROJECT_VERSION = 2;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -334,7 +339,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				CURRENT_PROJECT_VERSION = 2;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
