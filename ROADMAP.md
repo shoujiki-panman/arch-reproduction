@@ -47,6 +47,7 @@
 | 11 | README が Apple サンプルの英文 | Phase 2 次点(出自明記) | AI |
 | 文言 | 「伝えている間だけ届く」と実装(常時測距・表示だけ隠す)のずれ | 問2で本人が決める(推奨=文言側を直す) | 本人 |
 | 表示名 | UIDevice.name が「iPhone」になりうる【推測】 | 実測 項目0で確認してから | AI |
+| 見た目 | デザインの作り直し(骨組みだけArch期`ceecf1b`から回収、文言・配色・題材・#7119は戻さない)＋Appleデザイン原則の適用 | Phase 2・**実測日のあと**(2026-09-12 本人決定。詳細はPLAN) | AI／スキルURLは本人 |
 | 6 | 小画面で見出しが潰れる(13 mini 確認済み) | Phase 3(mini級のテスターがいる時) | AI |
 | 16 | maxPeers=3 で4台目から相手が出ない | Phase 3(4台以上の場で起きたら) | AI |
 | 10 | VoiceOver / Dynamic Type | Phase 4以降 | — |
@@ -85,4 +86,5 @@ CSVは HUD を長押しして共有→ `measurements/` に置く。端末名・�
 - シミュレータ2台の回帰確認: 片方 `-previewFinder -previewAutoFinish -previewLog`、もう片方 `-previewAutoSend -previewLog`(`--console-pty` でログ取得、`RECON` 行を見る)
 - Phase復帰の確認(欠陥2/4/8): 迎える側 `-previewFinder -previewAutoGuide -previewDrift -previewLog` ＋ 待つ側 `-previewAutoSend -previewResend -previewLog`。`-previewAutoGuide`=meet受信2秒後にAR画面へ / `-previewDrift`=到着後に1回だけ範囲外の距離を流す(シミュレータの模擬距離は0.04m固定で動かせないため) / `-previewResend`=14秒後に同じ meet を再送。切断は `xcrun simctl terminate <UDID> jp.shutanuma.kokodayo`
 - 実測日まで 16 Pro は iOS 26.6 のまま(Xcode 26.6 / SDK 26.5 と揃える)。iOS 27 には上げない
+- 🚨実機の署名ビルドで `-derivedDataPath` をこのリポジトリの中に向けてはいけない。リポジトリが同期フォルダ配下(`com.apple.fileprovider.*` が付く)にあるため、成果物に `com.apple.FinderInfo` が付いて `CodeSign` が `resource fork, Finder information, or similar detritus not allowed` で落ちる。既定のDerivedData(`~/Library/Developer/Xcode/DerivedData`)に出せば通る。シミュレータ向けは署名しないので影響なし(2026-09-12 実測)
 - 匿名化: CSV・スクショ・記事の端末名は「端末A/B」に置換してからコミット
