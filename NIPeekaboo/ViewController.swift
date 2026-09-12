@@ -211,6 +211,9 @@ final class MeetViewController: UIViewController {
         var direction: simd_float3?
         var world: simd_float4x4?
         var isDemo = false
+        /// Guards the auto-recovery in didInvalidateWith against a loop when the
+        /// replacement session fails the same way. Reset on the next measurement.
+        var invalidateRetries = 0
         init(peerID: MCPeerID) { self.peerID = peerID }
     }
 
@@ -233,6 +236,9 @@ final class MeetViewController: UIViewController {
     private var callbackCounter = 0
     private var callbacksPerSecond = 0
     private var activeCameraAssist = false
+    /// Set once NI has told us this device cannot do camera assistance with our
+    /// ARSession, so we stop asking and say so on screen instead.
+    private var cameraAssistFailed = false
     private var anonNames: [MCPeerID: String] = [:]
     #if DEBUG
     private let hud = MeasureHUD()
@@ -557,11 +563,21 @@ final class MeetViewController: UIViewController {
 
     private func runConfig(for link: PeerLink, cameraAssist: Bool = false) {
         guard link.peerToken != nil else { return }
+        let wantsCamera = cameraAssist && cameraAssistance && !cameraAssistFailed
+        // `setARSession` only takes hold on a session that has not run yet: Apple
+        // invalidates with NIErrorCodeInvalidARConfiguration (-5883) when the
+        // ARSession is handed to a session that is already ranging. So switching
+        // into camera assistance means starting a fresh NISession, which also
+        // re-sends our token so the peer follows us over.
+        if wantsCamera, let old = link.session, !deadSessions.contains(ObjectIdentifier(old)) {
+            killSession(old)
+            link.session = nil
+        }
         let session = ensureLiveSession(for: link)
         guard let token = link.peerToken else { return }
         let config = NINearbyPeerConfiguration(peerToken: token)
-        if link.peerID == activePeerID { activeCameraAssist = cameraAssist && cameraAssistance }
-        if #available(iOS 16.0, *), cameraAssistance, cameraAssist {
+        if link.peerID == activePeerID { activeCameraAssist = wantsCamera }
+        if #available(iOS 16.0, *), wantsCamera {
             config.isCameraAssistanceEnabled = true
             startARIfNeeded()
             session.setARSession(sceneView.session)
@@ -938,9 +954,18 @@ final class MeetViewController: UIViewController {
     private func startARIfNeeded() {
         guard !arRunning else { return }
         #if !targetEnvironment(simulator)
+        // The set NearbyInteraction documents as compatible. Left implicit these
+        // default the right way today, but a default that moves would come back
+        // as -5883 with nothing on screen to explain it.
         let config = ARWorldTrackingConfiguration()
         config.worldAlignment = .gravity
-        sceneView.session.run(config)
+        config.isCollaborationEnabled = false
+        config.planeDetection = []
+        config.environmentTexturing = .none
+        if ARWorldTrackingConfiguration.supportsUserFaceTracking {
+            config.userFaceTrackingEnabled = false
+        }
+        sceneView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         #endif
         arRunning = true
     }
@@ -1910,6 +1935,7 @@ extension MeetViewController: NISessionDelegate {
 
     func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
         guard let peerID = sessionOwners[ObjectIdentifier(session)], let link = links[peerID] else { return }
+        link.invalidateRetries = 0
         guard let token = link.peerToken,
               let object = nearbyObjects.first(where: { $0.discoveryToken == token }) else { return }
 
@@ -1992,13 +2018,48 @@ extension MeetViewController: NISessionDelegate {
             return
         }
         deadSessions.insert(ObjectIdentifier(session))
-        if let peerID = sessionOwners[ObjectIdentifier(session)] {
-            sessionOwners.removeValue(forKey: ObjectIdentifier(session))
+        guard let peerID = sessionOwners[ObjectIdentifier(session)] else { return }
+        sessionOwners.removeValue(forKey: ObjectIdentifier(session))
+        guard let link = links[peerID] else { return }
+
+        // The NI session died, but MultipeerConnectivity is still up and the peer
+        // is still standing there. Dropping the link stranded the finder on a
+        // frozen AR screen, so keep it and start ranging again.
+        let cameraWasOn = activeCameraAssist && peerID == activePeerID
+        // -5883 = NIErrorCodeInvalidARConfiguration (iOS 16+). Compared as a raw
+        // value so the deployment target stays at 15.0.
+        if cameraWasOn, ns.domain == NIErrorDomain, ns.code == -5883 {
+            // This device will not do camera assistance with our ARSession. Say so
+            // and carry on with distance only, rather than losing the peer.
+            cameraAssistFailed = true
+            activeCameraAssist = false
+            link.world = nil
+            link.session = nil
+            link.invalidateRetries = 0
+            runConfig(for: link)
+            if phase == .guiding || phase == .arrived {
+                arHint.text = "この端末ではカメラでの方向が出せません。距離と目印で探してください"
+                arHint.isHidden = false
+            }
+            refreshPeerList()
+            refreshDials()
+            return
+        }
+
+        guard link.invalidateRetries < 2 else {
+            // Two failures in a row: stop retrying so we do not spin.
             links.removeValue(forKey: peerID)
             if activePeerID == peerID { activePeerID = nil }
             if selectedHelperID == peerID { selectedHelperID = nil }
             refreshPeerList()
+            return
         }
+        link.invalidateRetries += 1
+        link.session = nil
+        link.world = nil
+        if peerID == activePeerID { activeCameraAssist = false }
+        runConfig(for: link)
+        refreshPeerList()
     }
 }
 
