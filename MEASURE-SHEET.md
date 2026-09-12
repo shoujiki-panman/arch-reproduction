@@ -54,7 +54,34 @@
 
 **判定**: 到着閾値1.0m・ヒステリシス0.5mは妥当か。ずらすなら何mか: ____
 
-### 3. カメラアシストで矢印が出るか（20分）
+### 3. カメラアシストで矢印が出るか ✅**2026-09-12 室内で完了**
+
+**結果: 出る。ただし収束に32秒。**
+
+| | 自前のARSessionを渡す | NIに作らせる |
+|---|---|---|
+| `err` | **-5883**(InvalidARConfiguration) | なし |
+| `cb/s` | 0（測距ごと死ぬ） | **64〜67** |
+| `world_nil` | 1 | **0** |
+
+収束の実測（16 Pro 2台・室内・距離3m前後）:
+
+```
+15:23:58 案内開始 notConverged
+15:24:00 insufficientMovement
+15:24:02 insufficientHorizontalSweep
+15:24:06 insufficientVerticalSweep
+15:24:30 converged / world_nil=0      ← 32秒
+以降     converged を維持
+```
+
+- `direction` は最後まで nil。**方向の出どころは worldTransform だけ**
+- NIに作らせる経路では**カメラ映像を出せない**（ARSessionがこちらに来ない）
+- → 「32秒振らせるのか」「カメラ映像を捨てるのか」がデザインの設計判断になる
+
+### 3'. （参考）当初の手順
+
+
 
 迎える側でAR画面を開き、端末を左右にゆっくり振る。
 
