@@ -372,8 +372,12 @@ final class MeetViewController: UIViewController {
     /// bottom edge and sits **over** the dial. Stacking the two caused every
     /// squeeze bug on 2026-09-12: on a short screen they fought for one column and
     /// Auto Layout picked a loser at random. Overlapping ends that class of bug.
-    private let waiterSheet = UIView()
-    private let sheetGrabber = UIView()
+    /// The content UIKit's sheet carries. No surface of its own: the sheet is it.
+    private let waiterSheetContent = UIView()
+    private var waiterSheetVC: SheetCarrier?
+    /// What the sheet rests at: the primary button and the line under it. Anything
+    /// above that is behind a drag, which is the whole point of the sheet.
+    private static let compactSheetHeight: CGFloat = 208
     private let waiterCard = UIView()
     private let peerListStack = UIStackView()
     private let peerEmptyLabel = UILabel()
@@ -575,6 +579,41 @@ final class MeetViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         askForDisplayNameIfNeeded()
+        showWaiterSheetIfNeeded()
+    }
+
+    /// The waiting side's controls live in a UIKit sheet over the home screen. At
+    /// rest it shows only the primary button; drag it up for the choices. Apple's
+    /// own Precision Finding puts a distance and nothing else on screen, and Uber
+    /// shows a map and a search field until anything else becomes relevant.
+    private func showWaiterSheetIfNeeded() {
+        guard role == .requester, presentedViewController == nil, view.window != nil else { return }
+        let carrier = SheetCarrier(content: waiterSheetContent)
+        carrier.isModalInPresentation = true        // never swiped away entirely
+        carrier.modalPresentationStyle = .pageSheet
+        if let sheet = carrier.sheetPresentationController {
+            sheet.prefersGrabberVisible = true
+            sheet.preferredCornerRadius = 28
+            if #available(iOS 16.0, *) {
+                let compact = UISheetPresentationController.Detent.custom(identifier: .init("compact")) { _ in
+                    Self.compactSheetHeight
+                }
+                sheet.detents = [compact, .medium()]
+                sheet.largestUndimmedDetentIdentifier = .medium
+                sheet.selectedDetentIdentifier = .init("compact")
+            } else {
+                sheet.detents = [.medium(), .large()]
+                sheet.largestUndimmedDetentIdentifier = .medium
+            }
+        }
+        waiterSheetVC = carrier
+        present(carrier, animated: true)
+    }
+
+    private func hideWaiterSheet() {
+        guard let carrier = waiterSheetVC else { return }
+        waiterSheetVC = nil
+        carrier.dismiss(animated: true)
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
@@ -1047,12 +1086,14 @@ final class MeetViewController: UIViewController {
         let next: Role = roleSwitch.selectedSegmentIndex == 0 ? .requester : .supporter
         guard next != role else { return }
         invitedBy = nil
+        if next == .supporter { hideWaiterSheet() }
         resetSession()
         role = next
         phase = .searching
         if supportsUWB { startup() }
         refreshPeerList()
         refreshDials()
+        if next == .requester { showWaiterSheetIfNeeded() }
     }
 
     /// Tears every link down so a role change starts from a clean state.
@@ -1441,13 +1482,12 @@ final class MeetViewController: UIViewController {
                 panel.topAnchor.constraint(equalTo: roleSwitch.bottomAnchor, constant: 18),
                 panel.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
                 panel.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
-                panel.bottomAnchor.constraint(equalTo: safe.bottomAnchor,
-                                              constant: -Self.hudInset),
+                panel.bottomAnchor.constraint(equalTo: safe.bottomAnchor),
             ])
         }
 
         NSLayoutConstraint.activate([
-            title.topAnchor.constraint(equalTo: safe.topAnchor, constant: 10),
+            title.topAnchor.constraint(equalTo: safe.topAnchor, constant: 10 + Self.hudInset),
             title.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 20),
             demoButton.centerYAnchor.constraint(equalTo: title.centerYAnchor),
             demoButton.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -20),
@@ -1523,19 +1563,6 @@ final class MeetViewController: UIViewController {
         waiterStatus.textAlignment = .center
         waiterStatus.numberOfLines = 3
 
-        // The sheet is the surface now; the card inside it is only a grouping.
-        waiterSheet.backgroundColor = surfaceColour
-        waiterSheet.layer.cornerRadius = 28
-        waiterSheet.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
-        waiterSheet.layer.borderWidth = 1
-        waiterSheet.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
-        waiterSheet.layer.shadowColor = UIColor.black.cgColor
-        waiterSheet.layer.shadowOpacity = 0.5
-        waiterSheet.layer.shadowRadius = 24
-        waiterSheet.layer.shadowOffset = CGSize(width: 0, height: -8)
-
-        sheetGrabber.backgroundColor = UIColor.white.withAlphaComponent(0.25)
-        sheetGrabber.layer.cornerRadius = 2.5
 
         // One stack instead of four views chained by their edges. Hidden rows
         // collapse on their own, and the whole block keeps its natural height so
@@ -1555,11 +1582,9 @@ final class MeetViewController: UIViewController {
         }
 
         waiterPanel.addSubview(waiterDial)
-        waiterPanel.addSubview(waiterSheet)
         waiterDial.translatesAutoresizingMaskIntoConstraints = false
-        waiterSheet.translatesAutoresizingMaskIntoConstraints = false
-        for v in [sheetGrabber, waiterCard, waiterControls] {
-            waiterSheet.addSubview(v)
+        for v in [waiterCard, waiterControls] {
+            waiterSheetContent.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
         waiterCard.addSubview(waiterSelection)
@@ -1579,53 +1604,41 @@ final class MeetViewController: UIViewController {
         peerEmptyLabel.setContentCompressionResistancePriority(.required, for: .vertical)
         // Centred in whatever the sheet leaves, not in the panel: the sheet's
         // height changes when the choices collapse after sending.
-        let aboveSheet = UILayoutGuide()
-        waiterPanel.addLayoutGuide(aboveSheet)
-        NSLayoutConstraint.activate([
-            aboveSheet.topAnchor.constraint(equalTo: waiterPanel.topAnchor),
-            aboveSheet.bottomAnchor.constraint(equalTo: waiterSheet.topAnchor),
-            aboveSheet.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor),
-            aboveSheet.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor),
-        ])
-        let dialCentre = waiterDial.centerYAnchor.constraint(equalTo: aboveSheet.centerYAnchor)
+        // The dial sits on the home screen; the sheet is presented over it by
+        // UIKit. The screen cannot know the sheet's live height, so the dial keeps
+        // clear of the sheet at its smallest resting size and lets the sheet cover
+        // it when dragged up — which is what a sheet is for.
+        let dialCentre = waiterDial.centerYAnchor.constraint(equalTo: waiterPanel.topAnchor,
+                                                             constant: 150)
         dialCentre.priority = .defaultLow
         dialCentre.isActive = true
 
-        // Preferred size, not a demand: on a short screen it gives way.
         let dialSize = waiterDial.heightAnchor.constraint(equalToConstant: 210)
         dialSize.priority = .defaultLow
         dialSize.isActive = true
 
         NSLayoutConstraint.activate([
-            // The sheet owns the bottom edge and takes the height its content
-            // needs. Nothing above it competes for that space.
-            waiterSheet.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor),
-            waiterSheet.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor),
-            waiterSheet.bottomAnchor.constraint(equalTo: waiterPanel.bottomAnchor, constant: 28),
+            // A sheet reveals from the top down, so what must be visible at rest
+            // goes first: the primary action. The choices live below it and only
+            // appear when the sheet is dragged up.
+            waiterControls.topAnchor.constraint(equalTo: waiterSheetContent.topAnchor, constant: 22),
+            waiterControls.leadingAnchor.constraint(equalTo: waiterSheetContent.leadingAnchor, constant: 24),
+            waiterControls.trailingAnchor.constraint(equalTo: waiterSheetContent.trailingAnchor, constant: -24),
 
-            sheetGrabber.topAnchor.constraint(equalTo: waiterSheet.topAnchor, constant: 8),
-            sheetGrabber.centerXAnchor.constraint(equalTo: waiterSheet.centerXAnchor),
-            sheetGrabber.widthAnchor.constraint(equalToConstant: 36),
-            sheetGrabber.heightAnchor.constraint(equalToConstant: 5),
-
-            waiterCard.topAnchor.constraint(equalTo: sheetGrabber.bottomAnchor, constant: 12),
-            waiterCard.leadingAnchor.constraint(equalTo: waiterSheet.leadingAnchor, constant: 20),
-            waiterCard.trailingAnchor.constraint(equalTo: waiterSheet.trailingAnchor, constant: -20),
+            waiterCard.topAnchor.constraint(equalTo: waiterControls.bottomAnchor, constant: 18),
+            waiterCard.leadingAnchor.constraint(equalTo: waiterSheetContent.leadingAnchor, constant: 24),
+            waiterCard.trailingAnchor.constraint(equalTo: waiterSheetContent.trailingAnchor, constant: -24),
+            waiterCard.bottomAnchor.constraint(equalTo: waiterSheetContent.bottomAnchor, constant: -34),
 
             waiterSelection.topAnchor.constraint(equalTo: waiterCard.topAnchor),
             waiterSelection.bottomAnchor.constraint(equalTo: waiterCard.bottomAnchor),
             waiterSelection.leadingAnchor.constraint(equalTo: waiterCard.leadingAnchor),
             waiterSelection.trailingAnchor.constraint(equalTo: waiterCard.trailingAnchor),
 
-            waiterControls.topAnchor.constraint(equalTo: waiterCard.bottomAnchor, constant: 14),
-            waiterControls.leadingAnchor.constraint(equalTo: waiterSheet.leadingAnchor, constant: 24),
-            waiterControls.trailingAnchor.constraint(equalTo: waiterSheet.trailingAnchor, constant: -24),
-            waiterControls.bottomAnchor.constraint(equalTo: waiterSheet.bottomAnchor, constant: -46),
-
-            // Behind the sheet. No relationship to it beyond keeping clear.
             waiterDial.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
             waiterDial.topAnchor.constraint(greaterThanOrEqualTo: waiterPanel.topAnchor, constant: 8),
-            waiterDial.bottomAnchor.constraint(lessThanOrEqualTo: waiterSheet.topAnchor, constant: -16),
+            waiterDial.bottomAnchor.constraint(lessThanOrEqualTo: waiterPanel.bottomAnchor,
+                                               constant: -Self.compactSheetHeight - 16),
             waiterDial.widthAnchor.constraint(equalTo: waiterDial.heightAnchor),
             waiterDial.heightAnchor.constraint(greaterThanOrEqualToConstant: 0),
         ])
@@ -2290,10 +2303,9 @@ extension MeetViewController {
         NSLayoutConstraint.activate([
             hud.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             hud.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            hud.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
-            // The bottom strip is the home indicator's, so the HUD sat where a
-            // tap never reached it: its 3-tap expand and long-press share were
-            // both unusable on a real phone.
+            // Top, not bottom: the sheet owns the bottom edge now and would cover
+            // the one thing the measuring day depends on.
+            hud.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             hud.heightAnchor.constraint(greaterThanOrEqualToConstant: 32),
         ])
         hud.onShare = { [weak self] url in
@@ -2629,6 +2641,46 @@ final class CapsuleButton: UIButton {
     override func layoutSubviews() {
         super.layoutSubviews()
         layer.cornerRadius = bounds.height / 2
+    }
+}
+
+/// Carries a view that MeetViewController owns into a real UIKit sheet, so the
+/// drag, the detents and the grabber are Apple's rather than ours. The previous
+/// hand-rolled panel had a grabber that could not be dragged.
+final class SheetCarrier: UIViewController {
+    private let content: UIView
+
+    init(content: UIView) {
+        self.content = content
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private let scroll = UIScrollView()
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        scroll.showsVerticalScrollIndicator = false
+        view.addSubview(scroll)
+        scroll.addSubview(content)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        content.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            // Inside a scroll view the content keeps its natural height instead of
+            // being squeezed into whichever detent the sheet is resting at.
+            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
+        ])
     }
 }
 
