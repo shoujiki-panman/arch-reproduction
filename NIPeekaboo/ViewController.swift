@@ -144,6 +144,10 @@ final class MeetDial: UIView {
         bar.path = path.cgPath
         track.frame = bounds
         bar.frame = bounds
+        // Squeezed small on a short screen there is no room inside the ring for a
+        // two-line caption, and it spills out below. The bottom of the screen is
+        // already saying the same thing.
+        captionLabel.isHidden = side < 140
     }
 
     func set(distance: Float?, direction: simd_float3?, colour: UIColor, value: String, caption: String) {
@@ -360,6 +364,7 @@ final class MeetViewController: UIViewController {
     /// Who sent the link that opened this app, if it was opened that way.
     private var invitedBy: String?
     private let callButton = UIButton(type: .system)
+    private let waiterControls = UIStackView()
     private var selectedKind: MeetRequest.Kind = .here
     private var selectedMarker: MeetRequest.MarkerHint = .wave
 
@@ -540,6 +545,7 @@ final class MeetViewController: UIViewController {
         if args.contains("-previewMeasure") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 print("MEASURE rows=\(self.peerListStack.arrangedSubviews.count) listFrame=\(self.peerListStack.frame) selectionFrame=\(self.waiterSelection.frame) panelFrame=\(self.waiterPanel.frame) dialFrame=\(self.waiterDial.frame)")
+                print("MEASURE cardFrame=\(self.waiterCard.frame) controlsFrame=\(self.waiterControls.frame) send=\(self.sendButton.frame) call=\(self.callButton.frame) status=\(self.waiterStatus.frame) cancelHidden=\(self.cancelButton.isHidden)")
                 for (i, row) in self.peerListStack.arrangedSubviews.enumerated() {
                     print("MEASURE row\(i) frame=\(row.frame) hidden=\(row.isHidden)")
                 }
@@ -1382,6 +1388,10 @@ final class MeetViewController: UIViewController {
         let title = UILabel()
         title.font = Type.appName
         title.attributedText = Type.tracked("ここだよ", font: Type.appName)
+        // On a short screen the title was the weakest thing on the column and got
+        // squeezed to nothing: the app lost its own name while the card was open.
+        title.setContentCompressionResistancePriority(.required, for: .vertical)
+        demoButton.setContentCompressionResistancePriority(.required, for: .vertical)
         title.textColor = .white
 
         demoButton.setTitle("デモ", for: .normal)
@@ -1500,7 +1510,24 @@ final class MeetViewController: UIViewController {
         waiterCard.layer.borderWidth = 1
         waiterCard.layer.borderColor = UIColor.white.withAlphaComponent(0.07).cgColor
 
-        for v in [waiterCard, waiterDial, sendButton, callButton, cancelButton, waiterStatus] {
+        // One stack instead of four views chained by their edges. Hidden rows
+        // collapse on their own, and the whole block keeps its natural height so
+        // the dial is what gives way on a short screen.
+        waiterControls.axis = .vertical
+        waiterControls.spacing = 6
+        waiterControls.alignment = .fill
+        waiterControls.addArrangedSubview(sendButton)
+        waiterControls.addArrangedSubview(callButton)
+        waiterControls.addArrangedSubview(waiterStatus)
+        waiterControls.addArrangedSubview(cancelButton)
+        // On the stack itself this does nothing: the squeeze lands on the children.
+        // At the default 750 they tied with the dial's preferred size and lost, so
+        // "相手を呼ぶ" and the status line were laid out 0pt tall.
+        for v in waiterControls.arrangedSubviews {
+            v.setContentCompressionResistancePriority(.required, for: .vertical)
+        }
+
+        for v in [waiterCard, waiterDial, waiterControls] {
             waiterPanel.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -1542,23 +1569,13 @@ final class MeetViewController: UIViewController {
             waiterDial.topAnchor.constraint(greaterThanOrEqualTo: waiterCard.bottomAnchor, constant: 24),
             // Never allowed to reach the button. A short screen shrinks the dial
             // instead of stacking it on top of what you are meant to press.
-            waiterDial.bottomAnchor.constraint(lessThanOrEqualTo: sendButton.topAnchor, constant: -16),
+            waiterDial.bottomAnchor.constraint(lessThanOrEqualTo: waiterControls.topAnchor, constant: -12),
             waiterDial.widthAnchor.constraint(equalTo: waiterDial.heightAnchor),
-            waiterDial.heightAnchor.constraint(greaterThanOrEqualToConstant: 132),
+            waiterDial.heightAnchor.constraint(greaterThanOrEqualToConstant: 104),
 
-            sendButton.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 24),
-            sendButton.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -24),
-            sendButton.bottomAnchor.constraint(equalTo: callButton.topAnchor, constant: -4),
-
-            callButton.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
-            callButton.bottomAnchor.constraint(equalTo: waiterStatus.topAnchor, constant: -6),
-
-            waiterStatus.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 24),
-            waiterStatus.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -24),
-            waiterStatus.bottomAnchor.constraint(equalTo: cancelButton.topAnchor, constant: -6),
-
-            cancelButton.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
-            cancelButton.bottomAnchor.constraint(equalTo: waiterPanel.bottomAnchor, constant: -6),
+            waiterControls.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 24),
+            waiterControls.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -24),
+            waiterControls.bottomAnchor.constraint(equalTo: waiterPanel.bottomAnchor, constant: -6),
         ])
     }
 
