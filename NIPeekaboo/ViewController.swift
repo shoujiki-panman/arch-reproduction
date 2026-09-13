@@ -73,6 +73,8 @@ final class MeetDial: UIView {
 
     private let track = CAShapeLayer()
     private let bar = CAShapeLayer()
+    private let innerRing = CAShapeLayer()
+    private let midRing = CAShapeLayer()
     private let arrow = UIImageView(image: UIImage(systemName: "location.north.fill"))
     /// Kept so each new bearing re-targets the running spring instead of queuing
     /// behind it: readings arrive up to 60 times a second.
@@ -88,22 +90,38 @@ final class MeetDial: UIView {
         super.init(frame: frame)
         backgroundColor = .clear
 
+        // Two faint rings inside the track. The references all share one thing:
+        // a single strong figure on a dark ground, and nothing else. Rings are
+        // also the honest shape here — we know the distance, never the bearing,
+        // so "somewhere on this circle" is exactly what we can claim.
+        for layer in [innerRing, midRing] {
+            layer.fillColor = UIColor.clear.cgColor
+            layer.lineWidth = 1
+            layer.strokeColor = UIColor.white.withAlphaComponent(0.06).cgColor
+            self.layer.addSublayer(layer)
+        }
         for layer in [track, bar] {
             layer.fillColor = UIColor.clear.cgColor
             layer.lineCap = .round
             layer.lineWidth = lineWidth
             self.layer.addSublayer(layer)
         }
-        track.strokeColor = UIColor.white.withAlphaComponent(0.08).cgColor
+        track.strokeColor = UIColor.white.withAlphaComponent(0.07).cgColor
         bar.strokeColor = UIColor.white.cgColor
         bar.strokeEnd = 0
+        // The arc is the only lit thing on the screen, so let it light.
+        bar.shadowOpacity = 0.9
+        bar.shadowRadius = 14
+        bar.shadowOffset = .zero
 
         arrow.contentMode = .scaleAspectFit
         arrow.alpha = 0.22
 
-        valueLabel.font = Type.reading
+        valueLabel.font = Type.dial
         valueLabel.textColor = .white
         valueLabel.textAlignment = .center
+        valueLabel.adjustsFontSizeToFitWidth = true
+        valueLabel.minimumScaleFactor = 0.4
 
         captionLabel.font = Type.caption
         captionLabel.textColor = UIColor.white.withAlphaComponent(0.5)
@@ -122,10 +140,14 @@ final class MeetDial: UIView {
 
             valueLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
             valueLabel.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 8),
+            // Stays inside the ring. Without a width the label just grew past it
+            // and adjustsFontSizeToFitWidth had nothing to shrink against.
+            valueLabel.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.62),
 
             captionLabel.topAnchor.constraint(equalTo: valueLabel.bottomAnchor, constant: 2),
             captionLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
-            captionLabel.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.74),
+            // Inside the ring, not spilling past it.
+            captionLabel.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.56),
         ])
     }
 
@@ -156,6 +178,17 @@ final class MeetDial: UIView {
         bar.path = path.cgPath
         track.frame = bounds
         bar.frame = bounds
+
+        for (layer, scale) in [(midRing, CGFloat(0.66)), (innerRing, CGFloat(0.36))] {
+            layer.frame = bounds
+            layer.path = UIBezierPath(arcCenter: CGPoint(x: bounds.midX, y: bounds.midY),
+                                      radius: radius * scale,
+                                      startAngle: 0, endAngle: .pi * 2,
+                                      clockwise: true).cgPath
+        }
+        let ringsVisible = side >= 150
+        innerRing.isHidden = !ringsVisible
+        midRing.isHidden = !ringsVisible
         // Squeezed small on a short screen there is no room inside the ring for a
         // two-line caption, and it spills out below. The bottom of the screen is
         // already saying the same thing.
@@ -163,10 +196,11 @@ final class MeetDial: UIView {
     }
 
     func set(distance: Float?, direction: simd_float3?, colour: UIColor, value: String, caption: String) {
-        valueLabel.attributedText = Type.tracked(value, font: Type.reading)
+        valueLabel.attributedText = Type.tracked(value, font: Type.dial)
         captionLabel.text = caption
         arrow.tintColor = colour
         bar.strokeColor = colour.cgColor
+        bar.shadowColor = colour.cgColor
 
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.2)
@@ -1626,9 +1660,12 @@ final class MeetViewController: UIViewController {
         dialCentre.priority = .defaultLow
         dialCentre.isActive = true
 
-        let dialSize = waiterDial.heightAnchor.constraint(equalToConstant: 210)
+        let dialSize = waiterDial.heightAnchor.constraint(equalToConstant: 300)
         dialSize.priority = .defaultLow
         dialSize.isActive = true
+        // ...but never wider than the screen comfortably allows.
+        waiterDial.widthAnchor.constraint(lessThanOrEqualTo: waiterPanel.widthAnchor,
+                                          multiplier: 0.72).isActive = true
 
         NSLayoutConstraint.activate([
             // A sheet reveals from the top down, so what must be visible at rest
@@ -2234,8 +2271,10 @@ final class MeetViewController: UIViewController {
     }
 
     private func style(chipButton button: UIButton, selected: Bool) {
-        button.backgroundColor = selected ? amber : .clear
-        button.layer.borderColor = (selected ? amber : UIColor.white.withAlphaComponent(0.25)).cgColor
+        // Unselected pills were hairline outlines on black, which reads as
+        // unfinished. A filled surface makes them look like something you press.
+        button.backgroundColor = selected ? amber : UIColor.white.withAlphaComponent(0.08)
+        button.layer.borderColor = (selected ? amber : UIColor.clear).cgColor
         button.configuration?.baseForegroundColor = selected ? .black : UIColor.white.withAlphaComponent(0.75)
     }
 
@@ -2744,7 +2783,9 @@ enum Type {
     }
 
     static var display: UIFont { font(40, .heavy, .largeTitle) }   // 到着の一言
-    static var reading: UIFont { font(30, .bold, .title1) }        // ダイヤルの距離
+    static var reading: UIFont { font(30, .bold, .title1) }
+    /// The screen's whole job is "how far". The number gets to dominate.
+    static var dial: UIFont { font(56, .bold, .largeTitle) }
     static var title: UIFont { font(26, .bold, .title2) }          // 到着の目印
     static var headline: UIFont { font(20, .semibold, .title3) }   // 画面の状態
     static var appName: UIFont { font(17, .bold, .headline) }
