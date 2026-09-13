@@ -282,6 +282,9 @@ final class MeetViewController: UIViewController {
     private var latestWorldTransform: simd_float4x4?
 
     private let impactGenerator = UIImpactFeedbackGenerator(style: .medium)
+    /// A tick, not a thud. Picking one of three pills should feel like a dial
+    /// clicking over, which is what UISelectionFeedbackGenerator is for.
+    private let selectionTick = UISelectionFeedbackGenerator()
     /// The panel toggles between "choose and send" and "sent, cancel". Tapping
     /// send then cancel quickly must reverse from where the panel actually is.
     private var waiterPanelAnimator: UIViewPropertyAnimator?
@@ -457,6 +460,7 @@ final class MeetViewController: UIViewController {
 
         impactGenerator.prepare()
         arrivalGenerator.prepare()
+        selectionTick.prepare()
 
         buildARScreen()
         buildHome()
@@ -594,13 +598,22 @@ final class MeetViewController: UIViewController {
         if let sheet = carrier.sheetPresentationController {
             sheet.prefersGrabberVisible = true
             sheet.preferredCornerRadius = 28
+            // Otherwise the scroll view inside swallows the drag and the sheet
+            // jumps straight to its largest detent: the grabber looked dead.
+            sheet.prefersScrollingExpandsWhenScrolledToEdge = false
             if #available(iOS 16.0, *) {
                 let compact = UISheetPresentationController.Detent.custom(identifier: .init("compact")) { _ in
                     Self.compactSheetHeight
                 }
                 sheet.detents = [compact, .medium()]
                 sheet.largestUndimmedDetentIdentifier = .medium
-                sheet.selectedDetentIdentifier = .init("compact")
+                var start: UISheetPresentationController.Detent.Identifier = .init("compact")
+                #if DEBUG
+                // The sheet can only be dragged by a finger, which a simulator run
+                // does not have. This opens it for a screenshot.
+                if CommandLine.arguments.contains("-previewSheetOpen") { start = .medium }
+                #endif
+                sheet.selectedDetentIdentifier = start
             } else {
                 sheet.detents = [.medium(), .large()]
                 sheet.largestUndimmedDetentIdentifier = .medium
@@ -1951,17 +1964,21 @@ final class MeetViewController: UIViewController {
     @objc private func kindTapped(_ sender: UIButton) {
         let kinds = MeetRequest.Kind.allCases
         guard sender.tag < kinds.count else { return }
+        guard selectedKind != kinds[sender.tag] else { return }
         selectedKind = kinds[sender.tag]
-        impactGenerator.impactOccurred()
-        refreshSelectionStyles()
+        selectionTick.selectionChanged()
+        selectionTick.prepare()
+        Motion.animate(damping: 0.8, response: 0.3) { self.refreshSelectionStyles() }
     }
 
     @objc private func markerTapped(_ sender: UIButton) {
         let markers = MeetRequest.MarkerHint.allCases
         guard sender.tag < markers.count else { return }
+        guard selectedMarker != markers[sender.tag] else { return }
         selectedMarker = markers[sender.tag]
-        impactGenerator.impactOccurred()
-        refreshSelectionStyles()
+        selectionTick.selectionChanged()
+        selectionTick.prepare()
+        Motion.animate(damping: 0.8, response: 0.3) { self.refreshSelectionStyles() }
     }
 
     private func refreshSelectionStyles() {
@@ -2190,28 +2207,11 @@ final class MeetViewController: UIViewController {
         return label
     }
 
+    /// All options visible at once, wrapped onto as many lines as they need.
+    /// The horizontal scroller that came before clipped the third choice, so
+    /// choosing meant swiping sideways first — the thing that broke the tempo.
     private func chipRow(titles: [String], action: Selector, store: inout [UIButton]) -> UIView {
-        let scroll = FadingScrollView()
-        scroll.showsHorizontalScrollIndicator = false
-        let stack = UIStackView()
-        stack.axis = .horizontal
-        stack.spacing = 8
-        scroll.addSubview(stack)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
-        ])
-        // Grows with the reader's text size instead of clipping: at the
-        // accessibility sizes a fixed 40pt row swallowed the label below it.
-        let rowHeight = scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 40)
-        rowHeight.priority = .required
-        rowHeight.isActive = true
-        scroll.setContentHuggingPriority(.defaultHigh, for: .vertical)
-
+        let row = WrappingRow()
         for (index, title) in titles.enumerated() {
             let button = CapsuleButton(type: .system)
             var conf = UIButton.Configuration.plain()
@@ -2224,16 +2224,13 @@ final class MeetViewController: UIViewController {
             }
             button.configuration = conf
             button.tag = index
-            // cornerRadius is set from the height on every layout pass: the row
-            // now grows with the reader's text size, and a fixed radius would
-            // stop matching it.
             button.layer.borderWidth = 1
             button.addTarget(self, action: action, for: .touchUpInside)
             respondOnPress(button)
             store.append(button)
-            stack.addArrangedSubview(button)
+            row.addSubview(button)
         }
-        return scroll
+        return row
     }
 
     private func style(chipButton button: UIButton, selected: Bool) {
@@ -2632,6 +2629,58 @@ final class FadingScrollView: UIScrollView {
         let scrolls = contentSize.width > bounds.width + 1
         fade.locations = scrolls ? [0, 0.88, 1] : [0, 1, 1]
         CATransaction.commit()
+    }
+}
+
+/// Lays its children out left to right and wraps to a new line when the next one
+/// would not fit. Small and deliberate: a UICollectionView for six pills would be
+/// more machinery than the problem.
+final class WrappingRow: UIView {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 8
+
+    private var lastHeight: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let height = layOut(width: bounds.width, apply: true)
+        // The intrinsic height depends on the width Auto Layout gives us, which is
+        // not known on the first pass. Report it once measured and ask for another.
+        if abs(height - lastHeight) > 0.5 {
+            lastHeight = height
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: UIView.noIntrinsicMetric, height: lastHeight)
+    }
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        CGSize(width: size.width, height: layOut(width: size.width, apply: false))
+    }
+
+    private func layOut(width: CGFloat, apply: Bool) -> CGFloat {
+        guard width > 0 else { return 0 }
+        var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+            if x > 0, x + size.width > width {
+                x = 0
+                y += lineHeight + lineSpacing
+                lineHeight = 0
+            }
+            if apply { view.frame = CGRect(x: x, y: y, width: min(size.width, width), height: size.height) }
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+        return y + lineHeight
+    }
+
+    override func didAddSubview(_ subview: UIView) {
+        super.didAddSubview(subview)
+        subview.translatesAutoresizingMaskIntoConstraints = true
+        invalidateIntrinsicContentSize()
     }
 }
 
