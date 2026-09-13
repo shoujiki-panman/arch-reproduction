@@ -2,4 +2,6 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 .DS_Store
-.derivedData-sim/
+# Build output. Named per destination, so match the family rather than each one:
+# .derivedData-se slipped into a commit because only -sim was listed.
+.derivedData*/
