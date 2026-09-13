@@ -134,6 +134,18 @@ final class MeetDial: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let side = min(bounds.width, bounds.height)
+        guard side > lineWidth * 2 else {
+            // Squeezed out entirely on a short screen. Draw nothing rather than
+            // an inside-out ring.
+            track.path = nil
+            bar.path = nil
+            arrow.isHidden = true
+            valueLabel.isHidden = true
+            captionLabel.isHidden = true
+            return
+        }
+        arrow.isHidden = false
+        valueLabel.isHidden = false
         let radius = side / 2 - lineWidth / 2
         let path = UIBezierPath(arcCenter: CGPoint(x: bounds.midX, y: bounds.midY),
                                 radius: radius,
@@ -356,6 +368,12 @@ final class MeetViewController: UIViewController {
     private var markerButtons: [UIButton] = []
     /// The choices sit on a raised surface instead of floating on the ground:
     /// on a flat black screen a column of small labels reads as a settings form.
+    /// Everything the waiting side touches rides on a sheet that rises from the
+    /// bottom edge and sits **over** the dial. Stacking the two caused every
+    /// squeeze bug on 2026-09-12: on a short screen they fought for one column and
+    /// Auto Layout picked a loser at random. Overlapping ends that class of bug.
+    private let waiterSheet = UIView()
+    private let sheetGrabber = UIView()
     private let waiterCard = UIView()
     private let peerListStack = UIStackView()
     private let peerEmptyLabel = UILabel()
@@ -1505,10 +1523,19 @@ final class MeetViewController: UIViewController {
         waiterStatus.textAlignment = .center
         waiterStatus.numberOfLines = 3
 
-        waiterCard.backgroundColor = surfaceColour
-        waiterCard.layer.cornerRadius = 22
-        waiterCard.layer.borderWidth = 1
-        waiterCard.layer.borderColor = UIColor.white.withAlphaComponent(0.07).cgColor
+        // The sheet is the surface now; the card inside it is only a grouping.
+        waiterSheet.backgroundColor = surfaceColour
+        waiterSheet.layer.cornerRadius = 28
+        waiterSheet.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        waiterSheet.layer.borderWidth = 1
+        waiterSheet.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
+        waiterSheet.layer.shadowColor = UIColor.black.cgColor
+        waiterSheet.layer.shadowOpacity = 0.5
+        waiterSheet.layer.shadowRadius = 24
+        waiterSheet.layer.shadowOffset = CGSize(width: 0, height: -8)
+
+        sheetGrabber.backgroundColor = UIColor.white.withAlphaComponent(0.25)
+        sheetGrabber.layer.cornerRadius = 2.5
 
         // One stack instead of four views chained by their edges. Hidden rows
         // collapse on their own, and the whole block keeps its natural height so
@@ -1527,8 +1554,12 @@ final class MeetViewController: UIViewController {
             v.setContentCompressionResistancePriority(.required, for: .vertical)
         }
 
-        for v in [waiterCard, waiterDial, waiterControls] {
-            waiterPanel.addSubview(v)
+        waiterPanel.addSubview(waiterDial)
+        waiterPanel.addSubview(waiterSheet)
+        waiterDial.translatesAutoresizingMaskIntoConstraints = false
+        waiterSheet.translatesAutoresizingMaskIntoConstraints = false
+        for v in [sheetGrabber, waiterCard, waiterControls] {
+            waiterSheet.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
         waiterCard.addSubview(waiterSelection)
@@ -1546,36 +1577,57 @@ final class MeetViewController: UIViewController {
         // Same rank as the list it stands in for. Left at the default it tied with
         // the dial's centring and lost, and the line was crushed to nothing.
         peerEmptyLabel.setContentCompressionResistancePriority(.required, for: .vertical)
-        let dialCentre = waiterDial.centerYAnchor.constraint(equalTo: waiterPanel.centerYAnchor, constant: -10)
-        dialCentre.priority = .defaultHigh
+        // Centred in whatever the sheet leaves, not in the panel: the sheet's
+        // height changes when the choices collapse after sending.
+        let aboveSheet = UILayoutGuide()
+        waiterPanel.addLayoutGuide(aboveSheet)
+        NSLayoutConstraint.activate([
+            aboveSheet.topAnchor.constraint(equalTo: waiterPanel.topAnchor),
+            aboveSheet.bottomAnchor.constraint(equalTo: waiterSheet.topAnchor),
+            aboveSheet.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor),
+            aboveSheet.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor),
+        ])
+        let dialCentre = waiterDial.centerYAnchor.constraint(equalTo: aboveSheet.centerYAnchor)
+        dialCentre.priority = .defaultLow
         dialCentre.isActive = true
 
         // Preferred size, not a demand: on a short screen it gives way.
         let dialSize = waiterDial.heightAnchor.constraint(equalToConstant: 210)
-        dialSize.priority = .defaultHigh
+        dialSize.priority = .defaultLow
         dialSize.isActive = true
 
         NSLayoutConstraint.activate([
-            waiterCard.topAnchor.constraint(equalTo: waiterPanel.topAnchor),
-            waiterCard.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 20),
-            waiterCard.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -20),
+            // The sheet owns the bottom edge and takes the height its content
+            // needs. Nothing above it competes for that space.
+            waiterSheet.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor),
+            waiterSheet.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor),
+            waiterSheet.bottomAnchor.constraint(equalTo: waiterPanel.bottomAnchor, constant: 28),
 
-            waiterSelection.topAnchor.constraint(equalTo: waiterCard.topAnchor, constant: 18),
-            waiterSelection.bottomAnchor.constraint(equalTo: waiterCard.bottomAnchor, constant: -18),
-            waiterSelection.leadingAnchor.constraint(equalTo: waiterCard.leadingAnchor, constant: 18),
-            waiterSelection.trailingAnchor.constraint(equalTo: waiterCard.trailingAnchor, constant: -18),
+            sheetGrabber.topAnchor.constraint(equalTo: waiterSheet.topAnchor, constant: 8),
+            sheetGrabber.centerXAnchor.constraint(equalTo: waiterSheet.centerXAnchor),
+            sheetGrabber.widthAnchor.constraint(equalToConstant: 36),
+            sheetGrabber.heightAnchor.constraint(equalToConstant: 5),
 
+            waiterCard.topAnchor.constraint(equalTo: sheetGrabber.bottomAnchor, constant: 12),
+            waiterCard.leadingAnchor.constraint(equalTo: waiterSheet.leadingAnchor, constant: 20),
+            waiterCard.trailingAnchor.constraint(equalTo: waiterSheet.trailingAnchor, constant: -20),
+
+            waiterSelection.topAnchor.constraint(equalTo: waiterCard.topAnchor),
+            waiterSelection.bottomAnchor.constraint(equalTo: waiterCard.bottomAnchor),
+            waiterSelection.leadingAnchor.constraint(equalTo: waiterCard.leadingAnchor),
+            waiterSelection.trailingAnchor.constraint(equalTo: waiterCard.trailingAnchor),
+
+            waiterControls.topAnchor.constraint(equalTo: waiterCard.bottomAnchor, constant: 14),
+            waiterControls.leadingAnchor.constraint(equalTo: waiterSheet.leadingAnchor, constant: 24),
+            waiterControls.trailingAnchor.constraint(equalTo: waiterSheet.trailingAnchor, constant: -24),
+            waiterControls.bottomAnchor.constraint(equalTo: waiterSheet.bottomAnchor, constant: -46),
+
+            // Behind the sheet. No relationship to it beyond keeping clear.
             waiterDial.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
-            waiterDial.topAnchor.constraint(greaterThanOrEqualTo: waiterCard.bottomAnchor, constant: 24),
-            // Never allowed to reach the button. A short screen shrinks the dial
-            // instead of stacking it on top of what you are meant to press.
-            waiterDial.bottomAnchor.constraint(lessThanOrEqualTo: waiterControls.topAnchor, constant: -12),
+            waiterDial.topAnchor.constraint(greaterThanOrEqualTo: waiterPanel.topAnchor, constant: 8),
+            waiterDial.bottomAnchor.constraint(lessThanOrEqualTo: waiterSheet.topAnchor, constant: -16),
             waiterDial.widthAnchor.constraint(equalTo: waiterDial.heightAnchor),
-            waiterDial.heightAnchor.constraint(greaterThanOrEqualToConstant: 104),
-
-            waiterControls.leadingAnchor.constraint(equalTo: waiterPanel.leadingAnchor, constant: 24),
-            waiterControls.trailingAnchor.constraint(equalTo: waiterPanel.trailingAnchor, constant: -24),
-            waiterControls.bottomAnchor.constraint(equalTo: waiterPanel.bottomAnchor, constant: -6),
+            waiterDial.heightAnchor.constraint(greaterThanOrEqualToConstant: 0),
         ])
     }
 
