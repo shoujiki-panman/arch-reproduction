@@ -414,6 +414,8 @@ final class MeetViewController: UIViewController {
     /// What the sheet rests at: the primary button and the line under it. Anything
     /// above that is behind a drag, which is the whole point of the sheet.
     private static let compactSheetHeight: CGFloat = 208
+    /// Just the grabber and a sliver of the button: enough to tap, nothing to read.
+    private static let closedSheetHeight: CGFloat = 64
     private let waiterCard = UIView()
     private let peerListStack = UIStackView()
     private let peerEmptyLabel = UILabel()
@@ -646,13 +648,23 @@ final class MeetViewController: UIViewController {
                     #endif
                     return value
                 }
-                sheet.detents = [compact, .medium()]
+                // Like LINE's rich menu: it can be put away entirely, leaving a
+                // tab you tap to bring it back. Until now the lowest rest still
+                // covered a third of the screen, which read as "won't go down".
+                let closed = UISheetPresentationController.Detent.custom(identifier: .init("closed")) { _ in
+                    Self.closedSheetHeight
+                }
+                sheet.detents = [closed, compact, .medium()]
                 sheet.largestUndimmedDetentIdentifier = .medium
                 var start: UISheetPresentationController.Detent.Identifier = .init("compact")
                 #if DEBUG
                 // The sheet can only be dragged by a finger, which a simulator run
                 // does not have. This opens it for a screenshot.
                 if CommandLine.arguments.contains("-previewSheetOpen") { start = .medium }
+                if CommandLine.arguments.contains("-previewSheetClosed") {
+                    start = .init("closed")
+                    DispatchQueue.main.async { carrier.setHeadVisible(false) }
+                }
                 #endif
                 sheet.selectedDetentIdentifier = start
             } else {
@@ -661,6 +673,16 @@ final class MeetViewController: UIViewController {
             }
         }
         waiterSheetVC = carrier
+        carrier.onDetentChange = { [weak carrier] id in
+            carrier?.setHeadVisible(id != "closed")
+        }
+        carrier.onHeadTap = { [weak carrier] in
+            guard #available(iOS 16.0, *), let sheet = carrier?.sheetPresentationController else { return }
+            sheet.animateChanges {
+                sheet.selectedDetentIdentifier =
+                    sheet.selectedDetentIdentifier == .init("closed") ? .init("compact") : .init("closed")
+            }
+        }
         present(carrier, animated: true)
     }
 
@@ -1693,7 +1715,7 @@ final class MeetViewController: UIViewController {
             waiterDial.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
             waiterDial.topAnchor.constraint(greaterThanOrEqualTo: waiterPanel.topAnchor, constant: 8),
             waiterDial.bottomAnchor.constraint(lessThanOrEqualTo: waiterPanel.bottomAnchor,
-                                               constant: -Self.compactSheetHeight - 16),
+                                               constant: -Self.closedSheetHeight - 16),
             waiterDial.widthAnchor.constraint(equalTo: waiterDial.heightAnchor),
             waiterDial.heightAnchor.constraint(greaterThanOrEqualToConstant: 0),
         ])
@@ -2742,12 +2764,23 @@ final class CapsuleButton: UIButton {
 /// hand-rolled panel had a grabber that could not be dragged.
 final class SheetCarrier: UIViewController, UISheetPresentationControllerDelegate {
 
+    var onDetentChange: ((String?) -> Void)?
+
     func sheetPresentationControllerDidChangeSelectedDetentIdentifier(
         _ sheetPresentationController: UISheetPresentationController) {
+        let id = sheetPresentationController.selectedDetentIdentifier?.rawValue
         #if DEBUG
-        print("SHEET rests at \(sheetPresentationController.selectedDetentIdentifier?.rawValue ?? "-") "
-              + "height=\(view.bounds.height)")
+        print("SHEET rests at \(id ?? "-") height=\(view.bounds.height)")
         #endif
+        onDetentChange?(id)
+    }
+
+    /// A closed sheet is 64pt tall and the head is 149pt: showing it there stacks
+    /// three lines of text on top of each other. Closed means closed.
+    func setHeadVisible(_ visible: Bool) {
+        guard head.alpha != (visible ? 1 : 0) else { return }
+        Motion.animate(response: 0.25) { self.head.alpha = visible ? 1 : 0 }
+        head.isUserInteractionEnabled = visible
     }
 
     private let head: UIView
@@ -2766,6 +2799,17 @@ final class SheetCarrier: UIViewController, UISheetPresentationControllerDelegat
 
     private let scroll = UIScrollView()
 
+    /// Tapping the head (the grabber strip) opens a closed sheet and closes an
+    /// open one, so it works one-handed without a drag.
+    var onHeadTap: (() -> Void)?
+
+    @objc private func headTapped(_ g: UITapGestureRecognizer) {
+        // Only the strip above the head counts as the tab; taps on the button
+        // itself must stay taps on the button.
+        guard g.location(in: view).y < 26 || view.bounds.height <= 80 else { return }
+        onHeadTap?()
+    }
+
     /// How tall the fixed head actually is, so the smallest rest can hug it.
     var headHeight: CGFloat {
         view.layoutIfNeeded()
@@ -2781,6 +2825,9 @@ final class SheetCarrier: UIViewController, UISheetPresentationControllerDelegat
         scroll.showsVerticalScrollIndicator = false
         view.addSubview(head)
         view.addSubview(scroll)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(headTapped))
+        tap.cancelsTouchesInView = false   // buttons on the head still get their taps
+        view.addGestureRecognizer(tap)
         scroll.addSubview(body)
         for v in [head, scroll, body] { v.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
