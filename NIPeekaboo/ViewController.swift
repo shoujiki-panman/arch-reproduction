@@ -410,7 +410,6 @@ final class MeetViewController: UIViewController {
     /// squeeze bug on 2026-09-12: on a short screen they fought for one column and
     /// Auto Layout picked a loser at random. Overlapping ends that class of bug.
     /// The content UIKit's sheet carries. No surface of its own: the sheet is it.
-    private let waiterSheetContent = UIView()
     private var waiterSheetVC: SheetCarrier?
     /// What the sheet rests at: the primary button and the line under it. Anything
     /// above that is behind a drag, which is the whole point of the sheet.
@@ -626,7 +625,7 @@ final class MeetViewController: UIViewController {
     /// shows a map and a search field until anything else becomes relevant.
     private func showWaiterSheetIfNeeded() {
         guard role == .requester, presentedViewController == nil, view.window != nil else { return }
-        let carrier = SheetCarrier(content: waiterSheetContent)
+        let carrier = SheetCarrier(head: waiterControls, body: waiterCard)
         carrier.isModalInPresentation = true        // never swiped away entirely
         carrier.modalPresentationStyle = .pageSheet
         if let sheet = carrier.sheetPresentationController {
@@ -1067,6 +1066,16 @@ final class MeetViewController: UIViewController {
                 waiterDial.set(distance: nil, direction: nil, colour: idleColour,
                                value: "—", caption: "「ここだよ」を送ると\n相手との距離が出ます")
             }
+            // The two buttons do different jobs, but "呼ぶ" and "伝える" read the
+            // same at a glance. So they are never on screen together: you call
+            // someone who is not here yet, and you tell someone who is already here.
+            let partnerHere = links.values.contains { $0.peerRole == "supporter" || $0.isDemo }
+            callButton.isHidden = partnerHere
+            if !requestSent {
+                waiterStatus.text = partnerHere
+                    ? "相手を選んで「ここだよ」を送ってください"
+                    : "相手がまだアプリを開いていないときは、LINEで呼べます"
+            }
         } else {
             let waiting = activeRequest == nil
             let value = waiting ? "—" : (latestDistance.map { $0 < arrivalThreshold ? "合流" : formatMeters($0) } ?? "—")
@@ -1168,7 +1177,7 @@ final class MeetViewController: UIViewController {
         sendButton.isHidden = false
         cancelButton.isHidden = true
         setWaiterSelection(hidden: false)
-        waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
+        waiterStatus.text = "相手がまだアプリを開いていないときは、LINEで呼べます"
         finderChips.isHidden = true
         finderTip.isHidden = true
         finderNotice = nil
@@ -1302,7 +1311,7 @@ final class MeetViewController: UIViewController {
             setWaiterSelection(hidden: false)
             sendButton.isHidden = false
             cancelButton.isHidden = true
-            waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
+            waiterStatus.text = "相手がまだアプリを開いていないときは、LINEで呼べます"
         }
         latestDistance = nil
         latestDirection = nil
@@ -1587,7 +1596,9 @@ final class MeetViewController: UIViewController {
         respondOnPress(sendButton)
 
         var callConf = UIButton.Configuration.plain()
-        callConf.title = "相手を呼ぶ"
+        // Names the channel. "呼ぶ" and "伝える" alone read the same; "LINE" is
+        // the word that says this one leaves the app.
+        callConf.title = "LINEで呼ぶ"
         callConf.image = UIImage(systemName: "paperplane.fill")
         callConf.imagePadding = 6
         callConf.baseForegroundColor = amber
@@ -1604,7 +1615,7 @@ final class MeetViewController: UIViewController {
         cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         respondOnPress(cancelButton)
 
-        waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
+        waiterStatus.text = "相手がまだアプリを開いていないときは、LINEで呼べます"
         waiterStatus.font = Type.caption
         waiterStatus.textColor = UIColor.white.withAlphaComponent(0.45)
         waiterStatus.textAlignment = .center
@@ -1616,6 +1627,8 @@ final class MeetViewController: UIViewController {
         // the dial is what gives way on a short screen.
         waiterControls.axis = .vertical
         waiterControls.spacing = 6
+        waiterControls.isLayoutMarginsRelativeArrangement = true
+        waiterControls.layoutMargins = UIEdgeInsets(top: 0, left: 24, bottom: 0, right: 24)
         waiterControls.alignment = .fill
         waiterControls.addArrangedSubview(sendButton)
         waiterControls.addArrangedSubview(callButton)
@@ -1630,10 +1643,6 @@ final class MeetViewController: UIViewController {
 
         waiterPanel.addSubview(waiterDial)
         waiterDial.translatesAutoresizingMaskIntoConstraints = false
-        for v in [waiterCard, waiterControls] {
-            waiterSheetContent.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
         waiterCard.addSubview(waiterSelection)
         waiterSelection.translatesAutoresizingMaskIntoConstraints = false
 
@@ -1668,22 +1677,10 @@ final class MeetViewController: UIViewController {
                                           multiplier: 0.72).isActive = true
 
         NSLayoutConstraint.activate([
-            // A sheet reveals from the top down, so what must be visible at rest
-            // goes first: the primary action. The choices live below it and only
-            // appear when the sheet is dragged up.
-            waiterControls.topAnchor.constraint(equalTo: waiterSheetContent.topAnchor, constant: 22),
-            waiterControls.leadingAnchor.constraint(equalTo: waiterSheetContent.leadingAnchor, constant: 24),
-            waiterControls.trailingAnchor.constraint(equalTo: waiterSheetContent.trailingAnchor, constant: -24),
-
-            waiterCard.topAnchor.constraint(equalTo: waiterControls.bottomAnchor, constant: 18),
-            waiterCard.leadingAnchor.constraint(equalTo: waiterSheetContent.leadingAnchor, constant: 24),
-            waiterCard.trailingAnchor.constraint(equalTo: waiterSheetContent.trailingAnchor, constant: -24),
-            waiterCard.bottomAnchor.constraint(equalTo: waiterSheetContent.bottomAnchor, constant: -34),
-
-            waiterSelection.topAnchor.constraint(equalTo: waiterCard.topAnchor),
-            waiterSelection.bottomAnchor.constraint(equalTo: waiterCard.bottomAnchor),
-            waiterSelection.leadingAnchor.constraint(equalTo: waiterCard.leadingAnchor),
-            waiterSelection.trailingAnchor.constraint(equalTo: waiterCard.trailingAnchor),
+            waiterSelection.topAnchor.constraint(equalTo: waiterCard.topAnchor, constant: 0),
+            waiterSelection.bottomAnchor.constraint(equalTo: waiterCard.bottomAnchor, constant: -34),
+            waiterSelection.leadingAnchor.constraint(equalTo: waiterCard.leadingAnchor, constant: 24),
+            waiterSelection.trailingAnchor.constraint(equalTo: waiterCard.trailingAnchor, constant: -24),
 
             waiterDial.centerXAnchor.constraint(equalTo: waiterPanel.centerXAnchor),
             waiterDial.topAnchor.constraint(greaterThanOrEqualTo: waiterPanel.topAnchor, constant: 8),
@@ -2143,7 +2140,7 @@ final class MeetViewController: UIViewController {
             self.cancelButton.isHidden = true
             self.waiterPanel.layoutIfNeeded()
         }
-        waiterStatus.text = "場所と目印を選んで、迎えに来てもらう相手に送ります"
+        waiterStatus.text = "相手がまだアプリを開いていないときは、LINEで呼べます"
         waiterDial.reset()
         refreshDials()
     }
@@ -2736,10 +2733,15 @@ final class CapsuleButton: UIButton {
 /// drag, the detents and the grabber are Apple's rather than ours. The previous
 /// hand-rolled panel had a grabber that could not be dragged.
 final class SheetCarrier: UIViewController {
-    private let content: UIView
+    private let head: UIView
+    private let body: UIView
 
-    init(content: UIView) {
-        self.content = content
+    /// `head` never scrolls. That matters: a sheet whose whole surface is a scroll
+    /// view has nowhere left to grab, so the grabber looks broken however the
+    /// detents are configured.
+    init(head: UIView, body: UIView) {
+        self.head = head
+        self.body = body
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -2751,23 +2753,27 @@ final class SheetCarrier: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .clear
         scroll.showsVerticalScrollIndicator = false
+        view.addSubview(head)
         view.addSubview(scroll)
-        scroll.addSubview(content)
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        content.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(body)
+        for v in [head, scroll, body] { v.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            head.topAnchor.constraint(equalTo: view.topAnchor, constant: 26),
+            head.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            head.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+
+            scroll.topAnchor.constraint(equalTo: head.bottomAnchor, constant: 14),
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            // Inside a scroll view the content keeps its natural height instead of
+            // Inside a scroll view the body keeps its natural height instead of
             // being squeezed into whichever detent the sheet is resting at.
-            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
+            body.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            body.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            body.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            body.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            body.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
         ])
     }
 }
