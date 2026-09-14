@@ -629,14 +629,22 @@ final class MeetViewController: UIViewController {
         carrier.isModalInPresentation = true        // never swiped away entirely
         carrier.modalPresentationStyle = .pageSheet
         if let sheet = carrier.sheetPresentationController {
+            sheet.delegate = carrier
             sheet.prefersGrabberVisible = true
             sheet.preferredCornerRadius = 28
             // Otherwise the scroll view inside swallows the drag and the sheet
             // jumps straight to its largest detent: the grabber looked dead.
             sheet.prefersScrollingExpandsWhenScrolledToEdge = false
             if #available(iOS 16.0, *) {
-                let compact = UISheetPresentationController.Detent.custom(identifier: .init("compact")) { _ in
-                    Self.compactSheetHeight
+                let compact = UISheetPresentationController.Detent.custom(identifier: .init("compact")) { [weak carrier] context in
+                    // Measured, not guessed: exactly the fixed head plus the home
+                    // indicator. 208pt was a number I made up and never checked.
+                    let wanted = (carrier?.headHeight ?? Self.compactSheetHeight) + 8
+                    let value = min(wanted, context.maximumDetentValue * 0.9)
+                    #if DEBUG
+                    print("SHEET compact=\(value) head=\(carrier?.headHeight ?? -1) max=\(context.maximumDetentValue)")
+                    #endif
+                    return value
                 }
                 sheet.detents = [compact, .medium()]
                 sheet.largestUndimmedDetentIdentifier = .medium
@@ -2732,7 +2740,16 @@ final class CapsuleButton: UIButton {
 /// Carries a view that MeetViewController owns into a real UIKit sheet, so the
 /// drag, the detents and the grabber are Apple's rather than ours. The previous
 /// hand-rolled panel had a grabber that could not be dragged.
-final class SheetCarrier: UIViewController {
+final class SheetCarrier: UIViewController, UISheetPresentationControllerDelegate {
+
+    func sheetPresentationControllerDidChangeSelectedDetentIdentifier(
+        _ sheetPresentationController: UISheetPresentationController) {
+        #if DEBUG
+        print("SHEET rests at \(sheetPresentationController.selectedDetentIdentifier?.rawValue ?? "-") "
+              + "height=\(view.bounds.height)")
+        #endif
+    }
+
     private let head: UIView
     private let body: UIView
 
@@ -2748,6 +2765,15 @@ final class SheetCarrier: UIViewController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private let scroll = UIScrollView()
+
+    /// How tall the fixed head actually is, so the smallest rest can hug it.
+    var headHeight: CGFloat {
+        view.layoutIfNeeded()
+        return head.systemLayoutSizeFitting(
+            CGSize(width: view.bounds.width, height: 0),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel).height + 40
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
