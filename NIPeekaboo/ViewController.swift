@@ -1666,8 +1666,11 @@ final class MeetViewController: UIViewController {
             items.insert(contentsOf: [spot, card], at: 0)
         }
         if activePeerID != nil, latestDistance != nil, supportsUWB {
+            // Camera assistance is the only way a 16 Pro gives a direction
+            // (supportsDirectionMeasurement=false). The floor view never turns it
+            // on, so on 2026-09-23 the real-device test saw rings and no direction.
             let camera = UIAction(title: "カメラで見る", image: UIImage(systemName: "camera.viewfinder")) { [weak self] _ in
-                self?.startFloorView()
+                self?.startGuidance()
             }
             items.append(camera)
         }
