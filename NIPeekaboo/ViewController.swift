@@ -10,6 +10,7 @@
 import UIKit
 import ARKit
 import SceneKit
+import CoreLocation
 import NearbyInteraction
 import MultipeerConnectivity
 import simd
@@ -891,6 +892,16 @@ final class MeetViewController: UIViewController {
         init(peerID: MCPeerID) { self.peerID = peerID }
     }
 
+    // 遠いときの層（RemoteMeet.swift）。UWBが届かない間だけ働く。
+    private var remote: RemoteChannel?
+    private let locations = LocationSource()
+    private var theirFix: RemoteFix?
+    private var remotePush: Timer?
+    #if DEBUG
+    /// 確認用。電波（UWB）が無いことにして、地図側の表示を試す。
+    private var previewNoRadio = false
+    #endif
+
     private var mpc: MPCSession?
     private var links: [MCPeerID: PeerLink] = [:]
     /// Sessions we (or the system) have invalidated. NISession exposes no
@@ -1252,6 +1263,16 @@ final class MeetViewController: UIViewController {
         if args.contains("-previewSent") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.sendTapped() }
         }
+        #if DEBUG
+        previewNoRadio = args.contains("-previewNoRadio")
+            || ProcessInfo.processInfo.environment["KOKODAYO_NO_RADIO"] == "1"
+        print("RECON flags noRadio=\(previewNoRadio) args=\(args.dropFirst().joined(separator: " "))")
+        // 画面から読めない確認のために、書類フォルダにも残す（DEBUGのみ）
+        if let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let line = "noRadio=\(previewNoRadio) args=\(args.dropFirst().joined(separator: " ")) env=\(ProcessInfo.processInfo.environment["KOKODAYO_NO_RADIO"] ?? "-")\n"
+            try? line.write(to: dir.appendingPathComponent("recon.txt"), atomically: true, encoding: .utf8)
+        }
+        #endif
         if args.contains("-previewAR") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.startGuidance() }
         }
@@ -1646,6 +1667,16 @@ final class MeetViewController: UIViewController {
             self?.demoTapped()
         }
         if !demoAllowed { demo.attributes = .disabled }
+        #if DEBUG
+        // 確認用: 電波（UWB）が届かない状況をその場で作る。屋外の実測前に地図側を試すため。
+        let noRadio = UIAction(title: previewNoRadio ? "電波を使う（試験）" : "電波を無いことにする（試験）",
+                               image: UIImage(systemName: previewNoRadio ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")) { [weak self] _ in
+            guard let self else { return }
+            self.previewNoRadio.toggle()
+            if self.previewNoRadio { self.latestDistance = nil; self.latestDirection = nil; self.latestWorldTransform = nil }
+            self.refreshDials()
+        }
+        #endif
         let haptics = UIAction(title: hapticsOn ? "振動を止める" : "振動を使う",
                                image: UIImage(systemName: hapticsOn ? "iphone.slash" : "iphone.radiowaves.left.and.right")) { [weak self] _ in
             guard let self else { return }
@@ -1654,6 +1685,9 @@ final class MeetViewController: UIViewController {
         }
         haptics.subtitle = "近づくほど速くなります"
         var items: [UIMenuElement] = [rename, haptics, demo]
+        #if DEBUG
+        items.append(noRadio)
+        #endif
         if let current = group, current.isHost {
             let spot = UIAction(title: "いる場所を伝える", image: UIImage(systemName: "mappin.and.ellipse")) { [weak self] _ in
                 self?.askSpot()
@@ -1733,6 +1767,8 @@ final class MeetViewController: UIViewController {
 
     /// Kept out of backups, and unreadable while the phone is locked.
     private func saveTodayGroup() {
+        // グループがあるあいだは、遠いときの層も生かしておく（中身は電波が切れたときだけ流れる）
+        if group != nil { startRemote() } else { stopRemote() }
         if let url = Self.groupFileURL {
             if let group, let data = try? JSONEncoder().encode(group) {
                 try? data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
@@ -1808,7 +1844,50 @@ final class MeetViewController: UIViewController {
         return "\(formatter.string(from: date))まで"
     }
 
+    /// 相手が遠いあいだの居場所のやりとりを始める。
+    /// 電波（UWB）が効いている間は送らない。届かなくなった時だけ流れる。
+    private func startRemote() {
+        guard let id = group?.id, remote == nil else { return }
+        let channel = RemoteChannel(groupID: id)
+        channel.onFix = { [weak self] fix in
+            guard let self else { return }
+            self.theirFix = fix
+            self.refreshDials()
+        }
+        channel.connect()
+        remote = channel
+        locations.onFix = { [weak self] _ in self?.pushLocationIfFar() }
+        locations.start()
+        // 立ち止まっていても相手の画面が止まらないよう、定期的にも送る
+        remotePush = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
+            self?.pushLocationIfFar()
+        }
+    }
+
+    private func stopRemote() {
+        remotePush?.invalidate(); remotePush = nil
+        locations.stop()
+        remote?.disconnect()
+        remote = nil
+        theirFix = nil
+    }
+
+    /// 電波が新しいうちは送らない（近くにいるなら地図は要らない・電池のため）
+    private func pushLocationIfFar() {
+        guard let l = locations.last, let channel = remote else { return }
+        if latestDistance != nil, CACurrentMediaTime() - lastDistanceAt < 3 { return }
+        channel.send(l)
+    }
+
+    /// 電波が無いときの、地図での距離。
+    private func mapDistance() -> (meters: Double, accuracy: Double)? {
+        guard let mine = locations.last, let fix = theirFix, fix.age < 90 else { return nil }
+        let other = CLLocation(latitude: fix.lat, longitude: fix.lon)
+        return (mine.distance(from: other), max(mine.horizontalAccuracy, fix.acc))
+    }
+
     private func leaveTodayGroup() {
+        stopRemote()
         endLiveActivity()
         #if DEBUG
         print("RECON leaveTodayGroup id=\(group?.id.prefix(4) ?? "-") stack=\(Thread.callStackSymbols.dropFirst().prefix(4).joined(separator: " | "))")
@@ -2512,7 +2591,14 @@ final class MeetViewController: UIViewController {
 
     // MARK: - Measurement funnel (real NI and demo both land here)
 
-    private func updateMeasurement(distance: Float?, direction: simd_float3?, world: simd_float4x4?) {
+    private func updateMeasurement(distance rawDistance: Float?, direction: simd_float3?, world: simd_float4x4?) {
+        var distance = rawDistance
+        var direction = direction
+        var world = world
+        #if DEBUG
+        // 確認用: 電波が届かない状況を作る。シミュレータは必ず模擬の距離を返すため。
+        if previewNoRadio { distance = nil; direction = nil; world = nil }
+        #endif
         recordTrend(distance)
         if distance != nil {
             lastDistanceAt = CACurrentMediaTime()
@@ -2574,6 +2660,9 @@ final class MeetViewController: UIViewController {
     /// today's group ever appears here, and nobody outside it can see this phone.
     private func refreshDials() {
         refreshDemoButton()
+        // グループがあるなら遠いときの層を生かす。保存の時だけでは、
+        // 保存済みのグループを読み直して再開したときに起きなかった。
+        if group != nil { startRemote() } else if remote != nil { stopRemote() }
         if let current = group, current.expires <= Date() {
             expireGroup()
             return
@@ -2614,9 +2703,26 @@ final class MeetViewController: UIViewController {
                                caption: caption,
                                closing: d < Self.handoffDistance ? nil : trendClosing,
                                arrived: arrived)
-            } else {
+            } else if let map = mapDistance() {
+                // 電波が届かないあいだは地図の数字。近づけば自動で電波側に戻る。
+                let minutes = max(1, Int((map.meters / 80).rounded()))
+                let metres = map.meters < 1000 ? "\(Int(map.meters.rounded()))m" : String(format: "%.1fkm", map.meters / 1000)
                 finderDial.set(distance: nil, direction: nil, colour: idleColour,
-                               value: "\(focusName)とつながりました", caption: "まもなく距離が表示されます",
+                               value: "あと約\(minutes)分・\(metres)",
+                               caption: "地図で見ています（誤差±\(Int(map.accuracy.rounded()))m）\n近づくと電波で測ります",
+                               symbol: "map")
+            } else {
+                var caption = "まもなく距離が表示されます"
+                #if DEBUG
+                if previewNoRadio {
+                    let r = remote
+                    let mine = locations.last.map { String(format: "%.4f,%.4f", $0.coordinate.latitude, $0.coordinate.longitude) } ?? "なし"
+                    caption = "中継=\(r == nil ? "未開始" : (r!.isJoined ? "参加済" : "接続中"))"
+                        + " 送\(r?.sentCount ?? 0) 受\(r?.gotCount ?? 0)\n自分=\(mine) 相手=\(theirFix == nil ? "なし" : "あり")"
+                }
+                #endif
+                finderDial.set(distance: nil, direction: nil, colour: idleColour,
+                               value: "\(focusName)とつながりました", caption: caption,
                                symbol: "dot.radiowaves.left.and.right")
             }
         } else if !supportsUWB && !isDemo {
@@ -2685,7 +2791,12 @@ final class MeetViewController: UIViewController {
         } else if connected {
             // On screen the whole time anyone can see this phone's distance.
             let until = group.map { untilText($0.expires) } ?? "今日"
-            finderStatus.text = "距離を共有中（\(members.count)人・\(until)）: "
+            #if DEBUG
+            let dbg = previewNoRadio ? "[電波なし試験 送\(remote?.sentCount ?? 0)受\(remote?.gotCount ?? 0)相手\(theirFix == nil ? "×" : "○")] " : ""
+            #else
+            let dbg = ""
+            #endif
+            finderStatus.text = dbg + "距離を共有中（\(members.count)人・\(until)）: "
                 + members.map { name(of: $0.peerID) }.joined(separator: "、")
         } else {
             finderStatus.text = nil
@@ -2704,12 +2815,37 @@ final class MeetViewController: UIViewController {
         let tone: Tone
     }
 
+    /// 電波の値の入口。確認用の指定をここで一度だけ効かせる。
+    private func radioValue(_ d: Float?) -> Float? {
+        #if DEBUG
+        if previewNoRadio { return nil }
+        #endif
+        return d
+    }
+
+    /// UWBの値がいま使えるか。2秒来なければ「無い」とみなす。
+    private func radioIsFresh() -> Bool {
+        #if DEBUG
+        if previewNoRadio { return false }
+        #endif
+        return latestDistance != nil && CACurrentMediaTime() - lastDistanceAt <= 2
+    }
+
     private func guidance(for name: String) -> Guidance {
         if CACurrentMediaTime() < pingUntil {
             return Guidance(headline: "\(pingFrom)が合図", detail: "周りを見てください", tone: .near)
         }
-        if latestDistance != nil, didAnnounceArrival {
+        // 電波が切れたら「見つけた」は残さない。相手はもう動いているかもしれない。
+        if latestDistance != nil, didAnnounceArrival, radioIsFresh() {
             return Guidance(headline: "見つけた", detail: "手を振って合図しましょう", tone: .arrived)
+        }
+        // 電波が切れたら、地図の数字に切り替える。人には切り替えさせない。
+        if !radioIsFresh(), let map = mapDistance() {
+            let minutes = max(1, Int((map.meters / 80).rounded()))
+            let metres = map.meters < 1000 ? "\(Int(map.meters.rounded()))m" : String(format: "%.1fkm", map.meters / 1000)
+            return Guidance(headline: "あと約\(minutes)分・\(metres)",
+                            detail: "地図で見ています（誤差±\(Int(map.accuracy.rounded()))m）",
+                            tone: map.meters < 80 ? .near : .go)
         }
         // Two seconds without a reading and the last number is history. Saying
         // 進んで on a frozen distance is the one lie this line must never tell.
@@ -2855,7 +2991,7 @@ final class MeetViewController: UIViewController {
         groupPeers.append(peer)
         if activePeerID == nil {
             activePeerID = peer
-            latestDistance = link.distance
+            latestDistance = radioValue(link.distance)
             didAnnounceArrival = false
             resetTrend()
         }
@@ -2881,7 +3017,7 @@ final class MeetViewController: UIViewController {
         peerMoving = nil
         didAnnounceArrival = false
         resetTrend()
-        latestDistance = link.distance
+        latestDistance = radioValue(link.distance)
         latestDirection = nil
         sendMotion()
         refreshDials()
@@ -2900,7 +3036,7 @@ final class MeetViewController: UIViewController {
         let next = groupPeers.compactMap { links[$0] }
             .min { ($0.distance ?? .greatestFiniteMagnitude) < ($1.distance ?? .greatestFiniteMagnitude) }
         activePeerID = next?.peerID
-        latestDistance = next?.distance
+        latestDistance = radioValue(next?.distance)
         latestDirection = nil
         latestWorldTransform = nil
         // The camera was pointed at the person who left.
@@ -3280,7 +3416,7 @@ final class MeetViewController: UIViewController {
                 groupPeers.append(peerID)
             }
             activePeerID = groupPeers.first
-            latestDistance = activePeerID.flatMap { links[$0]?.distance }
+            latestDistance = radioValue(activePeerID.flatMap { links[$0]?.distance })
             activeRequest = MeetRequest(kind: .here, mode: .wave)
             refreshDials()
         }

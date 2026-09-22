@@ -42,6 +42,10 @@ final class RemoteChannel: NSObject {
     var onFix: ((RemoteFix) -> Void)?
     /// つながっているかどうかが変わったら呼ばれる。
     var onState: ((Bool) -> Void)?
+    /// 確認用のかぞえ（画面の下に出す）
+    private(set) var sentCount = 0
+    private(set) var gotCount = 0
+    var isJoined: Bool { joined }
 
     /// - Parameter groupID: 今日のグループの秘密 ID。これ以外のものを外に出さない。
     init(groupID: String) {
@@ -98,6 +102,7 @@ final class RemoteChannel: NSObject {
                             at: Date().timeIntervalSince1970 * 1000)
         guard let plain = try? JSONEncoder().encode(fix),
               let sealed = try? AES.GCM.seal(plain, using: key).combined else { return }
+        sentCount += 1
         push(event: "broadcast", payload: [
             "type": "broadcast",
             "event": "p",
@@ -167,6 +172,7 @@ final class RemoteChannel: NSObject {
               let box = try? AES.GCM.SealedBox(combined: sealed),
               let plain = try? AES.GCM.open(box, using: key),
               let fix = try? JSONDecoder().decode(RemoteFix.self, from: plain) else { return }
+        gotCount += 1
         DispatchQueue.main.async { self.onFix?(fix) }
     }
 }
