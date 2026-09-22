@@ -10,6 +10,7 @@ import MultipeerConnectivity
 
 struct MPCSessionConstants {
     static let kKeyIdentity: String = "identity"
+    static let kKeyTag: String = "tag"
 }
 
 class MPCSession: NSObject, MCSessionDelegate, MCNearbyServiceBrowserDelegate, MCNearbyServiceAdvertiserDelegate {
@@ -22,11 +23,20 @@ class MPCSession: NSObject, MCSessionDelegate, MCNearbyServiceBrowserDelegate, M
     private let mcAdvertiser: MCNearbyServiceAdvertiser
     private let identityString: String
     private let maxNumPeers: Int
+    /// Derived from today's invitation. Only phones that opened the same link
+    /// carry the same tag, so nobody else is even invited.
+    private let discoveryTag: String
+    /// A second value from the invitation, not derivable from the tag that is
+    /// broadcast, that an inviting phone must present to be let in.
+    private let joinProof: Data
     private var mcBrowser: MCNearbyServiceBrowser?
 
-    init(service: String, identity: String, maxPeers: Int, displayName: String) {
+    init(service: String, identity: String, maxPeers: Int, displayName: String,
+         discoveryTag: String, joinProof: Data) {
         serviceString = service
         identityString = identity
+        self.discoveryTag = discoveryTag
+        self.joinProof = joinProof
         // iOS 16 and later return the model ("iPhone") from UIDevice.current.name
         // unless the app carries the user-assigned-device-name entitlement, so on
         // two of the same phone every row in the list reads the same. The caller
@@ -35,7 +45,8 @@ class MPCSession: NSObject, MCSessionDelegate, MCNearbyServiceBrowserDelegate, M
         localPeerID = MCPeerID(displayName: trimmed.isEmpty ? "iPhone" : String(trimmed.prefix(20)))
         mcSession = MCSession(peer: localPeerID, securityIdentity: nil, encryptionPreference: .required)
         mcAdvertiser = MCNearbyServiceAdvertiser(peer: localPeerID,
-                                                 discoveryInfo: [MPCSessionConstants.kKeyIdentity: identityString],
+                                                 discoveryInfo: [MPCSessionConstants.kKeyIdentity: identityString,
+                                                                 MPCSessionConstants.kKeyTag: discoveryTag],
                                                  serviceType: serviceString)
         mcBrowser = MCNearbyServiceBrowser(peer: localPeerID, serviceType: serviceString)
         maxNumPeers = maxPeers
@@ -64,6 +75,11 @@ class MPCSession: NSObject, MCSessionDelegate, MCNearbyServiceBrowserDelegate, M
     func invalidate() {
         suspend()
         mcSession.disconnect()
+    }
+
+    /// Drop one phone: someone refused, removed, or asking again and again.
+    func disconnect(_ peer: MCPeerID) {
+        mcSession.cancelConnectPeer(peer)
     }
 
     func sendDataToAllPeers(data: Data) {
@@ -148,9 +164,10 @@ class MPCSession: NSObject, MCSessionDelegate, MCNearbyServiceBrowserDelegate, M
         guard let identityValue = info?[MPCSessionConstants.kKeyIdentity] else {
             return
         }
-        if identityValue == identityString && mcSession.connectedPeers.count < maxNumPeers {
-            browser.invitePeer(peerID, to: mcSession, withContext: nil, timeout: 10)
-        }
+        guard identityValue == identityString,
+              info?[MPCSessionConstants.kKeyTag] == discoveryTag,
+              mcSession.connectedPeers.count < maxNumPeers else { return }
+        browser.invitePeer(peerID, to: mcSession, withContext: joinProof, timeout: 10)
     }
 
     internal func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
@@ -162,9 +179,11 @@ class MPCSession: NSObject, MCSessionDelegate, MCNearbyServiceBrowserDelegate, M
                              didReceiveInvitationFromPeer peerID: MCPeerID,
                              withContext context: Data?,
                              invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-        // Accept the invitation only if the number of peers is less than the maximum.
-        if self.mcSession.connectedPeers.count < maxNumPeers {
-            invitationHandler(true, mcSession)
+        // Only a phone holding the same invitation, and only while there is room.
+        guard context == joinProof, mcSession.connectedPeers.count < maxNumPeers else {
+            invitationHandler(false, nil)
+            return
         }
+        invitationHandler(true, mcSession)
     }
 }

@@ -18,12 +18,6 @@
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.1.1</string>
-	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -35,6 +29,12 @@
 			</array>
 		</dict>
 	</array>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_kokodayo._tcp</string>
@@ -44,8 +44,10 @@
 	<string>合流ガイドで相手の方向を実空間に表示するためにカメラを使用します</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>近くの相手を見つけて合流するために使用します</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSMotionUsageDescription</key>
-	<string>検証用の実測モードで、相対高度(階の違い)を記録するために使用します</string>
+	<string>歩いているか止まっているかを判定して、どちらが相手に近づくかを案内するために使います。</string>
 	<key>NSNearbyInteractionAllowOnceUsageDescription</key>
 	<string>相手との距離と方向を測って合流するために使用します</string>
 	<key>NSNearbyInteractionUsageDescription</key>
