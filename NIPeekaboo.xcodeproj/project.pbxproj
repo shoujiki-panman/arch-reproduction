@@ -15,6 +15,7 @@
 		AD026E70248E77FD0016A2B6 /* NearbyInteraction.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AD026E6F248E77FD0016A2B6 /* NearbyInteraction.framework */; };
 		ADDB28FE24897F7D00F72056 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDB28FD24897F7D00F72056 /* AppDelegate.swift */; };
 		ADDB290224897F7D00F72056 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDB290124897F7D00F72056 /* ViewController.swift */; };
+		23DA9FE5C5624984902A2315 /* RemoteMeet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */; };
 		ADDB290524897F7D00F72056 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290324897F7D00F72056 /* Main.storyboard */; };
 		ADDB290724897F7E00F72056 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290624897F7E00F72056 /* Assets.xcassets */; };
 		ADDB290A24897F7E00F72056 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290824897F7E00F72056 /* LaunchScreen.storyboard */; };
@@ -62,6 +63,7 @@
 		ADDB28FA24897F7D00F72056 /* NIPeekaboo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NIPeekaboo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		ADDB28FD24897F7D00F72056 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		ADDB290124897F7D00F72056 /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
+		2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMeet.swift; sourceTree = "<group>"; };
 		ADDB290424897F7D00F72056 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		ADDB290624897F7E00F72056 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ADDB290924897F7E00F72056 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
@@ -169,6 +171,7 @@
 				ADDB29FE24897F7D00F72056 /* SceneDelegate.swift */,
 				0A7C6E60248C5CEE00DEC871 /* MathUtilities.swift */,
 				ADDB290124897F7D00F72056 /* ViewController.swift */,
+				2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */,
 				ADDB290324897F7D00F72056 /* Main.storyboard */,
 				ADDB290624897F7E00F72056 /* Assets.xcassets */,
 				ADDB290824897F7E00F72056 /* LaunchScreen.storyboard */,
@@ -292,6 +295,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				ADDB290224897F7D00F72056 /* ViewController.swift in Sources */,
+				23DA9FE5C5624984902A2315 /* RemoteMeet.swift in Sources */,
 				AD026E6B248E77B10016A2B6 /* MPCSession.swift in Sources */,
 				ADDB28FE24897F7D00F72056 /* AppDelegate.swift in Sources */,
 				ADDB29FF24897F7D00F72056 /* SceneDelegate.swift in Sources */,

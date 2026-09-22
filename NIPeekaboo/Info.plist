@@ -88,5 +88,7 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>待ち合わせの相手までの距離と方向を出すために、いまいる場所を使います。相手にだけ、端末の中で鍵をかけて送ります。</string>
 </dict>
 </plist>
