@@ -153,15 +153,49 @@ extension MeetMapViewController: MKMapViewDelegate {
         return r
     }
 
+    // ピンではなく「人が立っている」形にする。
+    // 相手がどこかにいる、という感じは、記号よりも姿のほうが伝わる（マリオカートの選択画面のように）。
     func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-        guard annotation is PeerPoint else { return nil }
+        guard let point = annotation as? PeerPoint else { return nil }
         let id = "peer"
-        let view = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView
-            ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: id)
+        let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
+            ?? MKAnnotationView(annotation: annotation, reuseIdentifier: id)
         view.annotation = annotation
-        view.markerTintColor = MeetPalette.action
-        view.glyphImage = UIImage(systemName: "person.fill")
-        view.canShowCallout = true
+        view.canShowCallout = false
+        view.subviews.forEach { $0.removeFromSuperview() }
+
+        let size: CGFloat = 56
+        view.frame = CGRect(x: 0, y: 0, width: size, height: size + 22)
+        view.centerOffset = CGPoint(x: 0, y: -(size / 2 + 8))
+
+        let avatar = UIView(frame: CGRect(x: 0, y: 0, width: size, height: size))
+        avatar.backgroundColor = MeetPalette.action
+        avatar.layer.cornerRadius = size / 2
+        avatar.layer.borderWidth = 3
+        avatar.layer.borderColor = UIColor.white.cgColor
+        avatar.layer.shadowColor = UIColor.black.cgColor
+        avatar.layer.shadowOpacity = 0.4
+        avatar.layer.shadowRadius = 6
+        avatar.layer.shadowOffset = CGSize(width: 0, height: 3)
+
+        let figure = UIImageView(image: UIImage(systemName: "figure.walk"))
+        figure.tintColor = .black
+        figure.contentMode = .scaleAspectFit
+        figure.frame = avatar.bounds.insetBy(dx: 13, dy: 13)
+        avatar.addSubview(figure)
+        view.addSubview(avatar)
+
+        let label = PaddedLabel()
+        label.text = point.title
+        label.font = Type.caption
+        label.textColor = MeetPalette.primary
+        label.backgroundColor = MeetPalette.surface
+        label.layer.cornerRadius = 10
+        label.layer.masksToBounds = true
+        label.sizeToFit()
+        label.frame = CGRect(x: (size - label.frame.width) / 2, y: size + 2,
+                             width: label.frame.width, height: 20)
+        view.addSubview(label)
         return view
     }
 }
