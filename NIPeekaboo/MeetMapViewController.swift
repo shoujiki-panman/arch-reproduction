@@ -28,8 +28,14 @@ final class MeetMapViewController: UIViewController {
 
     private let peerName: String
     private var peer: PeerPoint?
-    private var line: MKPolyline?
+    private var line: MKPolyline?          // 道なりの経路（取れないときは2点を結ぶ直線）
+    private var lineIsRoute = false
     private var fitted = false
+    /// 経路を引き直した時刻と、そのときの相手の場所。呼びすぎないための覚え書き。
+    private var routeAt = Date.distantPast
+    private var routeFrom: CLLocationCoordinate2D?
+    private var routeMinutes: Int?
+    private var routeMetres: Double?
 
     init(peerName: String) {
         self.peerName = peerName
@@ -118,30 +124,86 @@ final class MeetMapViewController: UIViewController {
                 peer = p
             }
         }
-        if let metres {
-            let minutes = max(1, Int((metres / 80).rounded()))
-            let text = metres < 1000 ? "\(Int(metres.rounded()))m" : String(format: "%.1fkm", metres / 1000)
-            headline.text = byRadio ? "電波で測っています" : "地図で見ています"
-            number.text = "あと約\(minutes)分・\(text)"
-            detail.text = byRadio ? "近くにいます。画面より周りを見てください"
-                                  : "誤差±\(Int((accuracy ?? 0).rounded()))m。近づくと電波で測ります"
-        } else {
-            headline.text = "\(peerName)を待っています"
-            number.text = "—"
-            detail.text = "相手がアプリを開くと、ここに出ます"
-        }
+        lastStraight = metres
+        lastAccuracy = accuracy
+        lastByRadio = byRadio
+        showNumbers()
 
         // 2つの点を結ぶ線。どちら側にいるかは、線の向きでひと目でわかる。
         if let me, let coordinate {
-            if let line { map.removeOverlay(line) }
-            let pts = [me.coordinate, coordinate]
-            let l = MKPolyline(coordinates: pts, count: 2)
-            map.addOverlay(l)
-            line = l
+            updateRoute(me: me.coordinate, peer: coordinate)
+            if !lineIsRoute {
+                if let line { map.removeOverlay(line) }
+                let pts = [me.coordinate, coordinate]
+                let l = MKPolyline(coordinates: pts, count: 2)
+                map.addOverlay(l)
+                line = l
+            }
             if !fitted {
                 fit(me: me.coordinate, peer: coordinate)
                 fitted = true
             }
+        }
+    }
+
+    /// 道なりの経路を引く。直線距離は「道を無視した数字」なので、出せるならこちらを使う。
+    /// 相手が100m以上動いたか、30秒経ったときだけ引き直す（呼びすぎないため）。
+    private func updateRoute(me: CLLocationCoordinate2D, peer: CLLocationCoordinate2D) {
+        let moved = routeFrom.map {
+            CLLocation(latitude: $0.latitude, longitude: $0.longitude)
+                .distance(from: CLLocation(latitude: peer.latitude, longitude: peer.longitude))
+        } ?? .greatestFiniteMagnitude
+        guard moved > 100 || Date().timeIntervalSince(routeAt) > 30 else { return }
+        routeAt = Date()
+        routeFrom = peer
+
+        let request = MKDirections.Request()
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: me))
+        request.destination = MKMapItem(placemark: MKPlacemark(coordinate: peer))
+        request.transportType = .walking
+        request.requestsAlternateRoutes = false
+        MKDirections(request: request).calculate { [weak self] response, _ in
+            guard let self, let route = response?.routes.first else { return }
+            DispatchQueue.main.async {
+                self.routeMinutes = max(1, Int((route.expectedTravelTime / 60).rounded()))
+                self.routeMetres = route.distance
+                if let line = self.line { self.map.removeOverlay(line) }
+                self.map.addOverlay(route.polyline)
+                self.line = route.polyline
+                self.lineIsRoute = true
+                self.showNumbers()
+            }
+        }
+    }
+
+    private var lastStraight: Double?
+    private var lastAccuracy: Double?
+    private var lastByRadio = false
+
+    /// 数字の出し方。道なりが取れていればそれを主役にし、直線は添えるだけにする。
+    private func showNumbers() {
+        guard let metres = lastStraight else {
+            headline.text = "\(peerName)を待っています"
+            number.text = "—"
+            detail.text = "相手がアプリを開くと、ここに出ます"
+            return
+        }
+        let straight = metres < 1000 ? "\(Int(metres.rounded()))m" : String(format: "%.1fkm", metres / 1000)
+        if lastByRadio {
+            headline.text = "電波で測っています"
+            number.text = "あと \(straight)"
+            detail.text = "近くにいます。画面より周りを見てください"
+            return
+        }
+        if let minutes = routeMinutes, let rm = routeMetres {
+            let along = rm < 1000 ? "\(Int(rm.rounded()))m" : String(format: "%.1fkm", rm / 1000)
+            headline.text = "歩いた場合"
+            number.text = "あと約\(minutes)分・\(along)"
+            detail.text = "道なりの見込み（直線では\(straight)）。誤差±\(Int((lastAccuracy ?? 0).rounded()))m"
+        } else {
+            headline.text = "地図で見ています"
+            number.text = "直線で \(straight)"
+            detail.text = "道なりの時間を調べています。誤差±\(Int((lastAccuracy ?? 0).rounded()))m"
         }
     }
 
@@ -176,7 +238,7 @@ extension MeetMapViewController: MKMapViewDelegate {
         let r = MKPolylineRenderer(overlay: overlay)
         r.strokeColor = MeetPalette.action.withAlphaComponent(0.8)
         r.lineWidth = 3
-        r.lineDashPattern = [6, 8]
+        r.lineDashPattern = lineIsRoute ? nil : [6, 8]   // 道なりは実線、直線は点線
         return r
     }
 
