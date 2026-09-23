@@ -15,6 +15,7 @@
 		AD026E70248E77FD0016A2B6 /* NearbyInteraction.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AD026E6F248E77FD0016A2B6 /* NearbyInteraction.framework */; };
 		ADDB28FE24897F7D00F72056 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDB28FD24897F7D00F72056 /* AppDelegate.swift */; };
 		0DDFE8A87E6C4E2E8109ADC6 /* MeetMapViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A8116F9B05C4B78A773E259 /* MeetMapViewController.swift */; };
+		D825F6971B8948E88BCA8019 /* KnownFriends.swift in Sources */ = {isa = PBXBuildFile; fileRef = E84A6429FA7F49D8A55CB184 /* KnownFriends.swift */; };
 		ADDB290224897F7D00F72056 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDB290124897F7D00F72056 /* ViewController.swift */; };
 		23DA9FE5C5624984902A2315 /* RemoteMeet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */; };
 		ADDB290524897F7D00F72056 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290324897F7D00F72056 /* Main.storyboard */; };
@@ -64,6 +65,7 @@
 		ADDB28FA24897F7D00F72056 /* NIPeekaboo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NIPeekaboo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		ADDB28FD24897F7D00F72056 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		ADDB290124897F7D00F72056 /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
+		E84A6429FA7F49D8A55CB184 /* KnownFriends.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnownFriends.swift; sourceTree = "<group>"; };
 		1A8116F9B05C4B78A773E259 /* MeetMapViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetMapViewController.swift; sourceTree = "<group>"; };
 		2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMeet.swift; sourceTree = "<group>"; };
 		ADDB290424897F7D00F72056 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
@@ -173,6 +175,7 @@
 				ADDB29FE24897F7D00F72056 /* SceneDelegate.swift */,
 				0A7C6E60248C5CEE00DEC871 /* MathUtilities.swift */,
 				ADDB290124897F7D00F72056 /* ViewController.swift */,
+				E84A6429FA7F49D8A55CB184 /* KnownFriends.swift */,
 				1A8116F9B05C4B78A773E259 /* MeetMapViewController.swift */,
 				2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */,
 				ADDB290324897F7D00F72056 /* Main.storyboard */,
@@ -298,6 +301,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				ADDB290224897F7D00F72056 /* ViewController.swift in Sources */,
+				D825F6971B8948E88BCA8019 /* KnownFriends.swift in Sources */,
 				0DDFE8A87E6C4E2E8109ADC6 /* MeetMapViewController.swift in Sources */,
 				23DA9FE5C5624984902A2315 /* RemoteMeet.swift in Sources */,
 				AD026E6B248E77B10016A2B6 /* MPCSession.swift in Sources */,

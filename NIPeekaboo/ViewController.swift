@@ -1130,6 +1130,8 @@ final class MeetViewController: UIViewController {
     /// camera, or end. Only the ones that apply are on screen.
     private let actionStack = UIStackView()
     private let connectStack = UIStackView()
+    /// 覚えた相手を並べる場所（リンクを送らずに、押すだけで再開する）
+    private let friendsStack = UIStackView()
     private var connectRows: [MCPeerID: UIButton] = [:]
     private var connectOrder: [MCPeerID] = []
     private let inviteButton = UIButton(type: .system)
@@ -1853,11 +1855,70 @@ final class MeetViewController: UIViewController {
         return "\(formatter.string(from: date))まで"
     }
 
+    /// 覚えた相手のボタン。グループに入っていないときだけ出す。
+    /// 押すと、その相手とのグループをその場で作る。リンクは送らない
+    /// （部屋の名前は2人の鍵から計算するので、相手の端末でも同じ部屋になる）。
+    private func refreshFriends() {
+        friendsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        // 🚧 まだ出さない。いまの鍵はグループごとに作り直されるので、相手の鍵も毎回変わり、
+        // 「覚えた相手」と次に同じ部屋を計算できない。端末ごとに変わらない身元（長期の鍵）を
+        // 持ち、つないだときに交換する仕組みを入れてから出す。
+        // 押しても相手に届かないボタンを置くのが、いちばんまずい。
+        friendsStack.isHidden = true
+        if true { return }
+        guard group == nil else { friendsStack.isHidden = true; return }
+        let friends = KnownFriends.all().prefix(3)
+        friendsStack.isHidden = friends.isEmpty
+        for friend in friends {
+            let button = UIButton(type: .system)
+            var conf = UIButton.Configuration.filled()
+            conf.title = "\(friend.name) に つなぐ"
+            conf.subtitle = "リンクは要りません"
+            conf.baseBackgroundColor = MeetPalette.surface
+            conf.baseForegroundColor = MeetPalette.primary
+            conf.cornerStyle = .capsule
+            conf.contentInsets = .init(top: 14, leading: 20, bottom: 14, trailing: 20)
+            button.configuration = conf
+            button.contentHorizontalAlignment = .leading
+            button.addAction(UIAction { [weak self] _ in self?.connectToFriend(friend) }, for: .touchUpInside)
+            respondOnPress(button)
+            friendsStack.addArrangedSubview(button)
+        }
+    }
+
+    /// 覚えた相手と、その場でつなぎ直す。
+    private func connectToFriend(_ friend: KnownFriend) {
+        guard group == nil else { return }
+        let key = GroupKey.create(groupID: friend.key, expires: Self.endOfToday())
+        let me = key.publicKey.rawRepresentation.base64URL
+        signingKey = key
+        group = TodayGroup(id: KnownFriends.pairSecret(mine: me, theirs: friend.key),
+                           hostKey: me, hostName: Self.myDisplayName,
+                           expires: Self.endOfToday(), myMember: me,
+                           approved: [me, friend.key],
+                           names: [me: Self.myDisplayName, friend.key: friend.name])
+        finderNotice = "\(friend.name)とつなぎました。相手がアプリを開くと居場所が出ます"
+        saveTodayGroup()
+        resetSession()
+        if supportsUWB { startup() }
+        refreshDials()
+    }
+
     /// 相手が遠いあいだの居場所のやりとりを始める。
     /// 電波（UWB）が効いている間は送らない。届かなくなった時だけ流れる。
     private func startRemote() {
-        guard let id = group?.id, remote == nil else { return }
-        let channel = RemoteChannel(groupID: id)
+        guard let group, remote == nil else { return }
+        // 覚えている相手とだけのグループなら、部屋名は2人の鍵から作る。
+        // こうすると、次からはリンクを送らなくても同じ部屋で会える。
+        let partners = group.approved.filter { $0 != group.myMember }
+        let known = KnownFriends.all().map(\.key)
+        let seed: String
+        if partners.count == 1, known.contains(partners[0]) {
+            seed = KnownFriends.pairSecret(mine: group.myMember, theirs: partners[0])
+        } else {
+            seed = group.id
+        }
+        let channel = RemoteChannel(groupID: seed)
         channel.onFix = { [weak self] fix in
             guard let self else { return }
             self.theirFix = fix
@@ -2700,6 +2761,7 @@ final class MeetViewController: UIViewController {
     /// today's group ever appears here, and nobody outside it can see this phone.
     private func refreshDials() {
         refreshDemoButton()
+        refreshFriends()
         // グループがあるなら遠いときの層を生かす。保存の時だけでは、
         // 保存済みのグループを読み直して再開したときに起きなかった。
         if group != nil { startRemote() } else if remote != nil { stopRemote() }
@@ -2730,6 +2792,10 @@ final class MeetViewController: UIViewController {
         if connected, let d = latestDistance, d < arrivalThreshold, !didAnnounceArrival, radioIsFresh() {
             didAnnounceArrival = true
             if hapticsOn { arrivalGenerator.notificationOccurred(.success) }
+        }
+        // つないだ相手は覚えておく。次からリンクは要らない（覚えるのは鍵と名前だけ）
+        if connected, let peer = activePeerID, let member = peerMembers[peer], member != group?.myMember {
+            KnownFriends.remember(key: member, name: peerNames[peer] ?? "相手")
         }
         let arrived = connected && latestDistance != nil && didAnnounceArrival && radioIsFresh()
         let focusName = activePeerID.map { name(of: $0) } ?? "相手"
@@ -4078,6 +4144,8 @@ final class MeetViewController: UIViewController {
 
         connectStack.axis = .vertical
         connectStack.spacing = 10
+        friendsStack.axis = .vertical
+        friendsStack.spacing = 8
 
         inviteButton.configuration = primaryConfig(title: "招待リンクを送る",
                                                    image: "square.and.arrow.up",
@@ -4095,7 +4163,7 @@ final class MeetViewController: UIViewController {
 
         actionStack.axis = .vertical
         actionStack.spacing = 10
-        for v in [connectStack, inviteButton, cameraButton, endButton] as [UIView] {
+        for v in [connectStack, friendsStack, inviteButton, cameraButton, endButton] as [UIView] {
             actionStack.addArrangedSubview(v)
         }
 
