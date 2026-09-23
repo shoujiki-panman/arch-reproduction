@@ -918,6 +918,9 @@ final class MeetViewController: UIViewController {
     // Measurement HUD state (values are cheap to keep; the HUD itself is DEBUG-only).
     private var convergenceText = "-"
     private var convergenceReasons = "-"
+    /// カメラ補助で得られる値。方向が出ない端末でも、これなら出るかを実機で確かめるため。
+    private var latestHorizontalAngle: Float?
+    private var latestVerticalEstimate: String?
     /// What NI is actually waiting for, in words. It asks for these in turn, so
     /// showing one at a time turns 30 seconds of waving into a set of steps.
     private var sweepHint: String?
@@ -2405,6 +2408,11 @@ final class MeetViewController: UIViewController {
         let session = ensureLiveSession(for: link)
         guard let token = link.peerToken else { return }
         let config = NINearbyPeerConfiguration(peerToken: token)
+        // 遠距離測距。公式には最大何mとは書かれていない（環境次第）が、
+        // 入れていなければ第1世代と同じ範囲のままになる。両方の端末が対応していれば効く。
+        if #available(iOS 17.0, *), NISession.deviceCapabilities.supportsExtendedDistanceMeasurement {
+            config.isExtendedDistanceMeasurementEnabled = true
+        }
         if link.peerID == activePeerID { activeCameraAssist = wantsCamera }
         if #available(iOS 16.0, *), wantsCamera {
             config.isCameraAssistanceEnabled = true
@@ -3707,6 +3715,12 @@ final class MeetViewController: UIViewController {
         }
         arHint.text = distance < nearThreshold ? "顔を上げて周りを見てください" : nil
         arHint.isHidden = arHint.text == nil
+        #if DEBUG
+        // 実機でカメラ補助が効いているかを、その場で読めるようにする
+        let deg = latestHorizontalAngle.map { String(format: "%.0f度", $0 * 180 / .pi) } ?? "なし"
+        arHint.text = "水平角=\(deg) 上下=\(latestVerticalEstimate ?? "-") 収束=\(convergenceText)"
+        arHint.isHidden = false
+        #endif
 
         let camPos = camNode.simdWorldPosition
         let floorY = camPos.y - 1.25
@@ -5122,6 +5136,19 @@ extension MeetViewController: NISessionDelegate {
         callbackCounter += 1
         link.distance = object.distance
         link.direction = object.direction
+        if #available(iOS 16.0, *), peerID == activePeerID {
+            latestHorizontalAngle = object.horizontalAngle
+            latestVerticalEstimate = {
+                switch object.verticalDirectionEstimate {
+                case .above: return "上"
+                case .below: return "下"
+                case .same: return "同じ高さ"
+                case .aboveOrBelow: return "上か下"
+                case .unknown: return "不明"
+                @unknown default: return "?"
+                }
+            }()
+        }
         if #available(iOS 16.0, *), cameraAssistance, peerID == activePeerID {
             link.world = session.worldTransform(for: object)
         }
