@@ -2417,8 +2417,14 @@ final class MeetViewController: UIViewController {
     @objc private func pingTapped() {
         let peers = groupPeers.filter { links[$0]?.isDemo != true }
         guard let data = try? JSONEncoder().encode(PingMessage()) else { return }
-        if !peers.isEmpty { mpc?.sendData(data: data, peers: peers, mode: .reliable) }
         let who = activePeerID.map { name(of: $0) } ?? "相手"
+        // 合図は電波（MPC）でしか飛ばない。届いていないのに「合図しました」と
+        // 出すと、相手が気づかない理由が分からなくなる。
+        guard !peers.isEmpty || isDemo else {
+            flash("いまは電波が届いていないので、\(who)に合図を送れません")
+            return
+        }
+        if !peers.isEmpty { mpc?.sendData(data: data, peers: peers, mode: .reliable) }
         impactGenerator.impactOccurred()
         flash(isDemo ? "デモ: \(who)に合図しました" : "\(who)に合図しました")
     }
