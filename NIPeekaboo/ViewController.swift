@@ -1202,10 +1202,10 @@ final class MeetViewController: UIViewController {
     private var expiryTimer: Timer?
     private var joinAlert: UIAlertController?
     private var joinAlertPeer: MCPeerID?
-    private var transientNotice: String?
-    private var transientTimer: Timer?
     private var resumePending = false
     private let finderTip = UILabel()
+    /// 一時の知らせ。下の1行（状態）とは別の、浮いた面に出す。
+    private let toast = ToastView()
 
     private let arScreen = UIView()
     /// Camera is the screen; the read-out is a thin layer on top of it. A dial in
@@ -2586,14 +2586,10 @@ final class MeetViewController: UIViewController {
         mpc?.sendData(data: data, peers: Array(links.keys), mode: .reliable)
     }
 
+    /// 一時の知らせ。下の1行を置き換えると「いま何を共有しているか」が消えるので、
+    /// 浮いた面（ToastView）に出して、6秒で引っ込める。
     private func flash(_ text: String) {
-        transientNotice = text
-        transientTimer?.invalidate()
-        transientTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
-            self?.transientNotice = nil
-            self?.refreshDials()
-        }
-        refreshDials()
+        toast.show(text)
     }
 
     /// A newcomer holding the link still needs a yes. The prompt shows what the host
@@ -3308,9 +3304,7 @@ final class MeetViewController: UIViewController {
         // link dropping, the group ending — must reach the island too, or it
         // keeps showing the last number after the person is gone.
         syncLiveActivity()
-        if let transientNotice {
-            finderStatus.text = transientNotice
-        } else if let finderNotice, !connected {
+        if let finderNotice, !connected {
             finderStatus.text = finderNotice
         } else if closed, !connected {
             // From the saved group, so it is still explained after a relaunch.
@@ -4619,7 +4613,7 @@ final class MeetViewController: UIViewController {
             actionStack.addArrangedSubview(v)
         }
 
-        for v in [finderChips, finderHeadline, finderDial, actionStack, finderTip, finderStatus] as [UIView] {
+        for v in [finderChips, finderHeadline, finderDial, actionStack, finderTip, finderStatus, toast] as [UIView] {
             finderPanel.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -4684,6 +4678,12 @@ final class MeetViewController: UIViewController {
             finderStatus.leadingAnchor.constraint(equalTo: finderPanel.leadingAnchor, constant: 24),
             finderStatus.trailingAnchor.constraint(equalTo: finderPanel.trailingAnchor, constant: -24),
             finderStatus.bottomAnchor.constraint(equalTo: finderPanel.bottomAnchor, constant: -10),
+
+            // 知らせはボタンの上に浮かせる。下の1行（いま何を共有しているか）は消さない。
+            toast.bottomAnchor.constraint(equalTo: actionStack.topAnchor, constant: -14),
+            toast.centerXAnchor.constraint(equalTo: finderPanel.centerXAnchor),
+            toast.leadingAnchor.constraint(greaterThanOrEqualTo: finderPanel.leadingAnchor, constant: 20),
+            toast.trailingAnchor.constraint(lessThanOrEqualTo: finderPanel.trailingAnchor, constant: -20),
         ])
         NSLayoutConstraint.activate([
             // Everything above the buttons: the rings were squeezed into the dial's
@@ -5070,7 +5070,9 @@ final class MeetViewController: UIViewController {
         refreshSendButton()
         selectionTick.selectionChanged()
         selectionTick.prepare()
-        Motion.animate(damping: 0.8, response: 0.3) { self.refreshSelectionStyles() }
+        // 16-tabs-sliding の目盛り（250ms・smooth-out）に合わせる。
+        Trans.run(Trans.smoothOut(Trans.fast)) { self.refreshSelectionStyles() }
+        popSelected(sender)
     }
 
     @objc private func markerTapped(_ sender: UIButton) {
@@ -5081,7 +5083,9 @@ final class MeetViewController: UIViewController {
         refreshSendButton()
         selectionTick.selectionChanged()
         selectionTick.prepare()
-        Motion.animate(damping: 0.8, response: 0.3) { self.refreshSelectionStyles() }
+        // 16-tabs-sliding の目盛り（250ms・smooth-out）に合わせる。
+        Trans.run(Trans.smoothOut(Trans.fast)) { self.refreshSelectionStyles() }
+        popSelected(sender)
     }
 
     private func refreshSelectionStyles() {
@@ -5349,6 +5353,16 @@ final class MeetViewController: UIViewController {
             row.addSubview(button)
         }
         return row
+    }
+
+    /// 選んだ側だけ、11-avatar-group-hover の持ち上がり（1.05倍）を一度かけて戻す。
+    private func popSelected(_ button: UIButton) {
+        guard !Trans.reduced else { return }
+        Trans.run(Trans.smoothOut(Trans.quick)) {
+            button.transform = CGAffineTransform(scaleX: Trans.liftScale, y: Trans.liftScale)
+        } done: {
+            Trans.run(Trans.bounce(Trans.fast)) { button.transform = .identity }
+        }
     }
 
     private func style(chipButton button: UIButton, selected: Bool) {
@@ -6383,14 +6397,15 @@ enum Motion {
     }
 
     /// Press feedback that lands before the finger lifts.
+    /// 目盛りは transitions.dev に合わせた（押し込みは --scale-small 0.98、
+    /// 押すのは速く --duration-quick、戻るのは --duration-fast、曲線は smooth-out）。
+    /// 薄くするのはやめた。向こうは大きさだけで押した感じを出している。
     static func press(_ view: UIView, down: Bool) {
         guard !reduced else { return }
-        let animator = UIViewPropertyAnimator(duration: 0.1, timingParameters: spring(response: 0.1))
-        animator.addAnimations {
-            view.transform = down ? CGAffineTransform(scaleX: 0.97, y: 0.97) : .identity
-            view.alpha = down ? 0.85 : 1
+        Trans.run(Trans.smoothOut(down ? Trans.quick : Trans.fast)) {
+            view.transform = down ? CGAffineTransform(scaleX: Trans.pressScale, y: Trans.pressScale) : .identity
+            view.alpha = 1
         }
-        animator.startAnimation()
     }
 }
 
@@ -6463,7 +6478,7 @@ final class SealMark: UIView {
     }
 }
 
-final class PaddedLabel: UILabel {
+class PaddedLabel: UILabel {
     var insets: UIEdgeInsets = .zero
     override func drawText(in rect: CGRect) {
         super.drawText(in: rect.inset(by: insets))
