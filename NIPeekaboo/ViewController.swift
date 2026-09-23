@@ -95,6 +95,8 @@ struct WelcomeMessage: Codable {
     var members: [String]
     var names: [String: String]
     var version: Int
+    /// いつまで見せ合うか（1970年からの秒）。ホストが変えたらここで伝わる。
+    var expires: Double
     var signature: String
 }
 
@@ -105,6 +107,7 @@ struct WelcomeBody: Codable {
     var members: [String]
     var names: [String: String]
     var version: Int
+    var expires: Double
 }
 
 /// The host ended the group for everyone. Signed, so only the host can.
@@ -182,6 +185,18 @@ enum GroupKey {
         ]
         SecItemAdd(item as CFDictionary, nil)
         return key
+    }
+
+    /// グループの期限を変えたら、鍵の寿命も合わせる。合わせないと、
+    /// 延ばしたはずのグループの鍵だけ先に消えて、署名できなくなる。
+    static func setExpiry(groupID: String, expires: Date) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: groupID,
+        ]
+        let update: [String: Any] = [kSecAttrLabel as String: String(Int(expires.timeIntervalSince1970))]
+        SecItemUpdate(query as CFDictionary, update as CFDictionary)
     }
 
     static func load(groupID: String) -> Curve25519.Signing.PrivateKey? {
@@ -1550,7 +1565,7 @@ final class MeetViewController: UIViewController {
               let hostKey = value("k"), Data(base64URL: hostKey)?.count == 32 else { return }
         let claimed = value("e").flatMap(Double.init).map { Date(timeIntervalSince1970: $0) } ?? Self.endOfToday()
         // Never longer than today, whatever the link says.
-        let expires = min(claimed, Self.endOfToday())
+        let expires = min(claimed, Self.maxExpiry())
         guard expires > Date() else {
             finderNotice = "この招待リンクは期限が切れています"
             refreshDials()
@@ -1613,11 +1628,11 @@ final class MeetViewController: UIViewController {
         }
         if group == nil {
             let secret = SymmetricKey(size: .bits128).withUnsafeBytes { Data($0) }.base64URL
-            let key = GroupKey.create(groupID: secret, expires: Self.endOfToday())
+            let key = GroupKey.create(groupID: secret, expires: shareExpiry())
             let me = key.publicKey.rawRepresentation.base64URL
             signingKey = key
             group = TodayGroup(id: secret, hostKey: me, hostName: Self.myDisplayName,
-                               expires: Self.endOfToday(), myMember: me, approved: [me],
+                               expires: shareExpiry(), myMember: me, approved: [me],
                                names: [me: Self.myDisplayName])
             finderNotice = nil
             saveTodayGroup()
@@ -1781,6 +1796,17 @@ final class MeetViewController: UIViewController {
             errand.subtitle = peerStore.map { "\(partnerName)は\($0.name)のそば" } ?? "店は見つかっていません"
             items.insert(errand, at: 0)
         }
+        // 共有の期限。いまのグループがあればその場で変わり、無ければ次のリンクから。
+        let limits = Self.limitChoices.map { choice in
+            let action = UIAction(title: choice.label) { [weak self] _ in self?.setShareLimit(choice.seconds) }
+            action.state = shareLimit == choice.seconds ? .on : .off
+            return action
+        }
+        let limitMenu = UIMenu(title: "共有の期限（\(shareLimitShort)）",
+                               image: UIImage(systemName: "clock"),
+                               children: limits)
+        items.append(limitMenu)
+
         let mood = UIAction(title: "いまの様子を伝える", image: UIImage(systemName: "text.bubble")) { [weak self] _ in
             self?.askMood()
         }
@@ -1880,7 +1906,7 @@ final class MeetViewController: UIViewController {
         GroupKey.purgeExpired()
         guard let url = Self.groupFileURL, let data = try? Data(contentsOf: url),
               let saved = try? JSONDecoder().decode(TodayGroup.self, from: data) else { return }
-        guard saved.expires > Date(), saved.expires <= Self.endOfToday(),
+        guard saved.expires > Date(), saved.expires <= Self.maxExpiry(),
               let key = GroupKey.load(groupID: saved.id) else {
             GroupKey.delete(groupID: saved.id)
             try? FileManager.default.removeItem(at: url)
@@ -1958,6 +1984,38 @@ final class MeetViewController: UIViewController {
     }
 
     /// Four in the morning, so a late night still counts as today.
+    // MARK: - 共有の期限
+
+    private static let limitKey = "kokodayo.limit"
+    /// 選べる長さ。0 は「今日中（朝4時まで）」。
+    /// 上限を24時間にしているのは、これが待ち合わせの道具で、見守りの道具ではないから。
+    static let limitChoices: [(label: String, seconds: TimeInterval)] = [
+        ("1時間", 3600), ("3時間", 3 * 3600), ("今日中（朝4時まで）", 0), ("24時間", 24 * 3600),
+    ]
+
+    /// いま選ばれている長さ。既定は今日中（これまでと同じ）。
+    private var shareLimit: TimeInterval {
+        get { UserDefaults.standard.object(forKey: Self.limitKey) as? TimeInterval ?? 0 }
+        set { UserDefaults.standard.set(newValue, forKey: Self.limitKey) }
+    }
+
+    private var shareLimitLabel: String {
+        Self.limitChoices.first { $0.seconds == shareLimit }?.label ?? "今日中（朝4時まで）"
+    }
+
+    /// メニューの見出し用。括弧が二重にならないよう短い方を使う。
+    private var shareLimitShort: String {
+        shareLimit > 0 ? shareLimitLabel : "今日中"
+    }
+
+    /// これから作るグループの期限。
+    private func shareExpiry() -> Date {
+        shareLimit > 0 ? Date().addingTimeInterval(shareLimit) : Self.endOfToday()
+    }
+
+    /// どれだけ長くしても、ここは越えない。リンクが何と言っていても切り落とす。
+    static func maxExpiry() -> Date { Date().addingTimeInterval(24 * 3600) }
+
     private static func endOfToday() -> Date {
         let calendar = Calendar.current
         var next = calendar.date(bySettingHour: 4, minute: 0, second: 0, of: Date()) ?? Date().addingTimeInterval(12 * 3600)
@@ -1968,7 +2026,9 @@ final class MeetViewController: UIViewController {
     private func untilText(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "H:mm"
-        return "\(formatter.string(from: date))まで"
+        // 24時間を選べるようになったので、今日の4時なのか明日の4時なのかを書き分ける。
+        let day = Calendar.current.isDateInTomorrow(date) ? "明日の" : ""
+        return "\(day)\(formatter.string(from: date))まで"
     }
 
     /// 覚えた相手のボタン。グループに入っていないときだけ出す。
@@ -2005,12 +2065,12 @@ final class MeetViewController: UIViewController {
     /// 覚えた相手と、その場でつなぎ直す。
     private func connectToFriend(_ friend: KnownFriend) {
         guard group == nil else { return }
-        let key = GroupKey.create(groupID: friend.key, expires: Self.endOfToday())
+        let key = GroupKey.create(groupID: friend.key, expires: shareExpiry())
         let me = key.publicKey.rawRepresentation.base64URL
         signingKey = key
         group = TodayGroup(id: KnownFriends.pairSecret(mine: me, theirs: friend.key),
                            hostKey: me, hostName: Self.myDisplayName,
-                           expires: Self.endOfToday(), myMember: me,
+                           expires: shareExpiry(), myMember: me,
                            approved: [me, friend.key],
                            names: [me: Self.myDisplayName, friend.key: friend.name])
         finderNotice = "\(friend.name)とつなぎました。相手がアプリを開くと居場所が出ます"
@@ -2390,6 +2450,25 @@ final class MeetViewController: UIViewController {
         sendToPartner(data)
     }
 
+    /// 期限を選ぶ。いまのグループを持っている側（ホスト）なら、その場で変える。
+    /// 相手には署名つきの名簿（welcome）で伝わる。
+    private func setShareLimit(_ seconds: TimeInterval) {
+        shareLimit = seconds
+        guard var current = group, current.isHost else {
+            flash("次に送るリンクから\(shareLimitLabel)になります")
+            return
+        }
+        let wanted = shareExpiry()
+        current.expires = wanted
+        current.version += 1
+        group = current
+        GroupKey.setExpiry(groupID: current.id, expires: wanted)
+        saveTodayGroup()
+        sendWelcome(to: approvedPeers)
+        flash("共有を\(untilText(wanted))にしました")
+        refreshDials()
+    }
+
     // MARK: - いまの様子（一言）
 
     private static let moodPresets = ["のんびり進みます", "急いでいます", "おつかい中", "道に迷いました", "もうすぐ着きます", "少し遅れます"]
@@ -2533,18 +2612,22 @@ final class MeetViewController: UIViewController {
         return key.isValidSignature(signature, for: Data("hello|\(groupID)|\(nonce)".utf8))
     }
 
-    private func welcomeBody(group: String, members: [String], names: [String: String], version: Int) -> Data? {
+    private func welcomeBody(group: String, members: [String], names: [String: String], version: Int,
+                             expires: Double) -> Data? {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        return try? encoder.encode(WelcomeBody(group: group, members: members, names: names, version: version))
+        return try? encoder.encode(WelcomeBody(group: group, members: members, names: names,
+                                               version: version, expires: expires))
     }
 
     private func sendWelcome(to peers: [MCPeerID]) {
         guard let group, group.isHost, !peers.isEmpty, let key = signingKey,
-              let body = welcomeBody(group: group.id, members: group.approved, names: group.names, version: group.version),
+              let body = welcomeBody(group: group.id, members: group.approved, names: group.names,
+                                     version: group.version, expires: group.expires.timeIntervalSince1970),
               let signature = try? key.signature(for: body) else { return }
         let message = WelcomeMessage(group: group.id, members: group.approved, names: group.names,
-                                     version: group.version, signature: signature.base64URL)
+                                     version: group.version, expires: group.expires.timeIntervalSince1970,
+                                     signature: signature.base64URL)
         if let data = try? JSONEncoder().encode(message) {
             mpc?.sendData(data: data, peers: peers, mode: .reliable)
         }
@@ -3022,7 +3105,8 @@ final class MeetViewController: UIViewController {
                   let signature = Data(base64URL: welcome.signature),
                   let hostKey = try? Curve25519.Signing.PublicKey(rawRepresentation: hostKeyData),
                   let body = welcomeBody(group: welcome.group, members: welcome.members,
-                                         names: welcome.names, version: welcome.version),
+                                         names: welcome.names, version: welcome.version,
+                                         expires: welcome.expires),
                   hostKey.isValidSignature(signature, for: body)
             else { return }
             let wasApproved = current.approved.contains(current.myMember)
@@ -3032,6 +3116,13 @@ final class MeetViewController: UIViewController {
             current.approved = welcome.members
             current.names = welcome.names.mapValues(cleanName)
             current.version = welcome.version
+            // ホストが期限を変えたら合わせる。上限は同じ（24時間）。
+            let told = min(Date(timeIntervalSince1970: welcome.expires), Self.maxExpiry())
+            if told > Date(), abs(told.timeIntervalSince(current.expires)) > 30 {
+                current.expires = told
+                GroupKey.setExpiry(groupID: current.id, expires: told)
+                flash("\(current.hostName)が共有を\(untilText(told))にしました")
+            }
             group = current
             saveTodayGroup()
             awaitingApproval = false
