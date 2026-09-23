@@ -367,6 +367,11 @@ final class MeetDial: UIView {
 
     private let track = CAShapeLayer()
     private let bar = CAShapeLayer()
+    /// 探しているあいだ、輪の上を回る金の光。頭が明るく、尾が薄い。
+    /// 止まった輪は「壊れている」に見えるので、待っている間は必ず動かす。
+    private let sweep = CALayer()
+    private let sweepHead = CAShapeLayer()
+    private let sweepTail = CAShapeLayer()
     private let innerRing = CAShapeLayer()
     private let midRing = CAShapeLayer()
     /// One metre per mark, scribed on the axis the ring's top edge travels along,
@@ -419,6 +424,22 @@ final class MeetDial: UIView {
         // a single strong figure on a dark ground, and nothing else. Rings are
         // also the honest shape here — we know the distance, never the bearing,
         // so "somewhere on this circle" is exactly what we can claim.
+        // 金の光。頭（濃く短い弧）と尾（薄く長い弧）を1つの層に入れて、層ごと回す。
+        for (layer, alpha, width) in [(sweepTail, CGFloat(0.28), CGFloat(1.0)),
+                                      (sweepHead, CGFloat(1.0), CGFloat(1.0))] {
+            layer.fillColor = UIColor.clear.cgColor
+            layer.strokeColor = MeetPalette.ink.withAlphaComponent(alpha).cgColor
+            layer.lineCap = .round
+            layer.lineWidth = width
+            layer.shadowColor = MeetPalette.ink.cgColor
+            layer.shadowOpacity = 0.9
+            layer.shadowRadius = 10
+            layer.shadowOffset = .zero
+            sweep.addSublayer(layer)
+        }
+        sweep.isHidden = true
+        layer.addSublayer(sweep)
+
         for layer in [innerRing, midRing] {
             layer.fillColor = UIColor.clear.cgColor
             layer.lineWidth = 1
@@ -529,6 +550,26 @@ final class MeetDial: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// 待っているあいだだけ光を回す。動きを減らす設定の人には、止まった金の弧を置く。
+    private func setSweeping(_ on: Bool) {
+        sweep.isHidden = !on
+        guard on else {
+            sweep.removeAnimation(forKey: "sweep")
+            return
+        }
+        guard !UIAccessibility.isReduceMotionEnabled else {
+            sweep.removeAnimation(forKey: "sweep")
+            return
+        }
+        guard sweep.animation(forKey: "sweep") == nil else { return }
+        let turn = CABasicAnimation(keyPath: "transform.rotation.z")
+        turn.fromValue = 0
+        turn.toValue = Double.pi * 2
+        turn.duration = 2.6
+        turn.repeatCount = .infinity
+        sweep.add(turn, forKey: "sweep")
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let side = min(bounds.width, bounds.height)
@@ -559,6 +600,23 @@ final class MeetDial: UIView {
         bar.path = path.cgPath
         track.frame = bounds
         bar.frame = bounds
+
+        // 光は同じ円の上を走る。頭は1/12周、尾はその手前1/5周。
+        sweep.frame = bounds
+        sweep.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        sweep.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        sweep.bounds = bounds
+        let centrePoint = CGPoint(x: bounds.midX, y: bounds.midY)
+        let head = UIBezierPath(arcCenter: centrePoint, radius: radius,
+                                startAngle: -.pi / 2, endAngle: -.pi / 2 + .pi / 6, clockwise: true)
+        let tail = UIBezierPath(arcCenter: centrePoint, radius: radius,
+                                startAngle: -.pi / 2 - .pi / 2.2, endAngle: -.pi / 2, clockwise: true)
+        sweepHead.path = head.cgPath
+        sweepTail.path = tail.cgPath
+        for layer in [sweepHead, sweepTail] {
+            layer.frame = bounds
+            layer.lineWidth = ringWidth
+        }
         // Scaled from the middle so the ring grows and shrinks around the number.
         bar.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         bar.position = CGPoint(x: bounds.midX, y: bounds.midY)
@@ -780,8 +838,9 @@ final class MeetDial: UIView {
     }
 
     func set(distance: Float?, direction: simd_float3?, colour: UIColor, value: String, caption: String,
-             symbol: String? = nil, closing: Bool? = nil, arrived: Bool = false) {
+             symbol: String? = nil, closing: Bool? = nil, arrived: Bool = false, waiting: Bool = false) {
         isStatus = symbol != nil
+        setSweeping(waiting && distance == nil)
         symbolView.image = symbol.flatMap { UIImage(systemName: $0) }
         symbolView.isHidden = symbol == nil
         if isStatus {
@@ -3426,7 +3485,7 @@ final class MeetViewController: UIViewController {
                 #endif
                 finderDial.set(distance: nil, direction: nil, colour: idleColour,
                                value: "\(focusName)とつながりました", caption: caption,
-                               symbol: "dot.radiowaves.left.and.right")
+                               symbol: "dot.radiowaves.left.and.right", waiting: true)
             }
         } else if mapOnly {
             // 電波（MPC）は数十mしか届かない。遠いあいだは繋がらないのが普通で、
@@ -3445,13 +3504,13 @@ final class MeetViewController: UIViewController {
                            value: "参加を待っています",
                            caption: current.spot.map { "「\($0)」と伝えています\nリンクを開いた人はそのまま入ります" }
                                ?? "リンクを開いた人は\nそのまま入ります",
-                           symbol: "hourglass")
+                           symbol: "hourglass", waiting: true)
         } else if let current = group {
             finderDial.set(distance: nil, direction: nil, colour: idleColour,
                            value: awaitingApproval ? "\(current.hostName)の許可を待っています" : "\(current.hostName)を探しています",
                            caption: awaitingApproval ? "あなたの記号 \(Badge.of(current.myMember))\nホストに伝えると確かめられます"
                                : (current.spot.map { "\(current.hostName)は「\($0)」にいます" } ?? "\(current.hostName)がアプリを開くと\nつながります"),
-                           symbol: awaitingApproval ? "hourglass" : "person.2")
+                           symbol: awaitingApproval ? "hourglass" : "person.2", waiting: true)
         } else {
             finderDial.set(distance: nil, direction: nil, colour: idleColour,
                            value: "招待リンクで始めます", caption: "リンクを送った相手とだけ\n距離が見えます",
