@@ -19,6 +19,7 @@
 		ADDB290224897F7D00F72056 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDB290124897F7D00F72056 /* ViewController.swift */; };
 		EE00000000000000000000B1 /* Errand.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000000000000000000A1 /* Errand.swift */; };
 		EE00000000000000000000B2 /* NearbyAlert.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000000000000000000A2 /* NearbyAlert.swift */; };
+		EE00000000000000000000B3 /* Explore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000000000000000000A3 /* Explore.swift */; };
 		23DA9FE5C5624984902A2315 /* RemoteMeet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */; };
 		ADDB290524897F7D00F72056 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290324897F7D00F72056 /* Main.storyboard */; };
 		ADDB290724897F7E00F72056 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290624897F7E00F72056 /* Assets.xcassets */; };
@@ -71,6 +72,7 @@
 		1A8116F9B05C4B78A773E259 /* MeetMapViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetMapViewController.swift; sourceTree = "<group>"; };
 		EE00000000000000000000A1 /* Errand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Errand.swift; sourceTree = "<group>"; };
 		EE00000000000000000000A2 /* NearbyAlert.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyAlert.swift; sourceTree = "<group>"; };
+		EE00000000000000000000A3 /* Explore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Explore.swift; sourceTree = "<group>"; };
 		2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMeet.swift; sourceTree = "<group>"; };
 		ADDB290424897F7D00F72056 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		ADDB290624897F7E00F72056 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -182,6 +184,7 @@
 				E84A6429FA7F49D8A55CB184 /* KnownFriends.swift */,
 				1A8116F9B05C4B78A773E259 /* MeetMapViewController.swift */,
 				2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */,
+				EE00000000000000000000A3 /* Explore.swift */,
 				EE00000000000000000000A2 /* NearbyAlert.swift */,
 				EE00000000000000000000A1 /* Errand.swift */,
 				ADDB290324897F7D00F72056 /* Main.storyboard */,
@@ -310,6 +313,7 @@
 				D825F6971B8948E88BCA8019 /* KnownFriends.swift in Sources */,
 				0DDFE8A87E6C4E2E8109ADC6 /* MeetMapViewController.swift in Sources */,
 				23DA9FE5C5624984902A2315 /* RemoteMeet.swift in Sources */,
+				EE00000000000000000000B3 /* Explore.swift in Sources */,
 				EE00000000000000000000B2 /* NearbyAlert.swift in Sources */,
 				EE00000000000000000000B1 /* Errand.swift in Sources */,
 				AD026E6B248E77B10016A2B6 /* MPCSession.swift in Sources */,

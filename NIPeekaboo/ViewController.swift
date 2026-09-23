@@ -1029,6 +1029,8 @@ final class MeetViewController: UIViewController {
     private var staleTimer: Timer?
     /// A 「ここだよ！」 just arrived: the headline hands over to it for a few seconds.
     private var pingUntil: CFTimeInterval = 0
+    /// 最後に合図を受けた時刻。二重に鳴らさないための覚え書き。
+    private var lastPingAt: CFTimeInterval = 0
     private var pingFrom = ""
     private var lastSentInstruction: String?
     private var lastSentArrived: Bool?
@@ -1159,6 +1161,8 @@ final class MeetViewController: UIViewController {
     private let inviteButton = UIButton(type: .system)
     /// 相手が店のそばにいる間だけ出る。用が無いときは画面から消えている。
     private let errandButton = UIButton(type: .system)
+    /// 輪の中がいま「まわりを見る」かどうか。
+    private var dialExplores = false
     private let endButton = UIButton(type: .system)
     private let motionActivity = CMMotionActivityManager()
     private var motionStarted = false
@@ -1268,6 +1272,12 @@ final class MeetViewController: UIViewController {
                                                name: UIApplication.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground),
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
+        // 知らせの「合図する」。アプリが起きていれば1つめ、止まっていたところから
+        // 起こされたときは2つめが拾う（画面より先にボタンが押されている）。
+        NotificationCenter.default.addObserver(self, selector: #selector(pingFromNotification),
+                                               name: .kokodayoPingRequested, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(pingFromNotification),
+                                               name: UIApplication.didBecomeActiveNotification, object: nil)
         refreshDials()
         if supportsUWB {
             // A group restored from the last launch waits for the resume prompt.
@@ -2013,7 +2023,7 @@ final class MeetViewController: UIViewController {
             self.pushToMap()
         }
         // 離れているあいだ、おつかいのやりとりが通る唯一の道。
-        channel.onNote = { [weak self] data in self?.handleErrand(data) }
+        channel.onNote = { [weak self] data in self?.handleNote(data) }
         NearbyAlert.ask()
         channel.connect()
         remote = channel
@@ -2148,6 +2158,18 @@ final class MeetViewController: UIViewController {
         errandButton.configuration?.image = UIImage(systemName: image)
     }
 
+    /// 輪の中が「まわりを見る」になっているか。距離を地図で見ているあいだだけ。
+    @objc private func dialTapped() {
+        guard dialExplores else { return }
+        impactGenerator.impactOccurred()
+        let vc = ExploreViewController(centre: locations.last?.coordinate)
+        if let sheet = vc.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+        }
+        presentOnTop(vc)
+    }
+
     @objc private func errandTapped() {
         // 頼まれている側なら、開くのは届いたリスト。
         if myErrand != nil { openErrandList(); return }
@@ -2213,10 +2235,14 @@ final class MeetViewController: UIViewController {
         remote?.send(note: data)
     }
 
-    /// おつかい関係の便りの入口。MPCから来ても中継から来ても、ここに集める。
-    private func handleErrand(_ data: Data) {
+    /// 便りの入口。MPCから来ても中継から来ても、ここに集める。
+    private func handleNote(_ data: Data) {
         guard let kind = try? JSONDecoder().decode(MessageKind.self, from: data) else { return }
         switch kind.type {
+        case "ping":
+            // 中継から来た合図。部屋の鍵を持っている人しか入れないので、名乗りは要らない。
+            guard group != nil else { return }
+            receivePing(from: partnerName)
         case "errand":
             guard group != nil, let errand = try? JSONDecoder().decode(ErrandMessage.self, from: data) else { return }
             receive(errand: errand)
@@ -2262,6 +2288,45 @@ final class MeetViewController: UIViewController {
         sendErrandStatus(done: false)
         refreshDials()
         if UIApplication.shared.applicationState == .active { openErrandList() }
+    }
+
+    /// 合図を受けた。近くなら「顔を上げて」、遠いなら「気づいたよ」。
+    /// 同じ一押しで、言い方だけが距離で変わる。
+    private func receivePing(from who: String) {
+        // 同じ合図が電波と中継の両方から届く（実測で80ms差）。鳴らすのは一度だけ。
+        guard CACurrentMediaTime() - lastPingAt > 3 else { return }
+        lastPingAt = CACurrentMediaTime()
+        pingFrom = who
+        pingUntil = CACurrentMediaTime() + 8
+        let near = radioIsFresh()
+        let metres = currentMetres()
+        let far = metres.map { "あと\(NearbyAlert.text($0))" }
+        flash(near ? "\(who)が合図しています" : "\(who)が合図しています\(far.map { "（\($0)）" } ?? "")")
+        // Three heavy taps, unmistakably not the beat.
+        let heavy = UIImpactFeedbackGenerator(style: .heavy)
+        heavy.prepare()
+        for i in 0..<3 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.14 * Double(i)) { heavy.impactOccurred() }
+        }
+        // 画面を閉じていても届く。押し返せるように、合図のボタンも付ける。
+        let body: String
+        if near {
+            body = "周りを見てください"
+        } else if let metres, let far {
+            body = "\(far)・\(NearbyAlert.walkText(metres))"
+        } else {
+            body = "近くにいます"
+        }
+        NearbyAlert.notify(title: "\(who)が合図しています", body: body, withPing: true)
+        refreshDials()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.1) { [weak self] in self?.refreshDials() }
+    }
+
+    /// 知らせの中の「合図する」。アプリが開き切ってから、いつもの合図を送る。
+    @objc private func pingFromNotification() {
+        guard NearbyAlert.pendingPing else { return }
+        NearbyAlert.pendingPing = false
+        pingTapped()
     }
 
     private func openErrandList() {
@@ -2324,7 +2389,7 @@ final class MeetViewController: UIViewController {
         flash("\(who)が近くにいます（あと\(far)）")
         if hapticsOn { arrivalGenerator.notificationOccurred(.success) }
         NearbyAlert.notify(title: "\(who)が近くにいます",
-                           body: "あと\(far)・\(NearbyAlert.walkText(metres))")
+                           body: "あと\(far)・\(NearbyAlert.walkText(metres))", withPing: true)
     }
 
     private func leaveTodayGroup() {
@@ -2415,16 +2480,17 @@ final class MeetViewController: UIViewController {
     }
 
     @objc private func pingTapped() {
-        let peers = groupPeers.filter { links[$0]?.isDemo != true }
         guard let data = try? JSONEncoder().encode(PingMessage()) else { return }
-        let who = activePeerID.map { name(of: $0) } ?? "相手"
-        // 合図は電波（MPC）でしか飛ばない。届いていないのに「合図しました」と
-        // 出すと、相手が気づかない理由が分からなくなる。
-        guard !peers.isEmpty || isDemo else {
-            flash("いまは電波が届いていないので、\(who)に合図を送れません")
+        let who = partnerName
+        // 近ければ電波、遠ければ中継。どちらも無いときだけ「送れません」と言う。
+        // 届いていないのに「合図しました」と出すと、相手が気づかない理由が分からない。
+        let peers = groupPeers.filter { links[$0]?.isDemo != true }
+        let relay = remote?.isJoined == true
+        guard !peers.isEmpty || relay || isDemo else {
+            flash("いまは\(who)とつながっていないので、合図を送れません")
             return
         }
-        if !peers.isEmpty { mpc?.sendData(data: data, peers: peers, mode: .reliable) }
+        sendToPartner(data)
         impactGenerator.impactOccurred()
         flash(isDemo ? "デモ: \(who)に合図しました" : "\(who)に合図しました")
     }
@@ -2958,21 +3024,11 @@ final class MeetViewController: UIViewController {
             if peer == activePeerID { refreshDials() }
         case "ping":
             guard let member = peerMembers[peer], isApproved(member), amApproved else { return }
-            pingFrom = name(of: peer)
-            pingUntil = CACurrentMediaTime() + 8
-            flash("\(pingFrom)が合図しています")
-            // Three heavy taps, unmistakably not the beat.
-            let heavy = UIImpactFeedbackGenerator(style: .heavy)
-            heavy.prepare()
-            for i in 0..<3 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.14 * Double(i)) { heavy.impactOccurred() }
-            }
-            refreshDials()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 8.1) { [weak self] in self?.refreshDials() }
+            receivePing(from: name(of: peer))
         case "errand", "errandStatus":
             // 近くにいるときはMPCでも届く。中身の扱いは中継から来たときと同じ。
             guard let member = peerMembers[peer], isApproved(member), amApproved else { return }
-            handleErrand(data)
+            handleNote(data)
         case "spot":
             guard let spot = try? JSONDecoder().decode(SpotMessage.self, from: data),
                   var current = group, !current.isHost, peerMembers[peer] == current.hostKey else { return }
@@ -3126,10 +3182,13 @@ final class MeetViewController: UIViewController {
             expireGroup()
             return
         }
+        dialExplores = false
         let colour = latestDistance.map { band(for: $0).colour } ?? UIColor.white.withAlphaComponent(0.35)
         let idleColour = UIColor.white.withAlphaComponent(0.35)
         let members = groupPeers.compactMap { links[$0] }.sorted { name(of: $0.peerID) < name(of: $1.peerID) }
         let connected = !members.isEmpty
+        /// 電波では繋がっていないが、中継で相手の居場所が届いている状態。
+        let mapOnly = !connected && group != nil && mapDistance() != nil
         let showRadar = members.count >= 2
         finderDial.isHidden = showRadar
         friendsRadar.isHidden = !showRadar
@@ -3166,14 +3225,14 @@ final class MeetViewController: UIViewController {
                                caption: caption,
                                closing: d < Self.handoffDistance ? nil : trendClosing,
                                arrived: arrived)
-            } else if let map = mapDistance() {
-                // 電波が届かないあいだは地図の数字。近づけば自動で電波側に戻る。
-                let minutes = max(1, Int((map.meters / 80).rounded()))
-                let metres = map.meters < 1000 ? "\(Int(map.meters.rounded()))m" : String(format: "%.1fkm", map.meters / 1000)
+            } else if mapDistance() != nil {
+                // 距離は上の見出しが言っている。同じ数字を輪の中でもう一度言わない。
+                // 待っているあいだに役に立つのは、まわりに何があるかのほう。
+                dialExplores = true
                 finderDial.set(distance: nil, direction: nil, colour: idleColour,
-                               value: "あと約\(minutes)分・\(metres)",
-                               caption: "地図で見ています（誤差±\(Int(map.accuracy.rounded()))m）\n近づくと電波で測ります",
-                               symbol: "map")
+                               value: "まわりを見る",
+                               caption: "近くのおすすめの場所とイベント会場",
+                               symbol: "binoculars")
             } else {
                 var caption = "まもなく距離が表示されます"
                 #if DEBUG
@@ -3188,6 +3247,14 @@ final class MeetViewController: UIViewController {
                                value: "\(focusName)とつながりました", caption: caption,
                                symbol: "dot.radiowaves.left.and.right")
             }
+        } else if mapOnly {
+            // 電波（MPC）は数十mしか届かない。遠いあいだは繋がらないのが普通で、
+            // そこで画面から距離まで消すと、中継で届いている居場所が無駄になる。
+            dialExplores = true
+            finderDial.set(distance: nil, direction: nil, colour: idleColour,
+                           value: "まわりを見る",
+                           caption: "近くのおすすめの場所とイベント会場",
+                           symbol: "binoculars")
         } else if !supportsUWB && !isDemo {
             finderDial.set(distance: nil, direction: nil, colour: idleColour,
                            value: "距離を測定できません", caption: "このiPhoneは対応していません",
@@ -3221,7 +3288,7 @@ final class MeetViewController: UIViewController {
         // The camera view draws the circle of possible positions on the floor. It
         // needs no camera assistance from NearbyInteraction, so it does not wait
         // on -5883; it only needs a distance to draw.
-        cameraButton.isHidden = !connected
+        cameraButton.isHidden = !connected && !mapOnly
         cameraButton.isEnabled = true
         cameraButton.alpha = 1
         refreshErrandButton()
@@ -3229,7 +3296,7 @@ final class MeetViewController: UIViewController {
         endButton.configuration?.title = connected ? "終了" : "やめる"
         // At arrival the dial already says it in mint; the headline would only
         // say it twice.
-        if connected, case let guide = guidance(for: focusName), guide.tone != .arrived {
+        if connected || mapOnly, case let guide = guidance(for: focusName), guide.tone != .arrived {
             showGuidance(guide)
         } else {
             finderHeadline.isHidden = true
@@ -3252,6 +3319,9 @@ final class MeetViewController: UIViewController {
             finderStatus.text = "デモ中です。距離は実際の値ではありません。"
         } else if !supportsUWB {
             finderStatus.text = "デモは右上のメニューから利用できます。"
+        } else if mapOnly {
+            let until = group.map { untilText($0.expires) } ?? "今日"
+            finderStatus.text = "電波はまだ届いていません。地図で見ています（\(until)）"
         } else if connected {
             // On screen the whole time anyone can see this phone's distance.
             let until = group.map { untilText($0.expires) } ?? "今日"
@@ -3306,7 +3376,8 @@ final class MeetViewController: UIViewController {
 
     private func guidance(for name: String) -> Guidance {
         if CACurrentMediaTime() < pingUntil {
-            return Guidance(headline: "\(pingFrom)が合図", detail: "周りを見てください", tone: .near)
+            return Guidance(headline: "\(pingFrom)が合図",
+                            detail: radioIsFresh() ? "周りを見てください" : "相手が近づいています", tone: .near)
         }
         // 電波が切れたら「見つけた」は残さない。相手はもう動いているかもしれない。
         if latestDistance != nil, didAnnounceArrival, radioIsFresh() {
@@ -4552,6 +4623,10 @@ final class MeetViewController: UIViewController {
             finderPanel.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
+
+        // 輪の中が「まわりを見る」のときだけ、輪そのものが押せる。
+        finderDial.isUserInteractionEnabled = true
+        finderDial.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(dialTapped)))
 
         // With two or more people connected, the rings take the dial's place.
         friendsRadar.isHidden = true
