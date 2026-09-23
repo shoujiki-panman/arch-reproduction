@@ -8,7 +8,7 @@ import MapKit
 
 final class MeetMapViewController: UIViewController {
 
-    /// 相手の点。名前は吹き出しに出す。
+    /// 相手の点。名前と、いまの様子（一言）を札に出す。
     final class PeerPoint: NSObject, MKAnnotation {
         dynamic var coordinate: CLLocationCoordinate2D
         var title: String?
@@ -19,6 +19,45 @@ final class MeetMapViewController: UIViewController {
         }
     }
 
+    /// 名前と一言の札。参考にしたのは旅人が並ぶ地図の見せ方
+    /// （名前を太く、様子を下に小さく、白い札で地図から浮かせる）。
+    static func nameCard(_ name: String, mood: String?) -> UIView {
+        let card = UIView()
+        card.backgroundColor = .white
+        card.layer.cornerRadius = 14
+        card.layer.cornerCurve = .continuous
+        card.layer.shadowColor = UIColor.black.cgColor
+        card.layer.shadowOpacity = 0.18
+        card.layer.shadowRadius = 6
+        card.layer.shadowOffset = CGSize(width: 0, height: 2)
+
+        let nameLabel = UILabel()
+        nameLabel.text = name
+        nameLabel.font = Type.font(15, .bold, .footnote)
+        nameLabel.textColor = .black
+        let stack = UIStackView(arrangedSubviews: [nameLabel])
+        if let mood, !mood.isEmpty {
+            let moodLabel = UILabel()
+            moodLabel.text = mood
+            moodLabel.font = Type.font(13, .regular, .caption1)
+            moodLabel.textColor = UIColor(white: 0.42, alpha: 1)
+            stack.addArrangedSubview(moodLabel)
+        }
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 1
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+        ])
+        card.frame = CGRect(origin: .zero, size: card.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize))
+        return card
+    }
+
     private let map = MKMapView()
     private let card = UIView()
     private let headline = UILabel()
@@ -27,6 +66,9 @@ final class MeetMapViewController: UIViewController {
     private let closeButton = CapsuleButton(type: .system)
 
     private let peerName: String
+    private let myName: String
+    private var peerMood: String?
+    private var myMood: String?
     private var peer: PeerPoint?
     private var line: MKPolyline?          // 道なりの経路（取れないときは2点を結ぶ直線）
     private var lineIsRoute = false
@@ -37,8 +79,9 @@ final class MeetMapViewController: UIViewController {
     private var routeMinutes: Int?
     private var routeMetres: Double?
 
-    init(peerName: String) {
+    init(peerName: String, myName: String) {
         self.peerName = peerName
+        self.myName = myName
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -66,30 +109,45 @@ final class MeetMapViewController: UIViewController {
         // 下のカード。数字を主役に、そのすぐ下に「何で測っているか」を書く。
         card.translatesAutoresizingMaskIntoConstraints = false
         card.backgroundColor = MeetPalette.surface
-        card.layer.cornerRadius = 28
+        card.layer.cornerRadius = 26
         card.layer.cornerCurve = .continuous
         view.addSubview(card)
 
-        headline.font = Type.caption
-        headline.textColor = MeetPalette.secondary
-        number.font = Type.display
+        headline.isHidden = true
+        number.font = Type.font(22, .bold, .title3)
         number.textColor = MeetPalette.primary
         number.adjustsFontSizeToFitWidth = true
         number.minimumScaleFactor = 0.6
         detail.font = Type.caption
         detail.textColor = MeetPalette.secondary
-        detail.numberOfLines = 2
+        detail.numberOfLines = 1
+        detail.adjustsFontSizeToFitWidth = true
+        detail.minimumScaleFactor = 0.8
 
         closeButton.configuration = .filled()
         closeButton.configuration?.title = "閉じる"
-        closeButton.configuration?.baseBackgroundColor = MeetPalette.surface
+        closeButton.configuration?.baseBackgroundColor = MeetPalette.raised
         closeButton.configuration?.baseForegroundColor = MeetPalette.primary
+        closeButton.configuration?.cornerStyle = .capsule
+        closeButton.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16)
+        closeButton.setContentHuggingPriority(.required, for: .horizontal)
         closeButton.addTarget(self, action: #selector(close), for: .touchUpInside)
 
-        let stack = UIStackView(arrangedSubviews: [headline, number, detail, closeButton])
-        stack.axis = .vertical
-        stack.spacing = 8
-        stack.setCustomSpacing(16, after: detail)
+        // 参考にした地図は、下は小さな1枚だけだった。見出し・数字・説明・ボタンを
+        // 縦に4つ積むのをやめて、1本の横並びにする。
+        let icon = UIImageView(image: UIImage(systemName: "figure.walk"))
+        icon.tintColor = MeetPalette.secondary
+        icon.contentMode = .scaleAspectFit
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+
+        let numbers = UIStackView(arrangedSubviews: [number, detail])
+        numbers.axis = .vertical
+        numbers.spacing = 1
+
+        let stack = UIStackView(arrangedSubviews: [icon, numbers, closeButton])
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(stack)
 
@@ -103,18 +161,44 @@ final class MeetMapViewController: UIViewController {
             card.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             card.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
 
-            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 20),
-            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
-            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+            icon.widthAnchor.constraint(equalToConstant: 22),
+            icon.heightAnchor.constraint(equalToConstant: 22),
         ])
     }
 
     @objc private func close() { dismiss(animated: true) }
 
+    /// 名前と一言の札だけを作り直す。地図の点や向きはそのまま。
+    private func refreshCards() {
+        if let peer, let view = map.view(for: peer) { attachCard(to: view, name: peerName, mood: peerMood) }
+        if let view = map.view(for: map.userLocation) { attachCard(to: view, name: myName, mood: myMood) }
+    }
+
+    /// 人の上に札を付ける（すでに付いていれば取り替える）。
+    private func attachCard(to view: MKAnnotationView, name: String, mood: String?) {
+        view.subviews.filter { $0.tag == Self.cardTag }.forEach { $0.removeFromSuperview() }
+        let card = Self.nameCard(name, mood: mood)
+        card.tag = Self.cardTag
+        // 人の頭の上に、少し浮かせて置く。
+        card.frame.origin = CGPoint(x: (view.bounds.width - card.frame.width) / 2, y: -card.frame.height - 8)
+        view.addSubview(card)
+        view.clipsToBounds = false
+    }
+
+    private static let cardTag = 8801
+
     /// 呼んだ側から呼ばれる。相手の居場所と、いまの見立てを渡す。
     func update(peerAt coordinate: CLLocationCoordinate2D?, meAt me: CLLocation?,
-                metres: Double?, accuracy: Double?, byRadio: Bool) {
+                metres: Double?, accuracy: Double?, byRadio: Bool,
+                peerMood: String? = nil, myMood: String? = nil) {
+        let moodChanged = peerMood != self.peerMood || myMood != self.myMood
+        self.peerMood = peerMood
+        self.myMood = myMood
+        if moodChanged { refreshCards() }
         if let coordinate {
             if let peer {
                 peer.coordinate = coordinate
@@ -183,27 +267,23 @@ final class MeetMapViewController: UIViewController {
     /// 数字の出し方。道なりが取れていればそれを主役にし、直線は添えるだけにする。
     private func showNumbers() {
         guard let metres = lastStraight else {
-            headline.text = "\(peerName)を待っています"
-            number.text = "—"
-            detail.text = "相手がアプリを開くと、ここに出ます"
+            number.text = "\(peerName)を待っています"
+            detail.text = "相手がアプリを開くと出ます"
             return
         }
         let straight = metres < 1000 ? "\(Int(metres.rounded()))m" : String(format: "%.1fkm", metres / 1000)
         if lastByRadio {
-            headline.text = "電波で測っています"
             number.text = "あと \(straight)"
-            detail.text = "近くにいます。画面より周りを見てください"
+            detail.text = "電波で測っています"
             return
         }
         if let minutes = routeMinutes, let rm = routeMetres {
             let along = rm < 1000 ? "\(Int(rm.rounded()))m" : String(format: "%.1fkm", rm / 1000)
-            headline.text = "歩いた場合"
             number.text = "あと約\(minutes)分・\(along)"
-            detail.text = "道なりの見込み（直線では\(straight)）。誤差±\(Int((lastAccuracy ?? 0).rounded()))m"
+            detail.text = "道なり・誤差±\(Int((lastAccuracy ?? 0).rounded()))m"
         } else {
-            headline.text = "地図で見ています"
             number.text = "直線で \(straight)"
-            detail.text = "道なりの時間を調べています。誤差±\(Int((lastAccuracy ?? 0).rounded()))m"
+            detail.text = "道なりを調べています"
         }
     }
 
@@ -266,6 +346,7 @@ extension MeetMapViewController: MKMapViewDelegate {
             figure.frame = dot.bounds.insetBy(dx: 15, dy: 15)
             dot.addSubview(figure)
             view.addSubview(dot)
+            attachCard(to: view, name: myName, mood: myMood)
             return view
         }
         guard let point = annotation as? PeerPoint else { return nil }
@@ -277,7 +358,7 @@ extension MeetMapViewController: MKMapViewDelegate {
         view.subviews.forEach { $0.removeFromSuperview() }
 
         let size: CGFloat = 72
-        view.frame = CGRect(x: 0, y: 0, width: size, height: size + 22)
+        view.frame = CGRect(x: 0, y: 0, width: size, height: size)
         view.centerOffset = CGPoint(x: 0, y: -(size / 2 + 8))
 
         let avatar = UIView(frame: CGRect(x: 0, y: 0, width: size, height: size))
@@ -297,17 +378,7 @@ extension MeetMapViewController: MKMapViewDelegate {
         avatar.addSubview(figure)
         view.addSubview(avatar)
 
-        let label = PaddedLabel()
-        label.text = point.title
-        label.font = Type.font(15, .semibold, .footnote)
-        label.textColor = MeetPalette.primary
-        label.backgroundColor = MeetPalette.surface
-        label.layer.cornerRadius = 10
-        label.layer.masksToBounds = true
-        label.sizeToFit()
-        label.frame = CGRect(x: (size - label.frame.width) / 2, y: size + 2,
-                             width: label.frame.width, height: 20)
-        view.addSubview(label)
+        attachCard(to: view, name: peerName, mood: peerMood)
         return view
     }
 }

@@ -92,11 +92,10 @@ final class ToastView: PaddedLabel {
         insets = UIEdgeInsets(top: 12, left: 18, bottom: 12, right: 18)
         layer.cornerRadius = 22
         layer.cornerCurve = .continuous
-        clipsToBounds = false
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.35
-        layer.shadowRadius = 12
-        layer.shadowOffset = CGSize(width: 0, height: 6)
+        // UILabelは背景を自分で描くので、切り抜かないと角が丸くならない。
+        // （影を出すためにfalseにしていて、四角いままだった。暗い画面では
+        //   影はほとんど見えないので、丸い方を取る。）
+        clipsToBounds = true
         isAccessibilityElement = true
         accessibilityTraits = .staticText
         alpha = 0

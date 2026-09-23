@@ -137,6 +137,14 @@ struct NameMessage: Codable {
     var name: String
 }
 
+/// いまの様子。一人に一言だけ。相手の地図の名前の下に出る。
+/// 場所（SpotMessage）はホストが「どこにいるか」を言うもの、こちらは
+/// 一人ひとりが「いま何をしているか」を言うもの。役目が違うので別にする。
+struct MoodMessage: Codable {
+    var type: String = "mood"
+    var text: String
+}
+
 struct MessageKind: Decodable {
     let type: String
 }
@@ -917,6 +925,14 @@ final class MeetViewController: UIViewController {
     private var seenErrands = Set<String>()
     /// 相手が決めた距離まで近づいたかの見張り。
     private var approach = ApproachWatcher()
+    /// 相手のいまの様子（一言）。
+    private var peerMood: String?
+    private static let moodKey = "kokodayo.mood"
+    /// 自分のいまの様子。次の待ち合わせでもそのまま使えるよう覚えておく。
+    private var myMood: String? {
+        get { UserDefaults.standard.string(forKey: Self.moodKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.moodKey) }
+    }
     #if DEBUG
     /// 確認用。電波（UWB）が無いことにして、地図側の表示を試す。
     private var previewNoRadio = false
@@ -1765,6 +1781,11 @@ final class MeetViewController: UIViewController {
             errand.subtitle = peerStore.map { "\(partnerName)は\($0.name)のそば" } ?? "店は見つかっていません"
             items.insert(errand, at: 0)
         }
+        let mood = UIAction(title: "いまの様子を伝える", image: UIImage(systemName: "text.bubble")) { [weak self] _ in
+            self?.askMood()
+        }
+        mood.subtitle = myMood ?? "相手の地図に一言で出ます"
+        if group != nil { items.insert(mood, at: 0) }
         if let mapAction { items.insert(mapAction, at: 0) }
         #if DEBUG
         items.append(noRadio)
@@ -2025,6 +2046,8 @@ final class MeetViewController: UIViewController {
         // 離れているあいだ、おつかいのやりとりが通る唯一の道。
         channel.onNote = { [weak self] data in self?.handleNote(data) }
         NearbyAlert.ask()
+        // つないだ直後に一度伝える（相手の地図に名前だけが並ばないように）。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.sendMood() }
         channel.connect()
         remote = channel
         locations.onFix = { [weak self] _ in
@@ -2064,7 +2087,7 @@ final class MeetViewController: UIViewController {
 
     @objc private func openMap() {
         let who = activePeerID.map { self.name(of: $0) } ?? (group?.hostName ?? "相手")
-        let vc = MeetMapViewController(peerName: who)
+        let vc = MeetMapViewController(peerName: who, myName: Self.myDisplayName)
         vc.modalPresentationStyle = .fullScreen
         mapScreen = vc
         present(vc, animated: true) { [weak self] in self?.pushToMap() }
@@ -2079,7 +2102,9 @@ final class MeetViewController: UIViewController {
                   meAt: locations.last,
                   metres: radio ?? map?.meters,
                   accuracy: map?.accuracy,
-                  byRadio: radio != nil)
+                  byRadio: radio != nil,
+                  peerMood: peerMood,
+                  myMood: myMood)
     }
 
     /// 電波が無いときの、地図での距離。
@@ -2243,6 +2268,14 @@ final class MeetViewController: UIViewController {
             // 中継から来た合図。部屋の鍵を持っている人しか入れないので、名乗りは要らない。
             guard group != nil else { return }
             receivePing(from: partnerName)
+        case "mood":
+            guard group != nil, let mood = try? JSONDecoder().decode(MoodMessage.self, from: data) else { return }
+            let text = cleanName(mood.text)
+            guard text != peerMood else { return }
+            peerMood = text.isEmpty ? nil : text
+            if let peerMood { flash("\(partnerName): \(peerMood)") }
+            pushToMap()
+            refreshDials()
         case "errand":
             guard group != nil, let errand = try? JSONDecoder().decode(ErrandMessage.self, from: data) else { return }
             receive(errand: errand)
@@ -2354,6 +2387,51 @@ final class MeetViewController: UIViewController {
               let data = try? JSONEncoder().encode(ErrandStatusMessage(id: errand.id,
                                                                       got: myErrandGot,
                                                                       done: done)) else { return }
+        sendToPartner(data)
+    }
+
+    // MARK: - いまの様子（一言）
+
+    private static let moodPresets = ["のんびり進みます", "急いでいます", "おつかい中", "道に迷いました", "もうすぐ着きます", "少し遅れます"]
+
+    /// 自分の様子を一言で伝える。選ぶだけで終われるようにする。
+    private func askMood() {
+        let sheet = UIAlertController(title: "いまの様子を伝える",
+                                      message: myMood.map { "いま「\($0)」と伝えています" },
+                                      preferredStyle: .actionSheet)
+        for preset in Self.moodPresets {
+            sheet.addAction(UIAlertAction(title: preset, style: .default) { [weak self] _ in self?.setMood(preset) })
+        }
+        sheet.addAction(UIAlertAction(title: "ほかの言葉…", style: .default) { [weak self] _ in
+            let alert = UIAlertController(title: "いまの様子", message: "相手の地図に、名前の下に出ます", preferredStyle: .alert)
+            alert.addTextField { $0.placeholder = "例: 資格勉強"; $0.text = self?.myMood }
+            alert.addAction(UIAlertAction(title: "やめる", style: .cancel))
+            alert.addAction(UIAlertAction(title: "伝える", style: .default) { [weak self] _ in
+                self?.setMood(alert.textFields?.first?.text ?? "")
+            })
+            self?.presentOnTop(alert)
+        })
+        if myMood != nil {
+            sheet.addAction(UIAlertAction(title: "消す", style: .destructive) { [weak self] _ in self?.setMood("") })
+        }
+        sheet.addAction(UIAlertAction(title: "やめる", style: .cancel))
+        sheet.popoverPresentationController?.sourceView = demoButton
+        sheet.popoverPresentationController?.sourceRect = demoButton.bounds
+        presentOnTop(sheet)
+    }
+
+    private func setMood(_ text: String) {
+        let clean = cleanName(text)
+        myMood = clean.isEmpty ? nil : clean
+        sendMood()
+        pushToMap()
+        flash(myMood.map { "「\($0)」と伝えています" } ?? "様子を消しました")
+        refreshDials()
+    }
+
+    /// つながった時にも送る。相手の画面は、こちらが黙っていれば何も出ない。
+    private func sendMood() {
+        guard group != nil, let data = try? JSONEncoder().encode(MoodMessage(text: myMood ?? "")) else { return }
         sendToPartner(data)
     }
 
@@ -3012,6 +3090,7 @@ final class MeetViewController: UIViewController {
             runConfig(for: link)
             applyIncomingRequest(request)
             sendMotion()
+            sendMood()
         case "motion":
             // From anyone connected, not only the focused friend: a member's state
             // can arrive before the host's list puts them in the group.
@@ -3021,7 +3100,7 @@ final class MeetViewController: UIViewController {
         case "ping":
             guard let member = peerMembers[peer], isApproved(member), amApproved else { return }
             receivePing(from: name(of: peer))
-        case "errand", "errandStatus":
+        case "errand", "errandStatus", "mood":
             // 近くにいるときはMPCでも届く。中身の扱いは中継から来たときと同じ。
             guard let member = peerMembers[peer], isApproved(member), amApproved else { return }
             handleNote(data)
