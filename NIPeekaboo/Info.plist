@@ -52,6 +52,10 @@
 	<string>相手との距離と方向を測って合流するために使用します</string>
 	<key>NSNearbyInteractionUsageDescription</key>
 	<string>相手との距離と方向を測って合流するために使用します</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -89,6 +93,6 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>待ち合わせの相手までの距離と方向を出すために、いまいる場所を使います。相手にだけ、端末の中で鍵をかけて送ります。</string>
+	<string>待ち合わせの相手までの距離と方向を出すために、いまいる場所を使います。相手が近づいたことを画面を閉じていてもお知らせするあいだだけ、背景でも使います。相手にだけ、端末の中で鍵をかけて送ります。</string>
 </dict>
 </plist>

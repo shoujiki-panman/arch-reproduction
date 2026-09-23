@@ -898,6 +898,25 @@ final class MeetViewController: UIViewController {
     private var theirFix: RemoteFix?
     private var remotePush: Timer?
     private weak var mapScreen: MeetMapViewController?
+
+    // おつかいと「近くにいるよ」。どちらも相手が遠いあいだの層に乗る。
+    /// 相手のそばで見つかった店。見つかっている間だけ「頼む」が出せる。
+    private var peerStore: NearbyStore.Found?
+    private var storeCheckedAt = Date.distantPast
+    private var storeCheckedFrom: CLLocationCoordinate2D?
+    /// 自分が頼んだリストと、相手が買えたと言っている物。
+    private var sentErrand: ErrandMessage?
+    private var sentErrandGot: [String] = []
+    /// 自分が頼まれたリストと、自分が買えた物。
+    private var myErrand: ErrandMessage?
+    private var myErrandGot: [String] = []
+    /// 中継は投げっぱなしなので、返事が来るまで数回だけ送り直す。
+    private var errandResend: Timer?
+    private var errandResends = 0
+    /// 同じリストがMPCと中継の両方から届く。番号で一度だけ受け取る。
+    private var seenErrands = Set<String>()
+    /// 相手が決めた距離まで近づいたかの見張り。
+    private var approach = ApproachWatcher()
     #if DEBUG
     /// 確認用。電波（UWB）が無いことにして、地図側の表示を試す。
     private var previewNoRadio = false
@@ -1138,6 +1157,8 @@ final class MeetViewController: UIViewController {
     private var connectRows: [MCPeerID: UIButton] = [:]
     private var connectOrder: [MCPeerID] = []
     private let inviteButton = UIButton(type: .system)
+    /// 相手が店のそばにいる間だけ出る。用が無いときは画面から消えている。
+    private let errandButton = UIButton(type: .system)
     private let endButton = UIButton(type: .system)
     private let motionActivity = CMMotionActivityManager()
     private var motionStarted = false
@@ -1697,10 +1718,71 @@ final class MeetViewController: UIViewController {
             if !self.hapticsOn { self.stopProximityFeedback() }
         }
         haptics.subtitle = "近づくほど速くなります"
-        var items: [UIMenuElement] = [rename, haptics, demo]
+        // 近くにいたら知らせる。距離は街の広さで変わるので本人が決める。
+        let toggle = UIAction(title: NearbyAlert.isOn ? "知らせを止める" : "知らせを使う",
+                              image: UIImage(systemName: NearbyAlert.isOn ? "bell.slash" : "bell")) { [weak self] _ in
+            NearbyAlert.isOn.toggle()
+            if NearbyAlert.isOn { NearbyAlert.ask() } else { self?.approach.reset() }
+        }
+        let distances = NearbyAlert.choices.map { metres in
+            let action = UIAction(title: NearbyAlert.text(metres)) { [weak self] _ in
+                NearbyAlert.metres = metres
+                self?.approach.reset()
+            }
+            action.state = NearbyAlert.metres == metres ? .on : .off
+            return action
+        }
+        let background = UIAction(title: "画面を閉じていても知らせる",
+                                  image: UIImage(systemName: "iphone.gen3.slash")) { [weak self] _ in
+            NearbyAlert.runsInBackground.toggle()
+            self?.locations.applyBackground()
+        }
+        background.state = NearbyAlert.runsInBackground ? .on : .off
+        background.subtitle = "位置を背景で使います（電池を使います）"
+        let nearMenu = UIMenu(title: "近くにいたら知らせる（\(NearbyAlert.text(NearbyAlert.metres))）",
+                              image: UIImage(systemName: "bell.badge"),
+                              children: [toggle, background,
+                                         UIMenu(title: "知らせる距離", options: .displayInline, children: distances)])
+
+        var items: [UIMenuElement] = [rename, haptics, nearMenu, demo]
+        // おつかい。店が見つかっていなくても頼めるようにしておく
+        // （小さな店は地図に無いことがある）。
+        if group != nil, myErrand == nil {
+            let errand = UIAction(title: sentErrand == nil ? "おつかいを頼む" : "頼んだリストを見る",
+                                  image: UIImage(systemName: "cart")) { [weak self] _ in
+                self?.errandTapped()
+            }
+            errand.subtitle = peerStore.map { "\(partnerName)は\($0.name)のそば" } ?? "店は見つかっていません"
+            items.insert(errand, at: 0)
+        }
         if let mapAction { items.insert(mapAction, at: 0) }
         #if DEBUG
         items.append(noRadio)
+        // 確認用: 2台目が無くても、頼む画面と届いた画面を通しで見る。
+        // 送った中身を自分に配り直すので、包んで解く道筋もここで通る。
+        let tryErrand = UIAction(title: "おつかいを試す（試験）",
+                                 image: UIImage(systemName: "cart.badge.plus")) { [weak self] _ in
+            guard let self else { return }
+            if self.peerStore == nil {
+                self.peerStore = NearbyStore.Found(name: "ライフ 西新宿店", metres: 40)
+                self.refreshDials()
+            }
+            let vc = ErrandComposeViewController(partner: self.partnerName,
+                                                 place: self.peerStore?.name ?? "") { [weak self] chosen in
+                guard let self else { return }
+                let errand = ErrandMessage(id: UUID().uuidString, from: self.partnerName,
+                                           place: self.peerStore?.name ?? "", items: chosen)
+                guard let data = try? JSONEncoder().encode(errand),
+                      let back = try? JSONDecoder().decode(ErrandMessage.self, from: data) else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.receive(errand: back) }
+            }
+            if let sheet = vc.sheetPresentationController {
+                sheet.detents = [.medium(), .large()]
+                sheet.prefersGrabberVisible = true
+            }
+            self.presentOnTop(vc)
+        }
+        items.append(tryErrand)
         #endif
         if let current = group, current.isHost {
             let spot = UIAction(title: "いる場所を伝える", image: UIImage(systemName: "mappin.and.ellipse")) { [weak self] _ in
@@ -1925,14 +2007,21 @@ final class MeetViewController: UIViewController {
         channel.onFix = { [weak self] fix in
             guard let self else { return }
             self.theirFix = fix
+            self.checkPeerStore()
+            self.updateNearbyAlert()
             self.refreshDials()
             self.pushToMap()
         }
+        // 離れているあいだ、おつかいのやりとりが通る唯一の道。
+        channel.onNote = { [weak self] data in self?.handleErrand(data) }
+        NearbyAlert.ask()
         channel.connect()
         remote = channel
         locations.onFix = { [weak self] _ in
             self?.pushLocationIfFar()
             self?.pushToMap()
+            // 相手が止まっていても、自分が歩けば距離は縮む。こちらの動きでも見直す。
+            self?.updateNearbyAlert()
         }
         locations.start()
         // 立ち止まっていても相手の画面が止まらないよう、定期的にも送る
@@ -1990,8 +2079,257 @@ final class MeetViewController: UIViewController {
         return (mine.distance(from: other), max(mine.horizontalAccuracy, fix.acc))
     }
 
+    // MARK: - おつかい（相手が店のそばにいるあいだ）
+
+    /// いま向き合っている相手の名前。1対1のときに「相手」と出さないためのもの。
+    private var partnerName: String {
+        if let id = activePeerID { return name(of: id) }
+        if let current = group {
+            if !current.isHost { return current.hostName }
+            if let other = current.approved.first(where: { $0 != current.myMember }) {
+                return name(ofMember: other)
+            }
+        }
+        return "相手"
+    }
+
+    /// 相手の居場所のまわりに店があるかを見る。
+    /// 地図の検索はApple側で回数が限られているので、相手が80m動いたか90秒たった時だけ。
+    private func checkPeerStore() {
+        guard group != nil, let fix = theirFix, fix.age < 120 else { return }
+        let moved = storeCheckedFrom.map {
+            CLLocation(latitude: $0.latitude, longitude: $0.longitude)
+                .distance(from: CLLocation(latitude: fix.lat, longitude: fix.lon))
+        } ?? .greatestFiniteMagnitude
+        guard moved > 80 || Date().timeIntervalSince(storeCheckedAt) > 90 else { return }
+        storeCheckedAt = Date()
+        storeCheckedFrom = fix.coordinate
+        NearbyStore.around(fix.coordinate) { [weak self] found in
+            guard let self else { return }
+            let before = self.peerStore?.name
+            self.peerStore = found
+            // 店が変わった時だけ一言。同じ店で何度も言わない。
+            if let found, found.name != before, self.sentErrand == nil, self.myErrand == nil {
+                self.flash("\(self.partnerName)は\(found.name)のそばにいます")
+            }
+            self.refreshDials()
+        }
+    }
+
+    /// おつかいのボタンは、用があるときだけ出す。
+    /// ①頼まれている ②頼んでいる ③相手が店のそば — それ以外は画面から消す。
+    private func refreshErrandButton() {
+        let title: String?
+        // 店名は地図から来るので長い（「HANAGATAYA 東京中央 ドラえもん…」）。
+        // 1行目は何をするかだけにして、店名は下の小さい行に置く。
+        var subtitle: String?
+        let image: String
+        if let errand = myErrand {
+            let left = errand.items.count - myErrandGot.count
+            title = left > 0 ? "おつかいリスト" : "おつかいを終わりにする"
+            subtitle = left > 0 ? "残り\(left)個・\(errand.placeText)" : errand.placeText
+            image = "list.bullet"
+        } else if let sent = sentErrand {
+            title = "頼み中"
+            subtitle = "\(sentErrandGot.count)/\(sent.items.count)個 買えました"
+            image = "cart"
+        } else if let store = peerStore, group != nil {
+            title = "おつかいを頼む"
+            subtitle = store.name
+            image = "cart.fill"
+        } else {
+            title = nil
+            image = "cart.fill"
+        }
+        errandButton.isHidden = title == nil
+        guard let title else { return }
+        errandButton.configuration?.title = title
+        errandButton.configuration?.subtitle = subtitle
+        errandButton.configuration?.image = UIImage(systemName: image)
+    }
+
+    @objc private func errandTapped() {
+        // 頼まれている側なら、開くのは届いたリスト。
+        if myErrand != nil { openErrandList(); return }
+        if let sent = sentErrand {
+            let left = sent.items.filter { !sentErrandGot.contains($0) }
+            flash(left.isEmpty ? "\(partnerName)は全部買いました"
+                               : "\(partnerName)に頼み中: \(left.joined(separator: "、"))")
+            return
+        }
+        askErrand()
+    }
+
+    /// 頼む物を選ぶ画面を出す。
+    private func askErrand() {
+        guard group != nil else { return }
+        let vc = ErrandComposeViewController(partner: partnerName,
+                                             place: peerStore?.name ?? "") { [weak self] items in
+            self?.sendErrand(items: items)
+        }
+        if let sheet = vc.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+        }
+        presentOnTop(vc)
+    }
+
+    private func sendErrand(items: [String]) {
+        guard !items.isEmpty else { return }
+        let errand = ErrandMessage(id: UUID().uuidString,
+                                   from: Self.myDisplayName,
+                                   place: peerStore?.name ?? "",
+                                   items: items)
+        sentErrand = errand
+        sentErrandGot = []
+        errandResends = 0
+        pushErrand()
+        // 中継は投げっぱなしで、相手のアプリが閉じていれば消える。返事が来るまで
+        // 20秒おきに数回だけ送り直す（それ以上は鳴らしすぎになる）。
+        errandResend?.invalidate()
+        errandResend = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] timer in
+            guard let self, self.sentErrand != nil, self.errandResends < 5 else {
+                timer.invalidate()
+                self?.errandResend = nil
+                return
+            }
+            self.errandResends += 1
+            self.pushErrand()
+        }
+        impactGenerator.impactOccurred()
+        flash("\(partnerName)に頼みました: \(items.joined(separator: "、"))")
+        refreshDials()
+    }
+
+    private func pushErrand() {
+        guard let errand = sentErrand, let data = try? JSONEncoder().encode(errand) else { return }
+        sendToPartner(data)
+    }
+
+    /// 近いときはMPC、遠いときは中継。どちらが効いているかを人に選ばせない。
+    private func sendToPartner(_ data: Data) {
+        let peers = groupPeers.filter { links[$0]?.isDemo != true }
+        if !peers.isEmpty { mpc?.sendData(data: data, peers: peers, mode: .reliable) }
+        remote?.send(note: data)
+    }
+
+    /// おつかい関係の便りの入口。MPCから来ても中継から来ても、ここに集める。
+    private func handleErrand(_ data: Data) {
+        guard let kind = try? JSONDecoder().decode(MessageKind.self, from: data) else { return }
+        switch kind.type {
+        case "errand":
+            guard group != nil, let errand = try? JSONDecoder().decode(ErrandMessage.self, from: data) else { return }
+            receive(errand: errand)
+        case "errandStatus":
+            guard let status = try? JSONDecoder().decode(ErrandStatusMessage.self, from: data),
+                  let sent = sentErrand, status.id == sent.id else { return }
+            // 返事が来た＝届いた。送り直しはここで止める。
+            errandResend?.invalidate()
+            errandResend = nil
+            let added = status.got.filter { !sentErrandGot.contains($0) }
+            sentErrandGot = status.got
+            if status.done {
+                let got = status.got.isEmpty ? "なし" : status.got.joined(separator: "、")
+                flash("\(partnerName)のおつかいが終わりました（買えた物: \(got)）")
+                NearbyAlert.notify(title: "おつかいが終わりました", body: "買えた物: \(got)")
+                if hapticsOn { arrivalGenerator.notificationOccurred(.success) }
+                sentErrand = nil
+                sentErrandGot = []
+            } else if !added.isEmpty {
+                flash("\(partnerName)が買いました: \(added.joined(separator: "、"))")
+            }
+            refreshDials()
+        default:
+            break
+        }
+    }
+
+    /// 届いたリストを受け取る。MPCと中継の両方から同じものが来るので、一度だけ。
+    private func receive(errand: ErrandMessage) {
+        guard !errand.items.isEmpty else { return }
+        guard !seenErrands.contains(errand.id) else {
+            // 届いていることは返事で伝える（相手の送り直しを止めるため）。
+            if myErrand?.id == errand.id { sendErrandStatus(done: false) }
+            return
+        }
+        seenErrands.insert(errand.id)
+        myErrand = errand
+        myErrandGot = []
+        let list = errand.items.joined(separator: "、")
+        flash("\(errand.from)からおつかい: \(list)")
+        if hapticsOn { arrivalGenerator.notificationOccurred(.warning) }
+        NearbyAlert.notify(title: "\(errand.from)からおつかい", body: "\(errand.placeText)で: \(list)")
+        sendErrandStatus(done: false)
+        refreshDials()
+        if UIApplication.shared.applicationState == .active { openErrandList() }
+    }
+
+    private func openErrandList() {
+        guard let errand = myErrand else { return }
+        let vc = ErrandListViewController(errand: errand, got: myErrandGot) { [weak self] got, done in
+            guard let self else { return }
+            self.myErrandGot = got
+            self.sendErrandStatus(done: done)
+            if done {
+                self.myErrand = nil
+                self.myErrandGot = []
+                self.flash("おつかいを終わりにしました")
+            }
+            self.refreshDials()
+        }
+        if let sheet = vc.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+        }
+        presentOnTop(vc)
+    }
+
+    private func sendErrandStatus(done: Bool) {
+        guard let errand = myErrand,
+              let data = try? JSONEncoder().encode(ErrandStatusMessage(id: errand.id,
+                                                                      got: myErrandGot,
+                                                                      done: done)) else { return }
+        sendToPartner(data)
+    }
+
+    private func clearErrands() {
+        errandResend?.invalidate()
+        errandResend = nil
+        sentErrand = nil
+        sentErrandGot = []
+        myErrand = nil
+        myErrandGot = []
+        seenErrands.removeAll()
+        peerStore = nil
+        storeCheckedFrom = nil
+        storeCheckedAt = .distantPast
+        approach.reset()
+    }
+
+    // MARK: - 「近くにいるよ」
+
+    /// いま分かっている距離。電波が新しければ電波、無ければ地図。
+    private func currentMetres() -> Double? {
+        if radioIsFresh(), let d = latestDistance { return Double(d) }
+        return mapDistance()?.meters
+    }
+
+    /// 決めた距離まで近づいた一度だけ知らせる。画面を見ていれば文字と振動、
+    /// 見ていなければ通知。同じことを二重に出さない。
+    private func updateNearbyAlert() {
+        guard NearbyAlert.isOn, group != nil, let metres = currentMetres() else { return }
+        guard approach.step(metres: metres, threshold: NearbyAlert.metres) else { return }
+        let who = partnerName
+        let far = NearbyAlert.text(metres)
+        flash("\(who)が近くにいます（あと\(far)）")
+        if hapticsOn { arrivalGenerator.notificationOccurred(.success) }
+        NearbyAlert.notify(title: "\(who)が近くにいます",
+                           body: "あと\(far)・\(NearbyAlert.walkText(metres))")
+    }
+
     private func leaveTodayGroup() {
         stopRemote()
+        clearErrands()
         endLiveActivity()
         #if DEBUG
         print("RECON leaveTodayGroup id=\(group?.id.prefix(4) ?? "-") stack=\(Thread.callStackSymbols.dropFirst().prefix(4).joined(separator: " | "))")
@@ -2625,6 +2963,10 @@ final class MeetViewController: UIViewController {
             }
             refreshDials()
             DispatchQueue.main.asyncAfter(deadline: .now() + 8.1) { [weak self] in self?.refreshDials() }
+        case "errand", "errandStatus":
+            // 近くにいるときはMPCでも届く。中身の扱いは中継から来たときと同じ。
+            guard let member = peerMembers[peer], isApproved(member), amApproved else { return }
+            handleErrand(data)
         case "spot":
             guard let spot = try? JSONDecoder().decode(SpotMessage.self, from: data),
                   var current = group, !current.isHost, peerMembers[peer] == current.hostKey else { return }
@@ -2722,6 +3064,7 @@ final class MeetViewController: UIViewController {
         latestDistance = distance
         latestDirection = direction
         latestWorldTransform = world
+        updateNearbyAlert()
 
         if distance != nil, phase == .searching, role == .requester || activeRequest != nil || isDemo {
             phase = .ready
@@ -2875,6 +3218,7 @@ final class MeetViewController: UIViewController {
         cameraButton.isHidden = !connected
         cameraButton.isEnabled = true
         cameraButton.alpha = 1
+        refreshErrandButton()
         endButton.isHidden = group == nil && !connected
         endButton.configuration?.title = connected ? "終了" : "やめる"
         // At arrival the dial already says it in mint; the headline would only
@@ -3307,6 +3651,7 @@ final class MeetViewController: UIViewController {
 
     @objc private func finishMeet() {
         stopProximityFeedback()
+        clearErrands()
         endLiveActivity()
         let real = groupPeers.filter { links[$0]?.isDemo == false }
         if group?.isHost == true {
@@ -4168,6 +4513,22 @@ final class MeetViewController: UIViewController {
         inviteButton.addTarget(self, action: #selector(callPartnerTapped), for: .touchUpInside)
         respondOnPress(inviteButton)
 
+        // 主役は合図のボタン。おつかいはその下に、面を落とした形で置く。
+        var errandConf = primaryConfig(title: "おつかいを頼む", image: "cart.fill",
+                                       background: MeetPalette.raised, foreground: MeetPalette.primary)
+        errandConf.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 20, bottom: 14, trailing: 20)
+        errandConf.titleAlignment = .leading
+        errandConf.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = Type.caption
+            a.foregroundColor = MeetPalette.secondary
+            return a
+        }
+        errandButton.configuration = errandConf
+        errandButton.addTarget(self, action: #selector(errandTapped), for: .touchUpInside)
+        respondOnPress(errandButton)
+        errandButton.isHidden = true
+
         var endConf = UIButton.Configuration.plain()
         endConf.title = "終了"
         endConf.baseForegroundColor = MeetPalette.secondary
@@ -4177,7 +4538,7 @@ final class MeetViewController: UIViewController {
 
         actionStack.axis = .vertical
         actionStack.spacing = 10
-        for v in [connectStack, friendsStack, inviteButton, cameraButton, endButton] as [UIView] {
+        for v in [connectStack, friendsStack, inviteButton, cameraButton, errandButton, endButton] as [UIView] {
             actionStack.addArrangedSubview(v)
         }
 

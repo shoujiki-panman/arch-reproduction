@@ -40,6 +40,8 @@ final class RemoteChannel: NSObject {
 
     /// 相手の居場所が届いたら呼ばれる。
     var onFix: ((RemoteFix) -> Void)?
+    /// 居場所以外の便り（おつかいなど）が届いたら呼ばれる。中身は送った側と同じJSON。
+    var onNote: ((Data) -> Void)?
     /// つながっているかどうかが変わったら呼ばれる。
     var onState: ((Bool) -> Void)?
     /// 確認用のかぞえ（画面の下に出す）
@@ -110,6 +112,18 @@ final class RemoteChannel: NSObject {
         ])
     }
 
+    /// 居場所以外の便りを流す。鍵は居場所と同じ（中継は中身を読めない）。
+    /// 相手が離れていて MPC が届かないときの唯一の通り道。
+    func send(note: Data) {
+        guard joined, let sealed = try? AES.GCM.seal(note, using: key).combined else { return }
+        sentCount += 1
+        push(event: "broadcast", payload: [
+            "type": "broadcast",
+            "event": "m",
+            "payload": ["b": sealed.base64EncodedString()],
+        ])
+    }
+
     private func join() {
         push(event: "phx_join", payload: [
             "config": ["broadcast": ["self": false], "presence": ["key": UUID().uuidString]],
@@ -170,9 +184,14 @@ final class RemoteChannel: NSObject {
               let b64 = inner["b"] as? String,
               let sealed = Data(base64Encoded: b64),
               let box = try? AES.GCM.SealedBox(combined: sealed),
-              let plain = try? AES.GCM.open(box, using: key),
-              let fix = try? JSONDecoder().decode(RemoteFix.self, from: plain) else { return }
+              let plain = try? AES.GCM.open(box, using: key) else { return }
         gotCount += 1
+        // 居場所（p）と、それ以外の便り（m）。同じ鍵の同じ通り道を使う。
+        if payload["event"] as? String == "m" {
+            DispatchQueue.main.async { self.onNote?(plain) }
+            return
+        }
+        guard let fix = try? JSONDecoder().decode(RemoteFix.self, from: plain) else { return }
         DispatchQueue.main.async { self.onFix?(fix) }
     }
 }
@@ -193,10 +212,27 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
 
     func start() {
         if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
+        applyBackground()
         manager.startUpdatingLocation()
     }
 
-    func stop() { manager.stopUpdatingLocation() }
+    func stop() {
+        // 先に背景での更新を切る。切らずに止めると青い表示が残ることがある。
+        manager.allowsBackgroundLocationUpdates = false
+        manager.stopUpdatingLocation()
+    }
+
+    /// 画面を閉じているあいだも受け取るか。Info.plist に background location が
+    /// 書かれていないのに true にすると落ちるので、書かれているかを見てから決める。
+    func applyBackground() {
+        let declared = (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String])?
+            .contains("location") ?? false
+        let authorised = manager.authorizationStatus == .authorizedWhenInUse
+            || manager.authorizationStatus == .authorizedAlways
+        manager.allowsBackgroundLocationUpdates = declared && authorised && NearbyAlert.runsInBackground
+        // 止まっている時に更新が勝手に止まると、相手の画面から自分が消える。
+        manager.pausesLocationUpdatesAutomatically = false
+    }
 
     func locationManager(_ m: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let l = locations.last else { return }
@@ -206,6 +242,7 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
 
     func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {
         if m.authorizationStatus == .authorizedWhenInUse || m.authorizationStatus == .authorizedAlways {
+            applyBackground()
             m.startUpdatingLocation()
         }
     }
