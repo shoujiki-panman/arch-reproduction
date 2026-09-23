@@ -47,6 +47,14 @@ final class MeetMapViewController: UIViewController {
         map.showsCompass = false
         map.pointOfInterestFilter = .excludingAll
         map.overrideUserInterfaceStyle = .dark
+        // 地図は主役ではなく床。色を抑えて、人が目立つようにする
+        if #available(iOS 16.0, *) {
+            let config = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
+            config.pointOfInterestFilter = .excludingAll
+            map.preferredConfiguration = config
+        }
+        map.isRotateEnabled = true
+        map.isPitchEnabled = true
         view.addSubview(map)
 
         // 下のカード。数字を主役に、そのすぐ下に「何で測っているか」を書く。
@@ -137,10 +145,29 @@ final class MeetMapViewController: UIViewController {
         }
     }
 
+    /// 2人の真ん中から、相手の方を向いて斜めに見る。
+    /// 地図を真上から見ると「地図アプリ」になる。見たいのは相手なので、低い角度で相手側を向く。
     private func fit(me: CLLocationCoordinate2D, peer: CLLocationCoordinate2D) {
-        let rect = MKMapRect(a: MKMapPoint(me), b: MKMapPoint(peer))
-        // 下のカードに隠れないよう、下側を厚めに空ける
-        map.setVisibleMapRect(rect, edgePadding: .init(top: 90, left: 50, bottom: 260, right: 50), animated: false)
+        // 真ん中ではなく、自分寄り（3割ほど相手側）に置く。
+        // そうすると自分は画面の下のほう、相手は奥に立ち、レースの画面のように見える。
+        let t = 0.15
+        let mid = CLLocationCoordinate2D(latitude: me.latitude + (peer.latitude - me.latitude) * t,
+                                         longitude: me.longitude + (peer.longitude - me.longitude) * t)
+        let metres = CLLocation(latitude: me.latitude, longitude: me.longitude)
+            .distance(from: CLLocation(latitude: peer.latitude, longitude: peer.longitude))
+        let camera = MKMapCamera(lookingAtCenter: mid,
+                                 fromDistance: max(300, metres * 2.0),
+                                 pitch: 45,
+                                 heading: heading(from: me, to: peer))
+        map.setCamera(camera, animated: true)
+    }
+
+    private func heading(from a: CLLocationCoordinate2D, to b: CLLocationCoordinate2D) -> CLLocationDirection {
+        let rad = Double.pi / 180
+        let y = sin((b.longitude - a.longitude) * rad) * cos(b.latitude * rad)
+        let x = cos(a.latitude * rad) * sin(b.latitude * rad)
+            - sin(a.latitude * rad) * cos(b.latitude * rad) * cos((b.longitude - a.longitude) * rad)
+        return (atan2(y, x) / rad + 360).truncatingRemainder(dividingBy: 360)
     }
 }
 
@@ -156,6 +183,29 @@ extension MeetMapViewController: MKMapViewDelegate {
     // ピンではなく「人が立っている」形にする。
     // 相手がどこかにいる、という感じは、記号よりも姿のほうが伝わる（マリオカートの選択画面のように）。
     func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+        // 自分も同じ姿で立たせる。青い点だと、自分だけ地図アプリのままになる
+        if annotation is MKUserLocation {
+            let id = "me"
+            let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
+                ?? MKAnnotationView(annotation: annotation, reuseIdentifier: id)
+            view.annotation = annotation
+            view.subviews.forEach { $0.removeFromSuperview() }
+            let size: CGFloat = 64
+            view.frame = CGRect(x: 0, y: 0, width: size, height: size)
+            view.centerOffset = CGPoint(x: 0, y: -size / 2)
+            let dot = UIView(frame: view.bounds)
+            dot.backgroundColor = MeetPalette.primary
+            dot.layer.cornerRadius = size / 2
+            dot.layer.borderWidth = 3
+            dot.layer.borderColor = UIColor.white.cgColor
+            let figure = UIImageView(image: UIImage(systemName: "figure.stand"))
+            figure.tintColor = MeetPalette.background
+            figure.contentMode = .scaleAspectFit
+            figure.frame = dot.bounds.insetBy(dx: 15, dy: 15)
+            dot.addSubview(figure)
+            view.addSubview(dot)
+            return view
+        }
         guard let point = annotation as? PeerPoint else { return nil }
         let id = "peer"
         let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
@@ -164,7 +214,7 @@ extension MeetMapViewController: MKMapViewDelegate {
         view.canShowCallout = false
         view.subviews.forEach { $0.removeFromSuperview() }
 
-        let size: CGFloat = 56
+        let size: CGFloat = 72
         view.frame = CGRect(x: 0, y: 0, width: size, height: size + 22)
         view.centerOffset = CGPoint(x: 0, y: -(size / 2 + 8))
 
@@ -181,13 +231,13 @@ extension MeetMapViewController: MKMapViewDelegate {
         let figure = UIImageView(image: UIImage(systemName: "figure.walk"))
         figure.tintColor = .black
         figure.contentMode = .scaleAspectFit
-        figure.frame = avatar.bounds.insetBy(dx: 13, dy: 13)
+        figure.frame = avatar.bounds.insetBy(dx: 16, dy: 16)
         avatar.addSubview(figure)
         view.addSubview(avatar)
 
         let label = PaddedLabel()
         label.text = point.title
-        label.font = Type.caption
+        label.font = Type.font(15, .semibold, .footnote)
         label.textColor = MeetPalette.primary
         label.backgroundColor = MeetPalette.surface
         label.layer.cornerRadius = 10
