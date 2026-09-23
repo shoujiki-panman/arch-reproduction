@@ -897,6 +897,7 @@ final class MeetViewController: UIViewController {
     private let locations = LocationSource()
     private var theirFix: RemoteFix?
     private var remotePush: Timer?
+    private weak var mapScreen: MeetMapViewController?
     #if DEBUG
     /// 確認用。電波（UWB）が無いことにして、地図側の表示を試す。
     private var previewNoRadio = false
@@ -1667,6 +1668,13 @@ final class MeetViewController: UIViewController {
             self?.demoTapped()
         }
         if !demoAllowed { demo.attributes = .disabled }
+        // 地図は「電波が届かないくらい離れていて、相手の居場所が届いている」ときだけ意味がある
+        var mapAction: UIAction?
+        if theirFix != nil {
+            mapAction = UIAction(title: "地図で見る", image: UIImage(systemName: "map")) { [weak self] _ in
+                self?.openMap()
+            }
+        }
         #if DEBUG
         // 確認用: 電波（UWB）が届かない状況をその場で作る。屋外の実測前に地図側を試すため。
         let noRadio = UIAction(title: previewNoRadio ? "電波を使う（試験）" : "電波を無いことにする（試験）",
@@ -1685,6 +1693,7 @@ final class MeetViewController: UIViewController {
         }
         haptics.subtitle = "近づくほど速くなります"
         var items: [UIMenuElement] = [rename, haptics, demo]
+        if let mapAction { items.insert(mapAction, at: 0) }
         #if DEBUG
         items.append(noRadio)
         #endif
@@ -1853,10 +1862,14 @@ final class MeetViewController: UIViewController {
             guard let self else { return }
             self.theirFix = fix
             self.refreshDials()
+            self.pushToMap()
         }
         channel.connect()
         remote = channel
-        locations.onFix = { [weak self] _ in self?.pushLocationIfFar() }
+        locations.onFix = { [weak self] _ in
+            self?.pushLocationIfFar()
+            self?.pushToMap()
+        }
         locations.start()
         // 立ち止まっていても相手の画面が止まらないよう、定期的にも送る
         remotePush = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
@@ -1877,6 +1890,26 @@ final class MeetViewController: UIViewController {
         guard let l = locations.last, let channel = remote else { return }
         if latestDistance != nil, CACurrentMediaTime() - lastDistanceAt < 3 { return }
         channel.send(l)
+    }
+
+    @objc private func openMap() {
+        let who = activePeerID.map { self.name(of: $0) } ?? (group?.hostName ?? "相手")
+        let vc = MeetMapViewController(peerName: who)
+        vc.modalPresentationStyle = .fullScreen
+        mapScreen = vc
+        present(vc, animated: true) { [weak self] in self?.pushToMap() }
+    }
+
+    /// 地図の画面に、いまの見立てを渡す。電波が届けばそちらの距離を使う。
+    private func pushToMap() {
+        guard let vc = mapScreen else { return }
+        let radio = radioIsFresh() ? latestDistance.map { Double($0) } : nil
+        let map = mapDistance()
+        vc.update(peerAt: theirFix?.coordinate,
+                  meAt: locations.last,
+                  metres: radio ?? map?.meters,
+                  accuracy: map?.accuracy,
+                  byRadio: radio != nil)
     }
 
     /// 電波が無いときの、地図での距離。
