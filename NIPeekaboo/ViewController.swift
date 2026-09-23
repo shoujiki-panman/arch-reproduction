@@ -1885,10 +1885,17 @@ final class MeetViewController: UIViewController {
         theirFix = nil
     }
 
-    /// 電波が新しいうちは送らない（近くにいるなら地図は要らない・電池のため）
+    /// 居場所を送る。電波が効いているあいだはゆっくり（10秒に1回）だけ送る。
+    /// 完全に止めると、電波の値が現実と食い違っていても気づけない
+    /// （シミュレータで実際に起きた: 6km離れているのに電波は0.04mを返し続けた）。
+    private var lastSlowPush = CFTimeInterval(0)
     private func pushLocationIfFar() {
         guard let l = locations.last, let channel = remote else { return }
-        if latestDistance != nil, CACurrentMediaTime() - lastDistanceAt < 3 { return }
+        let radioFresh = latestDistance != nil && CACurrentMediaTime() - lastDistanceAt < 3
+        if radioFresh {
+            guard CACurrentMediaTime() - lastSlowPush > 10 else { return }
+            lastSlowPush = CACurrentMediaTime()
+        }
         channel.send(l)
     }
 
@@ -1903,7 +1910,7 @@ final class MeetViewController: UIViewController {
     /// 地図の画面に、いまの見立てを渡す。電波が届けばそちらの距離を使う。
     private func pushToMap() {
         guard let vc = mapScreen else { return }
-        let radio = radioIsFresh() ? latestDistance.map { Double($0) } : nil
+        let radio = radioIsFresh() ? latestDistance.map { Double($0) } : nil   // 食い違えば地図を採る
         let map = mapDistance()
         vc.update(peerAt: theirFix?.coordinate,
                   meAt: locations.last,
@@ -2657,7 +2664,7 @@ final class MeetViewController: UIViewController {
         }
         if phase == .guiding {
             updateGuidance()
-            if let d = distance, d < arrivalThreshold { arrive() }
+            if let d = distance, d < arrivalThreshold, radioIsFresh() { arrive() }
         }
     }
 
@@ -2720,15 +2727,15 @@ final class MeetViewController: UIViewController {
         // 1.5 m, so a reading that jitters across the line does not flap the
         // word, the headline, the dial and the island several times a second.
         if let d = latestDistance, d > arrivalThreshold + arrivalHysteresis { didAnnounceArrival = false }
-        if connected, let d = latestDistance, d < arrivalThreshold, !didAnnounceArrival {
+        if connected, let d = latestDistance, d < arrivalThreshold, !didAnnounceArrival, radioIsFresh() {
             didAnnounceArrival = true
             if hapticsOn { arrivalGenerator.notificationOccurred(.success) }
         }
-        let arrived = connected && latestDistance != nil && didAnnounceArrival
+        let arrived = connected && latestDistance != nil && didAnnounceArrival && radioIsFresh()
         let focusName = activePeerID.map { name(of: $0) } ?? "相手"
 
         if connected {
-            if let d = latestDistance {
+            if let d = latestDistance, radioIsFresh() {
                 let caption = guidance(for: focusName).detail
                 finderDial.set(distance: d, direction: nil,
                                colour: arrived ? MeetPalette.arrival : colour,
@@ -2856,12 +2863,21 @@ final class MeetViewController: UIViewController {
         return d
     }
 
+    /// 電波と地図が食い違ったときの決め方。
+    /// 新しい地図の居場所があり、電波の値と大きくずれているなら、その電波は信じない。
+    /// （地図が古いときは電波を信じる。屋内でGPSがずれるのは普通のこと）
+    private func radioAgreesWithMap() -> Bool {
+        guard let d = latestDistance, let fix = theirFix, fix.age < 20,
+              let map = mapDistance() else { return true }
+        return abs(map.meters - Double(d)) <= max(200, map.accuracy * 3)
+    }
+
     /// UWBの値がいま使えるか。2秒来なければ「無い」とみなす。
     private func radioIsFresh() -> Bool {
         #if DEBUG
         if previewNoRadio { return false }
         #endif
-        return latestDistance != nil && CACurrentMediaTime() - lastDistanceAt <= 2
+        return latestDistance != nil && CACurrentMediaTime() - lastDistanceAt <= 2 && radioAgreesWithMap()
     }
 
     private func guidance(for name: String) -> Guidance {
