@@ -1723,35 +1723,58 @@ final class MeetViewController: UIViewController {
 
     /// Built each time it opens, so the demo item says 見る or 終了 and greys out
     /// while a real meet-up is in progress.
+    /// 「…」の中身。歩きながら押す道具なので、上に出すのは4つまで。
+    /// いま相手にできること（様子・おつかい）と、見る場所（地図・カメラ）だけを上に置き、
+    /// 設定はまとめて下に畳む。12行あったものを5行にした。
     private func moreMenuItems() -> [UIMenuElement] {
+        var actions: [UIMenuElement] = []
+
+        // ① いま見る場所。近いときはカメラ、遠いときは地図しか意味がない。
+        if theirFix != nil {
+            actions.append(UIAction(title: "地図で見る", image: UIImage(systemName: "map")) { [weak self] _ in
+                self?.openMap()
+            })
+        }
+        if activePeerID != nil, latestDistance != nil, supportsUWB {
+            // Camera assistance is the only way a 16 Pro gives a direction
+            // (supportsDirectionMeasurement=false).
+            actions.append(UIAction(title: "カメラで見る", image: UIImage(systemName: "camera.viewfinder")) { [weak self] _ in
+                self?.startGuidance()
+            })
+        }
+
+        // ② いま相手にできること。
+        if group != nil {
+            let mood = UIAction(title: "いまの様子を伝える", image: UIImage(systemName: "text.bubble")) { [weak self] _ in
+                self?.askMood()
+            }
+            mood.subtitle = myMood ?? "相手の地図に一言で出ます"
+            actions.append(mood)
+        }
+        if group != nil, myErrand == nil {
+            // 店が見つかっていなくても頼めるようにしておく（小さな店は地図に無いことがある）。
+            let errand = UIAction(title: sentErrand == nil ? "おつかいを頼む" : "頼んだリストを見る",
+                                  image: UIImage(systemName: "cart")) { [weak self] _ in
+                self?.errandTapped()
+            }
+            errand.subtitle = peerStore.map { "\(partnerName)は\($0.name)のそば" } ?? "店は見つかっていません"
+            actions.append(errand)
+        }
+
+        actions.append(UIMenu(title: "設定", image: UIImage(systemName: "gearshape"),
+                              children: settingsMenuItems()))
+        return actions
+    }
+
+    /// 設定。一度決めたら当分さわらないものだけ。
+    private func settingsMenuItems() -> [UIMenuElement] {
         let rename = UIAction(title: "表示名を変更", image: UIImage(systemName: "person.crop.circle")) { [weak self] _ in
             self?.renameTapped()
         }
         rename.subtitle = Self.myDisplayName
         // A new name rebuilds every connection, which would end a meet-up in progress.
         if requestSent || activeRequest != nil { rename.attributes = .disabled }
-        let demo = UIAction(title: isDemo ? "デモを終了" : "デモを見る",
-                            image: UIImage(systemName: isDemo ? "stop.circle" : "play.circle")) { [weak self] _ in
-            self?.demoTapped()
-        }
-        if !demoAllowed { demo.attributes = .disabled }
-        // 地図は「電波が届かないくらい離れていて、相手の居場所が届いている」ときだけ意味がある
-        var mapAction: UIAction?
-        if theirFix != nil {
-            mapAction = UIAction(title: "地図で見る", image: UIImage(systemName: "map")) { [weak self] _ in
-                self?.openMap()
-            }
-        }
-        #if DEBUG
-        // 確認用: 電波（UWB）が届かない状況をその場で作る。屋外の実測前に地図側を試すため。
-        let noRadio = UIAction(title: previewNoRadio ? "電波を使う（試験）" : "電波を無いことにする（試験）",
-                               image: UIImage(systemName: previewNoRadio ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")) { [weak self] _ in
-            guard let self else { return }
-            self.previewNoRadio.toggle()
-            if self.previewNoRadio { self.latestDistance = nil; self.latestDirection = nil; self.latestWorldTransform = nil }
-            self.refreshDials()
-        }
-        #endif
+
         let haptics = UIAction(title: hapticsOn ? "振動を止める" : "振動を使う",
                                image: UIImage(systemName: hapticsOn ? "iphone.slash" : "iphone.radiowaves.left.and.right")) { [weak self] _ in
             guard let self else { return }
@@ -1759,6 +1782,7 @@ final class MeetViewController: UIViewController {
             if !self.hapticsOn { self.stopProximityFeedback() }
         }
         haptics.subtitle = "近づくほど速くなります"
+
         // 近くにいたら知らせる。距離は街の広さで変わるので本人が決める。
         let toggle = UIAction(title: NearbyAlert.isOn ? "知らせを止める" : "知らせを使う",
                               image: UIImage(systemName: NearbyAlert.isOn ? "bell.slash" : "bell")) { [weak self] _ in
@@ -1785,17 +1809,6 @@ final class MeetViewController: UIViewController {
                               children: [toggle, background,
                                          UIMenu(title: "知らせる距離", options: .displayInline, children: distances)])
 
-        var items: [UIMenuElement] = [rename, haptics, nearMenu, demo]
-        // おつかい。店が見つかっていなくても頼めるようにしておく
-        // （小さな店は地図に無いことがある）。
-        if group != nil, myErrand == nil {
-            let errand = UIAction(title: sentErrand == nil ? "おつかいを頼む" : "頼んだリストを見る",
-                                  image: UIImage(systemName: "cart")) { [weak self] _ in
-                self?.errandTapped()
-            }
-            errand.subtitle = peerStore.map { "\(partnerName)は\($0.name)のそば" } ?? "店は見つかっていません"
-            items.insert(errand, at: 0)
-        }
         // 共有の期限。いまのグループがあればその場で変わり、無ければ次のリンクから。
         let limits = Self.limitChoices.map { choice in
             let action = UIAction(title: choice.label) { [weak self] _ in self?.setShareLimit(choice.seconds) }
@@ -1805,18 +1818,55 @@ final class MeetViewController: UIViewController {
         let limitMenu = UIMenu(title: "共有の期限（\(shareLimitShort)）",
                                image: UIImage(systemName: "clock"),
                                children: limits)
-        items.append(limitMenu)
 
-        let mood = UIAction(title: "いまの様子を伝える", image: UIImage(systemName: "text.bubble")) { [weak self] _ in
-            self?.askMood()
+        var items: [UIMenuElement] = [rename, haptics, nearMenu, limitMenu]
+
+        // ホストだけができる、相手への伝え方2つ。頻度が低いのでここに置く。
+        if let current = group, current.isHost {
+            let spot = UIAction(title: "いる場所を伝える", image: UIImage(systemName: "mappin.and.ellipse")) { [weak self] _ in
+                self?.askSpot()
+            }
+            spot.subtitle = current.spot ?? "相手の画面に一言で出ます"
+            let card = UIAction(title: "場所を画像で送る", image: UIImage(systemName: "photo")) { [weak self] _ in
+                self?.shareSpotCard()
+            }
+            card.subtitle = "アプリがない人にも"
+            items.append(contentsOf: [spot, card])
         }
-        mood.subtitle = myMood ?? "相手の地図に一言で出ます"
-        if group != nil { items.insert(mood, at: 0) }
-        if let mapAction { items.insert(mapAction, at: 0) }
+
+        let demo = UIAction(title: isDemo ? "デモを終了" : "デモを見る",
+                            image: UIImage(systemName: isDemo ? "stop.circle" : "play.circle")) { [weak self] _ in
+            self?.demoTapped()
+        }
+        if !demoAllowed { demo.attributes = .disabled }
+        items.append(demo)
+
+        // One person at a time, without ending it for everyone.
+        if let current = group {
+            // Everyone on the list, not just whoever is in range right now: the
+            // person a host most wants out is often the one who has walked off.
+            let people = current.approved.filter { $0 != current.myMember }.map { member in
+                UIAction(title: "\(name(ofMember: member))（\(Badge.of(member))）",
+                         image: UIImage(systemName: "person.crop.circle.badge.minus"),
+                         attributes: .destructive) { [weak self] _ in self?.stopSharing(with: member) }
+            }
+            if !people.isEmpty {
+                items.append(UIMenu(title: current.isHost ? "グループから外す" : "この人との共有をやめる",
+                                    image: UIImage(systemName: "person.crop.circle.badge.minus"),
+                                    children: people))
+            }
+        }
+
         #if DEBUG
-        items.append(noRadio)
+        // 確認用: 電波（UWB）が届かない状況をその場で作る。屋外の実測前に地図側を試すため。
+        let noRadio = UIAction(title: previewNoRadio ? "電波を使う（試験）" : "電波を無いことにする（試験）",
+                               image: UIImage(systemName: previewNoRadio ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")) { [weak self] _ in
+            guard let self else { return }
+            self.previewNoRadio.toggle()
+            if self.previewNoRadio { self.latestDistance = nil; self.latestDirection = nil; self.latestWorldTransform = nil }
+            self.refreshDials()
+        }
         // 確認用: 2台目が無くても、頼む画面と届いた画面を通しで見る。
-        // 送った中身を自分に配り直すので、包んで解く道筋もここで通る。
         let tryErrand = UIAction(title: "おつかいを試す（試験）",
                                  image: UIImage(systemName: "cart.badge.plus")) { [weak self] _ in
             guard let self else { return }
@@ -1839,43 +1889,8 @@ final class MeetViewController: UIViewController {
             }
             self.presentOnTop(vc)
         }
-        items.append(tryErrand)
+        items.append(UIMenu(title: "試験", options: .displayInline, children: [noRadio, tryErrand]))
         #endif
-        if let current = group, current.isHost {
-            let spot = UIAction(title: "いる場所を伝える", image: UIImage(systemName: "mappin.and.ellipse")) { [weak self] _ in
-                self?.askSpot()
-            }
-            spot.subtitle = current.spot ?? "相手の画面に一言で出ます"
-            let card = UIAction(title: "場所を画像で送る", image: UIImage(systemName: "photo")) { [weak self] _ in
-                self?.shareSpotCard()
-            }
-            card.subtitle = "アプリがない人にも"
-            items.insert(contentsOf: [spot, card], at: 0)
-        }
-        if activePeerID != nil, latestDistance != nil, supportsUWB {
-            // Camera assistance is the only way a 16 Pro gives a direction
-            // (supportsDirectionMeasurement=false). The floor view never turns it
-            // on, so on 2026-09-23 the real-device test saw rings and no direction.
-            let camera = UIAction(title: "カメラで見る", image: UIImage(systemName: "camera.viewfinder")) { [weak self] _ in
-                self?.startGuidance()
-            }
-            items.append(camera)
-        }
-        // One person at a time, without ending it for everyone.
-        if let current = group {
-            // Everyone on the list, not just whoever is in range right now: the
-            // person a host most wants out is often the one who has walked off.
-            let people = current.approved.filter { $0 != current.myMember }.map { member in
-                UIAction(title: "\(name(ofMember: member))（\(Badge.of(member))）",
-                         image: UIImage(systemName: "person.crop.circle.badge.minus"),
-                         attributes: .destructive) { [weak self] _ in self?.stopSharing(with: member) }
-            }
-            if !people.isEmpty {
-                items.insert(UIMenu(title: current.isHost ? "グループから外す" : "この人との共有をやめる",
-                                    image: UIImage(systemName: "person.crop.circle.badge.minus"),
-                                    children: people), at: 0)
-            }
-        }
         return items
     }
 
