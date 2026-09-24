@@ -3940,7 +3940,13 @@ final class MeetViewController: UIViewController {
         inviteButton.isHidden = connected || mapOnly || (!supportsUWB && !isDemo)
             || (group != nil && !hosting)
         let closed = hosting && (group?.refusals ?? 0) >= Self.maxRefusals
-        inviteButton.configuration?.title = closed ? "新しいリンクを作る" : hosting ? "もう一度リンクを送る" : "招待リンクを送る"
+        // 待っているあいだは、もう送ってある。青い大きな「もう一度リンクを送る」は
+        // 「まだ足りない」と急かしているように読めるので、控えめな「リンクを共有」に下げる。
+        let waitingForJoin = group != nil && hosting && !closed
+        inviteButton.configuration?.title = closed ? "新しいリンクを作る"
+            : waitingForJoin ? "リンクを共有" : "招待リンクを送る"
+        inviteButton.configuration?.baseBackgroundColor = waitingForJoin ? MeetPalette.surface : actionColour
+        inviteButton.configuration?.baseForegroundColor = waitingForJoin ? MeetPalette.primary : .black
         // The camera view draws the circle of possible positions on the floor. It
         // needs no camera assistance from NearbyInteraction, so it does not wait
         // on -5883; it only needs a distance to draw.
@@ -5401,7 +5407,9 @@ final class MeetViewController: UIViewController {
         }
 
         // 地図の上に置く小さい丸2つ。地図が床のときだけ出る。
-        for (button, symbol, action) in [(recenterButton, "person.2.fill", #selector(recenterTapped)),
+        // 戻すボタンは、地図アプリでおなじみの矢印にする。人2人の絵だと、
+        // 相手がいないときに何のボタンか分からなかった。
+        for (button, symbol, action) in [(recenterButton, "location.fill", #selector(recenterTapped)),
                                          (exploreButton, "binoculars", #selector(exploreTapped)),
                                          (switchButton, "camera.viewfinder", #selector(switchTapped))] {
             var conf = UIButton.Configuration.filled()
@@ -5425,7 +5433,7 @@ final class MeetViewController: UIViewController {
         floatingButtons.addArrangedSubview(exploreButton)
         floatingButtons.addArrangedSubview(switchButton)
         floatingButtons.isHidden = true
-        recenterButton.accessibilityLabel = "2人が入るように戻す"
+        recenterButton.accessibilityLabel = "元の位置に戻す"
         recenterButton.isHidden = true
 
         // 輪の中が「まわりを見る」のときだけ、輪そのものが押せる。
