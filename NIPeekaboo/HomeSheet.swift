@@ -116,6 +116,7 @@ final class HomeSheetView: UIView {
     var onConnect: ((Int) -> Void)?
     var onSearch: (() -> Void)?
     var onExplore: (() -> Void)?
+    var onNearbyNow: (() -> Void)?
     var onAsk: (() -> Void)?
     /// 先回りの提案。あるときだけ、板のいちばん上に出す。
     var suggestion: Suggestion?
@@ -190,6 +191,8 @@ final class HomeSheetView: UIView {
             }
             stack.addArrangedSubview(tiles(peer))
             more.addArrangedSubview(moreRow("まわりを見る", symbol: "binoculars", action: onExplore))
+            more.addArrangedSubview(moreRow("いま近くで（災害・話題・もしものとき）", symbol: "exclamationmark.shield",
+                                            action: onNearbyNow))
             more.addArrangedSubview(moreRow("いまの様子を伝える", symbol: "text.bubble", action: onMood))
             if canInvite {
                 more.addArrangedSubview(moreRow("人を追加（リンク）", symbol: "plus.circle", action: onInvite))
@@ -198,6 +201,8 @@ final class HomeSheetView: UIView {
         case let .friends(friends, waitingLine, canInvite, canEnd):
             stack.addArrangedSubview(moreRow("まわりを見る（カフェ・ごはん・公園）", symbol: "binoculars",
                                              action: onExplore))
+            stack.addArrangedSubview(moreRow("いま近くで（災害・話題・もしものとき）", symbol: "exclamationmark.shield",
+                                             action: onNearbyNow))
             stack.addArrangedSubview(sectionTitle(!friends.isEmpty ? "友だち"
                                                   : waitingLine != nil ? "待っています" : "人と会う"))
             if let waitingLine { stack.addArrangedSubview(statusLine(waitingLine)) }

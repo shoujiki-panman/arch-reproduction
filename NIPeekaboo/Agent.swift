@@ -239,7 +239,7 @@ struct AskPlanAI {
 // （小さいモデルに「状況を判断して」は筋が悪い。Jevで測った教訓）。
 
 struct Suggestion: Equatable {
-    enum Kind: String { case errandStore, earlyArrival, decideMeet }
+    enum Kind: String { case errandStore, earlyArrival, decideMeet, quake, warning }
     var kind: Kind
     var title: String
     var detail: String

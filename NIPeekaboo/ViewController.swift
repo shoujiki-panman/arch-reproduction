@@ -1489,6 +1489,7 @@ final class MeetViewController: UIViewController {
         locations.onHeading = { [weak self] _ in self?.pushMyHeading() }
         locations.startForeground()
         locations.keepHeading = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.startDisasterWatch() }
 
         loadTodayGroup()
         endOrphanedActivities()
@@ -2047,7 +2048,10 @@ final class MeetViewController: UIViewController {
             self?.refreshDials()
         }
         proactive.state = Proactive.isOn ? .on : .off
-        items.append(UIMenu(title: "", options: .displayInline, children: [nearMenu, proactive]))
+        let safety = UIAction(title: "もしものとき・災害", image: UIImage(systemName: "exclamationmark.shield")) { [weak self] _ in
+            self?.openNearbyNow()
+        }
+        items.append(UIMenu(title: "", options: .displayInline, children: [safety, nearMenu, proactive]))
 
         // ■ 設定
         let haptics = UIAction(title: hapticsOn ? "振動を止める" : "振動を使う",
@@ -3185,6 +3189,57 @@ final class MeetViewController: UIViewController {
         presentOnTop(vc)
     }
 
+    // MARK: - 災害の知らせ（気象庁）
+
+    /// 知らせにする災害（震度3以上・警戒レベル）。出したら、同じものは二度と出さない。
+    private var disasterSuggestion: Suggestion?
+    private var disasterShownID: String?
+    private var disasterSeen = Set<String>()
+    private var disasterTimer: Timer?
+
+    /// 3分おきに気象庁を見る（画面を開いているあいだ／位置を取っているあいだ）。
+    private func startDisasterWatch() {
+        disasterTimer?.invalidate()
+        disasterTimer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in
+            self?.checkDisasters()
+        }
+        checkDisasters()
+    }
+
+    private func checkDisasters() {
+        guard let me = locations.last else { return }
+        Task { @MainActor [weak self] in
+            guard let w = await WhereaboutsFinder.find(me) else { return }
+            async let q = JMA.quakes(prefCode: w.code, prefName: w.prefecture, hours: 0.5)
+            async let wn = JMA.warnings(prefCode: w.code, prefName: w.prefecture, hours: 3)
+            let fresh = ((await q) + (await wn)).filter { $0.alert }.sorted { $0.at > $1.at }
+            guard let self else { return }
+            guard let n = fresh.first(where: { !self.disasterSeen.contains($0.id) }) else { return }
+            self.disasterShownID = n.id
+            self.disasterSuggestion = Suggestion(kind: n.kind == .quake ? .quake : .warning,
+                                                 title: n.title, detail: n.detail + "\n近くの避難場所を見ますか？",
+                                                 primary: "避難場所を見る")
+            self.refreshDials()
+        }
+    }
+
+    private func dismissDisaster() {
+        if let id = disasterShownID { disasterSeen.insert(id) }
+        disasterSuggestion = nil
+    }
+
+    /// いま近くで（災害・もしものとき・避難場所・話題）。
+    private func openNearbyNow() {
+        let vc = NearbyNowViewController(me: locations.last)
+        vc.onRoute = { [weak self] item in self?.routeToPlace(item) }
+        let nav = UINavigationController(rootViewController: vc)
+        if let sheet = nav.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+        }
+        presentOnTop(nav)
+    }
+
     // MARK: - 先回りの提案
 
     private var suggestion: Suggestion?
@@ -3194,6 +3249,18 @@ final class MeetViewController: UIViewController {
 
     /// いまの事実から提案を決める。出し直しは控えめに（同じ種類は20分、断られたら1時間あける）。
     private func evaluateProactive() {
+        // 災害の知らせは、つないでいなくても、先回りの提案を切っていても出す。いちばん先に。
+        if let d = disasterSuggestion {
+            if suggestion?.kind != d.kind || suggestion?.title != d.title {
+                suggestion = d
+                if hapticsOn { arrivalGenerator.notificationOccurred(.warning) }
+                if UIApplication.shared.applicationState != .active {
+                    NearbyAlert.notify(title: d.title, body: d.detail)
+                }
+            }
+            return
+        }
+        if let s = suggestion, s.kind == .quake || s.kind == .warning { suggestion = nil }
         guard Proactive.isOn else { suggestion = nil; return }
         let state = ProactiveState(
             partner: partnerName,
@@ -3227,9 +3294,12 @@ final class MeetViewController: UIViewController {
     private func actOnSuggestion() {
         guard let s = suggestion else { return }
         declinedAt[s.kind] = Date()          // やったら、しばらく同じことは言わない
+        if s.kind == .quake || s.kind == .warning { dismissDisaster() }
         suggestion = nil
         refreshDials()
         switch s.kind {
+        case .quake, .warning:
+            openNearbyNow()
         case .errandStore:
             openErrandCompose(preset: [])
         case .earlyArrival:
@@ -3247,6 +3317,7 @@ final class MeetViewController: UIViewController {
 
     private func dismissSuggestion() {
         if let s = suggestion { declinedAt[s.kind] = Date() }
+        if let s = suggestion, s.kind == .quake || s.kind == .warning { dismissDisaster() }
         suggestion = nil
         refreshDials()
     }
@@ -5934,6 +6005,7 @@ final class MeetViewController: UIViewController {
         homeSheet.onSuggestion = { [weak self] in self?.actOnSuggestion() }
         homeSheet.onSuggestionDismiss = { [weak self] in self?.dismissSuggestion() }
         homeSheet.onExplore = { [weak self] in self?.exploreTapped() }
+        homeSheet.onNearbyNow = { [weak self] in self?.openNearbyNow() }
         homeSheet.onConnect = { [weak self] index in
             let friends = KnownFriends.all()
             guard friends.indices.contains(index) else { return }
