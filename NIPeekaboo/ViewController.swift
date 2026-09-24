@@ -1413,6 +1413,8 @@ final class MeetViewController: UIViewController {
     private let arDistanceValue = UILabel()
     private let arPeerName = UILabel()
     private let arHint = PaddedLabel()
+    /// カメラ画面の右下の小さな地図（探す画面と同じもの）。
+    private let arMiniMap = MiniMapView()
     private let arMarkerChip = PaddedLabel()
     /// Held so it can stand down while the arrival overlay owns the screen: its
     /// material is meant for camera video, and over an opaque colour it leaves
@@ -2496,6 +2498,7 @@ final class MeetViewController: UIViewController {
         locations.startHeading()
         findScreen.alpha = 0
         findScreen.isHidden = false
+        findScreen.miniMap.start()
         refreshFind()
         Trans.run(Trans.smoothOut(Trans.fast)) { self.findScreen.alpha = 1 }
     }
@@ -2503,6 +2506,7 @@ final class MeetViewController: UIViewController {
     private func closeFind() {
         finding = false
         locations.stopHeading()
+        findScreen.miniMap.stop()
         Trans.run(Trans.smoothOut(Trans.fast), { self.findScreen.alpha = 0 },
                   done: { self.findScreen.isHidden = true })
     }
@@ -2512,6 +2516,8 @@ final class MeetViewController: UIViewController {
     private func refreshFind() {
         guard finding else { return }
         let name = partnerName
+        findScreen.miniMap.update(route: mapFloor?.currentRoute?.polyline,
+                                  peer: theirFix?.coordinate, name: name)
         if radioIsFresh(), let d = latestDistance {
             let trend = trendClosing.map { $0 ? "近づいています" : "離れています" } ?? "電波で測っています"
             findScreen.update(name: name, distance: formatMeters(d), detail: trend,
@@ -2530,7 +2536,7 @@ final class MeetViewController: UIViewController {
         findScreen.update(name: name, distance: NearbyAlert.text(metres),
                           detail: heading >= 0
                               ? "\(name)はこの向き・\(NearbyAlert.walkText(metres))"
-                              : "北を上にしたときの向き（この端末では方角が取れません）",
+                              : "北が上の向き（方角が取れない端末）",
                           angle: CGFloat(angle * .pi / 180), cameraAvailable: true)
     }
 
@@ -4572,6 +4578,7 @@ final class MeetViewController: UIViewController {
     }
 
     @objc private func startGuidance() {
+        arMiniMap.start()
         startARIfNeeded()
         if let id = activePeerID, let link = links[id] { runConfig(for: link, cameraAssist: true) }
         phase = .guiding
@@ -4589,6 +4596,7 @@ final class MeetViewController: UIViewController {
     }
 
     @objc private func closeAR() {
+        arMiniMap.stop()
         stopProximityFeedback()
         floorRingsOnly = false
         clearPossibleRings()
@@ -4963,6 +4971,8 @@ final class MeetViewController: UIViewController {
 
     private func updateGuidance() {
         guard phase == .guiding else { return }
+        arMiniMap.update(route: mapFloor?.currentRoute?.polyline,
+                         peer: theirFix?.coordinate, name: partnerName)
         updateProximityFeedback(distance: latestDistance)
 
         let focusName = activePeerID.map { name(of: $0) } ?? partnerName
@@ -5838,7 +5848,7 @@ final class MeetViewController: UIViewController {
         arReadout.setCustomSpacing(10, after: arReadout.arrangedSubviews.last!)
         arReadout.addArrangedSubview(arPeerName)
 
-        for v in [arScrim, close, arMarkerChip, arReadout, arHint] {
+        for v in [arScrim, close, arMarkerChip, arReadout, arHint, arMiniMap] {
             arScreen.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -5868,6 +5878,10 @@ final class MeetViewController: UIViewController {
             arHint.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 24),
             arHint.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -24),
             arHint.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -28),
+            arMiniMap.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -16),
+            arMiniMap.bottomAnchor.constraint(equalTo: arHint.topAnchor, constant: -14),
+            arMiniMap.widthAnchor.constraint(equalToConstant: 150),
+            arMiniMap.heightAnchor.constraint(equalToConstant: 150),
         ])
 
         // Camera video is behind these, which is the one place on this app where

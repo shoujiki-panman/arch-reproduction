@@ -386,6 +386,8 @@ final class FindScreen: UIView {
     private let detail = UILabel()
     private let closeButton = UIButton(type: .system)
     private let cameraButton = UIButton(type: .system)
+    /// 右下の小さな地図。実際の道と進む向き。
+    let miniMap = MiniMapView()
 
     static let ink = UIColor(red: 0.09, green: 0.22, blue: 0.36, alpha: 1)
 
@@ -424,7 +426,7 @@ final class FindScreen: UIView {
         closeButton.addAction(UIAction { [weak self] _ in self?.onClose?() }, for: .touchUpInside)
         cameraButton.addAction(UIAction { [weak self] _ in self?.onCamera?() }, for: .touchUpInside)
 
-        for v in [caption, nameLabel, arrow, distance, detail, closeButton, cameraButton] as [UIView] {
+        for v in [caption, nameLabel, arrow, distance, detail, closeButton, cameraButton, miniMap] as [UIView] {
             addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -442,11 +444,16 @@ final class FindScreen: UIView {
             arrow.heightAnchor.constraint(equalToConstant: 200),
 
             distance.leadingAnchor.constraint(equalTo: caption.leadingAnchor),
-            distance.trailingAnchor.constraint(lessThanOrEqualTo: safe.trailingAnchor, constant: -24),
+            distance.trailingAnchor.constraint(lessThanOrEqualTo: miniMap.leadingAnchor, constant: -12),
             distance.bottomAnchor.constraint(equalTo: detail.topAnchor, constant: -2),
             detail.leadingAnchor.constraint(equalTo: caption.leadingAnchor),
-            detail.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -24),
+            detail.trailingAnchor.constraint(equalTo: miniMap.leadingAnchor, constant: -12),
             detail.bottomAnchor.constraint(equalTo: closeButton.topAnchor, constant: -28),
+
+            miniMap.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -24),
+            miniMap.bottomAnchor.constraint(equalTo: cameraButton.topAnchor, constant: -16),
+            miniMap.widthAnchor.constraint(equalToConstant: 150),
+            miniMap.heightAnchor.constraint(equalToConstant: 150),
 
             closeButton.leadingAnchor.constraint(equalTo: caption.leadingAnchor),
             closeButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -16),
@@ -715,5 +722,97 @@ final class NavigationOverlay: UIView {
         turnText.text = turn
         remain.text = remaining
         remainDetail.text = detail
+    }
+}
+
+// MARK: - 右下の小さな地図
+
+/// 矢印やカメラの画面の右下に置く小さな地図（Googleマップのライブビューと同じ置き方）。
+/// 地図は体の向きに合わせて回るので、上がそのまま「いま向いている方」になる。
+/// 実際の道と、相手までの道なりの線と、相手の印だけを出す。見るだけで触らせない。
+final class MiniMapView: UIView, MKMapViewDelegate {
+
+    private let map = MKMapView()
+    private var line: MKPolyline?
+    private let peer = MKPointAnnotation()
+    private var peerShown = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        layer.cornerRadius = 18
+        layer.cornerCurve = .continuous
+        layer.borderWidth = 2
+        layer.borderColor = UIColor(white: 1, alpha: 0.85).cgColor
+        clipsToBounds = true
+
+        map.delegate = self
+        map.overrideUserInterfaceStyle = .dark
+        map.showsUserLocation = true
+        map.showsCompass = false
+        map.isUserInteractionEnabled = false
+        map.pointOfInterestFilter = .excludingAll
+        if #available(iOS 16.0, *) {
+            let config = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
+            config.pointOfInterestFilter = .excludingAll
+            map.preferredConfiguration = config
+        }
+        addSubview(map)
+        map.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            map.topAnchor.constraint(equalTo: topAnchor),
+            map.bottomAnchor.constraint(equalTo: bottomAnchor),
+            map.leadingAnchor.constraint(equalTo: leadingAnchor),
+            map.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 画面に出た時に呼ぶ。自分を真ん中に、向きに合わせて回し始める。
+    func start() {
+        map.setUserTrackingMode(.followWithHeading, animated: false)
+        let camera = map.camera
+        camera.centerCoordinateDistance = 450
+        map.setCamera(camera, animated: false)
+    }
+
+    func stop() {
+        map.setUserTrackingMode(.none, animated: false)
+    }
+
+    /// 相手までの道なりの線と、相手の居場所を貼り替える。
+    func update(route: MKPolyline?, peer coordinate: CLLocationCoordinate2D?, name: String) {
+        if route !== line {
+            if let line { map.removeOverlay(line) }
+            if let route { map.addOverlay(route) }
+            line = route
+        }
+        if let coordinate {
+            peer.coordinate = coordinate
+            peer.title = name
+            if !peerShown { map.addAnnotation(peer); peerShown = true }
+        } else if peerShown {
+            map.removeAnnotation(peer)
+            peerShown = false
+        }
+        // 追いかけが外れていたら（地図が一度止まると外れる）戻す。
+        if map.userTrackingMode != .followWithHeading, !isHidden {
+            map.setUserTrackingMode(.followWithHeading, animated: false)
+        }
+    }
+
+    func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+        let r = MKPolylineRenderer(overlay: overlay)
+        r.strokeColor = MeetPalette.action
+        r.lineWidth = 4
+        return r
+    }
+
+    func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+        guard annotation === peer else { return nil }
+        let view = MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "peer")
+        view.markerTintColor = MeetPalette.arrival
+        view.glyphText = (annotation.title ?? nil).flatMap { $0.first.map(String.init) }
+        view.titleVisibility = .hidden
+        return view
     }
 }
