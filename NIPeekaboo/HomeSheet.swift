@@ -67,6 +67,19 @@ final class FaceView: UIView {
 
 final class HomeSheetView: UIView {
 
+    /// 下の板だけは元の紺色のまま（本人 9/25「ここは元のデザインが好きだった」）。
+    /// 地図・ピン・ボタンは iOS 標準にしたが、板の中はこの色で描く。
+    /// 同じ名前の入れ子にしてあるので、板の中の MeetPalette はすべてこちらを指す。
+    enum MeetPalette {
+        static let background = UIColor(red: 16/255, green: 22/255, blue: 32/255, alpha: 1)
+        static let surface = UIColor(red: 30/255, green: 40/255, blue: 55/255, alpha: 1)
+        static let raised = UIColor(red: 44/255, green: 57/255, blue: 76/255, alpha: 1)
+        static let primary = UIColor(red: 244/255, green: 247/255, blue: 252/255, alpha: 1)
+        static let secondary = UIColor(red: 184/255, green: 196/255, blue: 213/255, alpha: 1)
+        static let action = UIColor(red: 169/255, green: 202/255, blue: 255/255, alpha: 1)
+        static let onAction = background
+    }
+
     struct Peer {
         var name: String
         var face: UIImage?
@@ -114,26 +127,18 @@ final class HomeSheetView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        // 地は iOS 標準のすりガラス（Appleマップの下の板と同じ素材）。
-        let material = UIVisualEffectView(effect: UIBlurEffect(style: .systemThickMaterial))
-        material.layer.cornerRadius = 26
-        material.layer.cornerCurve = .continuous
-        material.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
-        material.clipsToBounds = true
-        addSubview(material)
-        material.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            material.topAnchor.constraint(equalTo: topAnchor),
-            material.bottomAnchor.constraint(equalTo: bottomAnchor),
-            material.leadingAnchor.constraint(equalTo: leadingAnchor),
-            material.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
+        // 元の紺色の板。端末がライトでも板の中は暗い色のまま。
+        overrideUserInterfaceStyle = .dark
+        backgroundColor = MeetPalette.surface
+        layer.cornerRadius = 22
+        layer.cornerCurve = .continuous
+        layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
         layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.12
-        layer.shadowRadius = 10
+        layer.shadowOpacity = 0.3
+        layer.shadowRadius = 12
         layer.shadowOffset = CGSize(width: 0, height: -2)
 
-        grabber.backgroundColor = .tertiaryLabel
+        grabber.backgroundColor = MeetPalette.raised
         grabber.layer.cornerRadius = 2.5
         addSubview(grabber)
         grabber.translatesAutoresizingMaskIntoConstraints = false
