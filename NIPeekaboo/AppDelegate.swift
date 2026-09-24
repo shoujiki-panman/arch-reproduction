@@ -25,6 +25,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         return UISceneConfiguration(name: "Default Configuration", sessionRole: connectingSceneSession.role)
     }
 
+    /// 画面を開いているあいだに届いた知らせ。これを書いていないと、iOSは
+    /// 前面のアプリへの知らせを黙って捨てる。アプリを見ている本人には、
+    /// 「近くにいます」が一度も鳴らないことになっていた。
+    /// 中身は画面の下に自前の一言が出るので、ここでは音だけ鳴らす。
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler:
+                                    @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.sound])
+    }
+
     /// 知らせのボタンが押された。ここではまだ画面が無いこともあるので、印だけ置いて渡す。
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,

@@ -4776,7 +4776,9 @@ final class MeetViewController: UIViewController {
             return
         }
         let state = MeetActivityAttributes.ContentState(
-            metres: latestDistance.map(Double.init),
+            // 画面と同じ数字を出す。電波の値だけを渡していたので、電波が切れた
+            // あとも島が古い「0.5 m」を出し続け、地図は1.2kmと言っていた。
+            metres: currentMetres(),
             name: who,
             closing: trendClosing,
             arrived: arrived,

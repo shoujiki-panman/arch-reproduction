@@ -41,6 +41,8 @@ struct MeetActivityAttributes: ActivityAttributes {
         var readout: String {
             guard let metres else { return "—" }
             if arrived { return "見つけた" }
+            // 地図で見ているあいだはキロになる。1200 m とは書かない。
+            if metres >= 1000 { return String(format: "%.1f km", metres / 1000) }
             return metres >= 2 ? String(format: "%.0f m", metres.rounded()) : String(format: "%.1f m", metres)
         }
     }
