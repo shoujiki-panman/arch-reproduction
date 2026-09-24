@@ -401,16 +401,93 @@ final class MeetMapViewController: UIViewController {
     }
 
     /// 案内中。地図を自分の位置と向きに合わせて付いていかせる（地図アプリの案内と同じ）。
+    ///
+    /// MapKit の追いかけ（followWithHeading）は、途中でほかのカメラ操作が入ると
+    /// 黙って外れ、「歩く方向に向かない」になっていた（本人 9/25）。案内中の見え方は
+    /// こちらで毎回決める: 自分の少し先を、向いている方を上にして斜めに見る
+    /// （Googleマップの徒歩案内と同じ）。
     func startFollowing() {
+        navigating = true
+        navPaused = false
+        lastNavHeading = -1
         userMoved = true
         fitted = true
-        map.setUserTrackingMode(.followWithHeading, animated: true)
+        map.setUserTrackingMode(.none, animated: false)
+        refreshNavLook()
     }
 
     /// 案内をやめたら、2人が入る見え方に戻す。
     func stopFollowing() {
+        navigating = false
+        navPaused = false
         map.setUserTrackingMode(.none, animated: false)
+        refreshNavLook()
         refit()
+    }
+
+    /// 案内中。指で地図を動かしたら、カメラは止める（「中央に戻す」で戻る）。
+    private(set) var navigating = false
+    private(set) var navPaused = false
+    private var lastNavCamera = Date.distantPast
+    private var lastNavHeading: CLLocationDirection = -1
+    /// 案内中に指で動かされた（上の画面が「中央に戻す」を出すため）。
+    var onNavPaused: (() -> Void)?
+
+    func resumeNavCamera() {
+        navPaused = false
+        lastNavHeading = -1
+    }
+
+    /// 案内中のカメラ。heading は「上にしたい向き」（北から時計回りの度）。
+    func navCamera(me: CLLocation, heading: CLLocationDirection) {
+        guard navigating, !navPaused else { return }
+        let turned = lastNavHeading < 0 || abs(Self.angleDiff(heading, lastNavHeading)) > 4
+        guard turned || Date().timeIntervalSince(lastNavCamera) > 0.8 else { return }
+        lastNavCamera = Date()
+        lastNavHeading = heading
+        let ahead = Self.offset(me.coordinate, bearing: heading, metres: 45)
+        let camera = MKMapCamera(lookingAtCenter: ahead, fromDistance: 300, pitch: 55, heading: heading)
+        map.setCamera(camera, animated: true)
+    }
+
+    static func angleDiff(_ a: Double, _ b: Double) -> Double {
+        var r = (a - b).truncatingRemainder(dividingBy: 360)
+        if r > 180 { r -= 360 }
+        if r < -180 { r += 360 }
+        return r
+    }
+
+    static func offset(_ c: CLLocationCoordinate2D, bearing: Double, metres: Double) -> CLLocationCoordinate2D {
+        let rad = bearing * .pi / 180
+        let dLat = metres * cos(rad) / 111_320
+        let dLon = metres * sin(rad) / (111_320 * cos(c.latitude * .pi / 180))
+        return CLLocationCoordinate2D(latitude: c.latitude + dLat, longitude: c.longitude + dLon)
+    }
+
+    private static let navArrowTag = 8803
+
+    /// 案内中は、自分の印を顔の丸から向きの三角にする（地図が向いている方を上に
+    /// 回るので、三角はいつも上＝進む向き）。道なりの線も太くする。
+    private func refreshNavLook() {
+        if let view = map.view(for: map.userLocation) { applyNavLook(to: view) }
+        let overlays = map.overlays
+        map.removeOverlays(overlays)
+        map.addOverlays(overlays)
+    }
+
+    private func applyNavLook(to view: MKAnnotationView) {
+        view.subviews.filter { $0.tag == Self.navArrowTag }.forEach { $0.removeFromSuperview() }
+        for sub in view.subviews where sub.tag == Self.dotTag || sub.tag == Self.cardTag {
+            sub.isHidden = navigating
+        }
+        guard navigating else { return }
+        let size: CGFloat = 46
+        let arrow = UIImageView(image: NavArrow.image(size: size))
+        arrow.tag = Self.navArrowTag
+        // 印の下端がちょうど自分の位置なので、三角の中心をそこに置く。
+        arrow.frame = CGRect(x: (view.bounds.width - size) / 2, y: view.bounds.height - size / 2,
+                             width: size, height: size)
+        view.addSubview(arrow)
     }
 
     /// 選んだ場所に印を立て、自分とその場所が入るように見せる。nil で消す。
@@ -525,7 +602,15 @@ extension MeetMapViewController: MKMapViewDelegate {
         let touched = mapView.subviews.first?.gestureRecognizers?.contains { recogniser in
             [.began, .changed, .ended].contains(recogniser.state)
         } ?? false
-        guard touched, !userMoved else { return }
+        guard touched else { return }
+        if navigating {
+            if !navPaused {
+                navPaused = true
+                onNavPaused?()
+            }
+            return
+        }
+        guard !userMoved else { return }
         userMoved = true
         fitted = true          // 以後、こちらからは向きを戻さない
         onUserMoved?()
@@ -565,12 +650,12 @@ extension MeetMapViewController: MKMapViewDelegate {
         if let placeLine, overlay === placeLine {
             let r = MKPolylineRenderer(overlay: overlay)
             r.strokeColor = MeetPalette.arrival
-            r.lineWidth = 5
+            r.lineWidth = navigating ? 10 : 5
             return r
         }
         let r = MKPolylineRenderer(overlay: overlay)
-        r.strokeColor = MeetPalette.action.withAlphaComponent(0.8)
-        r.lineWidth = 3
+        r.strokeColor = MeetPalette.action.withAlphaComponent(navigating ? 0.95 : 0.8)
+        r.lineWidth = navigating ? 10 : 3
         r.lineDashPattern = lineIsRoute ? nil : [6, 8]   // 道なりは実線、直線は点線
         return r
     }
@@ -598,6 +683,7 @@ extension MeetMapViewController: MKMapViewDelegate {
             view.addSubview(dot)
             applyFace(myFace, to: view, name: myName)
             attachCard(to: view, name: myName, mood: myMood)
+            applyNavLook(to: view)
             return view
         }
         if let flag = annotation as? PinPoint {

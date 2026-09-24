@@ -688,7 +688,15 @@ final class NavigationOverlay: UIView {
 
 
     var onEnd: (() -> Void)?
+    var onRecenter: (() -> Void)?
 
+    /// どっちへ歩けばいいか。スマホが向いている方に対して、進む向きを矢印で出す
+    /// （「右を向いて」「このまま まっすぐ」）。
+    private let facing = UIView()
+    private let facingArrow = UIImageView(image: UIImage(systemName: "arrow.up",
+        withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .heavy)))
+    private let facingLabel = UILabel()
+    private let recenterButton = UIButton(type: .system)
     private let banner = UIView()
     private let turnIcon = UIImageView()
     private let turnDistance = UILabel()
@@ -750,11 +758,36 @@ final class NavigationOverlay: UIView {
         barRow.alignment = .center
         barRow.spacing = 12
 
-        for (parent, child) in [(banner, turnRow), (bar, barRow)] as [(UIView, UIView)] {
+        facing.backgroundColor = UIColor(white: 0.08, alpha: 0.85)
+        facing.layer.cornerRadius = 22
+        facing.layer.cornerCurve = .continuous
+        facingArrow.tintColor = MeetPalette.action
+        facingArrow.contentMode = .scaleAspectFit
+        facingLabel.font = Type.font(17, .bold, .headline)
+        facingLabel.textColor = .white
+        let facingRow = UIStackView(arrangedSubviews: [facingArrow, facingLabel])
+        facingRow.axis = .horizontal
+        facingRow.alignment = .center
+        facingRow.spacing = 10
+        facing.isHidden = true
+
+        var rc = UIButton.Configuration.filled()
+        rc.title = "中央に戻す"
+        rc.image = UIImage(systemName: "location.north.fill")
+        rc.imagePadding = 6
+        rc.baseBackgroundColor = MeetPalette.surface
+        rc.baseForegroundColor = MeetPalette.action
+        rc.cornerStyle = .capsule
+        rc.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16)
+        recenterButton.configuration = rc
+        recenterButton.isHidden = true
+        recenterButton.addAction(UIAction { [weak self] _ in self?.onRecenter?() }, for: .touchUpInside)
+
+        for (parent, child) in [(banner, turnRow), (bar, barRow), (facing, facingRow)] as [(UIView, UIView)] {
             parent.addSubview(child)
             child.translatesAutoresizingMaskIntoConstraints = false
         }
-        for v in [banner, bar] {
+        for v in [banner, bar, facing, recenterButton] {
             addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -777,7 +810,39 @@ final class NavigationOverlay: UIView {
             barRow.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 22),
             barRow.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -18),
             barRow.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -8),
+
+            facing.topAnchor.constraint(equalTo: banner.bottomAnchor, constant: 10),
+            facing.centerXAnchor.constraint(equalTo: centerXAnchor),
+            facingRow.topAnchor.constraint(equalTo: facing.topAnchor, constant: 10),
+            facingRow.bottomAnchor.constraint(equalTo: facing.bottomAnchor, constant: -10),
+            facingRow.leadingAnchor.constraint(equalTo: facing.leadingAnchor, constant: 16),
+            facingRow.trailingAnchor.constraint(equalTo: facing.trailingAnchor, constant: -18),
+            facingArrow.widthAnchor.constraint(equalToConstant: 26),
+            facingArrow.heightAnchor.constraint(equalToConstant: 26),
+
+            recenterButton.bottomAnchor.constraint(equalTo: bar.topAnchor, constant: -14),
+            recenterButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
         ])
+    }
+
+    /// 進む向きを、スマホが向いている方との差（度、右が正）で出す。nil で隠す。
+    func setFacing(_ degrees: Double?) {
+        guard let degrees else { facing.isHidden = true; return }
+        facing.isHidden = false
+        let a = abs(degrees)
+        facingLabel.text = a <= 25 ? "このまま まっすぐ"
+            : a >= 135 ? "うしろを向いて"
+            : degrees > 0 ? "右を向いて" : "左を向いて"
+        facing.backgroundColor = a <= 25 ? UIColor(red: 0.12, green: 0.45, blue: 0.3, alpha: 0.92)
+                                         : UIColor(white: 0.08, alpha: 0.85)
+        facingArrow.tintColor = a <= 25 ? .white : MeetPalette.action
+        UIView.animate(withDuration: 0.2) {
+            self.facingArrow.transform = CGAffineTransform(rotationAngle: CGFloat(degrees * .pi / 180))
+        }
+    }
+
+    func setRecenterVisible(_ visible: Bool) {
+        recenterButton.isHidden = !visible
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 

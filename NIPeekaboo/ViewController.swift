@@ -2346,6 +2346,7 @@ final class MeetViewController: UIViewController {
         locations.onHeading = { [weak self] _ in
             self?.refreshFind()
             self?.updateCameraCards()
+            self?.updateNavFacing()
         }
         locations.onFix = { [weak self] _ in
             self?.pushLocationIfFar()
@@ -2709,10 +2710,14 @@ final class MeetViewController: UIViewController {
     private func startNavigation(route: MKRoute, place: MKMapItem?) {
         guard let floor = mapFloor else { return }
         navPlace = place
+        navFacingSpoken = false
         navigationMode(true)
         adoptRoute(route)
         floor.startFollowing()
         locations.setPrecise(true)
+        // どっちを向いているかは磁石で見る（歩き出す前から分かるように）。
+        locations.startHeading()
+        navOverlay.setRecenterVisible(false)
         UIApplication.shared.isIdleTimerDisabled = true
         stepNavigation()
     }
@@ -2722,6 +2727,8 @@ final class MeetViewController: UIViewController {
         navRoute = nil
         let placeName = navPlace?.name
         navPlace = nil
+        if !finding && phase != .guiding { locations.stopHeading() }
+        navOverlay.setFacing(nil)
         mapFloor?.showPlaceRoute(nil)
         mapFloor?.showPlace(nil)
         speech.stopSpeaking(at: .immediate)
@@ -2799,6 +2806,7 @@ final class MeetViewController: UIViewController {
             navSpokenNear = true
             say("まもなく、\(instruction)")
         }
+        updateNavFacing()
         let remaining = remainingToGoal ?? route.distance
         let goalName = navPlace?.name ?? partnerName
         navOverlay.update(turn: instruction, distance: NearbyAlert.text(toTurn) + "先",
@@ -2806,6 +2814,69 @@ final class MeetViewController: UIViewController {
                           detail: navPlace == nil
                               ? "\(goalName)まで \(NearbyAlert.text(remaining))・相手が動くと道も変わります"
                               : "\(goalName)まで \(NearbyAlert.text(remaining))")
+    }
+
+    /// 始めた直後の「右を向いて」を一度だけ声で言ったか。
+    private var navFacingSpoken = false
+
+    /// 案内中の向き。地図を「いま向いている方が上」に回し、進む向きとの差を帯に出す。
+    /// 向いている方は磁石（無ければ歩いている向き）。どちらも無いときは道の向きを上にし、
+    /// 差は出さない（分からない向きを言わない）。
+    private func updateNavFacing() {
+        guard let route = navRoute, let me = locations.last else { return }
+        let target = Self.pointAhead(on: route.polyline, from: me, metres: 25)
+        let pathBearing = target.map { Self.bearing(from: me.coordinate, to: $0.coordinate) }
+        var facingHeading: Double?
+        if let h = locations.heading?.trueHeading, h >= 0 {
+            facingHeading = h
+        } else if me.course >= 0, me.speed > 0.4 {
+            facingHeading = me.course
+        }
+        mapFloor?.navCamera(me: me, heading: facingHeading ?? pathBearing ?? 0)
+        guard let facingHeading, let pathBearing else {
+            navOverlay.setFacing(nil)
+            return
+        }
+        let diff = MeetMapViewController.angleDiff(pathBearing, facingHeading)
+        let wasAligned = navAligned
+        navAligned = abs(diff) <= 25
+        navOverlay.setFacing(diff)
+        if navAligned, !wasAligned, hapticsOn { impactGenerator.impactOccurred() }
+        if !navFacingSpoken {
+            navFacingSpoken = true
+            if !navAligned {
+                say(abs(diff) >= 135 ? "うしろを向いてから進みます" : diff > 0 ? "右を向いてから進みます" : "左を向いてから進みます")
+            }
+        }
+    }
+    private var navAligned = false
+
+    /// 道なりの線の上で、自分にいちばん近い点から metres だけ先の点。
+    private static func pointAhead(on line: MKPolyline, from me: CLLocation, metres: Double) -> CLLocation? {
+        let n = line.pointCount
+        guard n > 1 else { return nil }
+        let pts = line.points()
+        func loc(_ i: Int) -> CLLocation {
+            let c = pts[i].coordinate
+            return CLLocation(latitude: c.latitude, longitude: c.longitude)
+        }
+        var best = 0
+        var bestD = Double.greatestFiniteMagnitude
+        for i in 0..<n {
+            let d = me.distance(from: loc(i))
+            if d < bestD { bestD = d; best = i }
+        }
+        var acc = 0.0
+        var prev = loc(best)
+        var i = best + 1
+        while i < n {
+            let next = loc(i)
+            acc += prev.distance(from: next)
+            prev = next
+            if acc >= metres { return next }
+            i += 1
+        }
+        return prev.distance(from: me) > 3 ? prev : nil
     }
 
     private func say(_ text: String) {
@@ -5776,6 +5847,11 @@ final class MeetViewController: UIViewController {
             self?.startGuidance()
         }
         navOverlay.onEnd = { [weak self] in self?.endNavigation(arrived: false) }
+        navOverlay.onRecenter = { [weak self] in
+            self?.mapFloor?.resumeNavCamera()
+            self?.navOverlay.setRecenterVisible(false)
+            self?.updateNavFacing()
+        }
         navOverlay.isHidden = true
         homeScreen.addSubview(navOverlay)
         navOverlay.translatesAutoresizingMaskIntoConstraints = false
@@ -5828,6 +5904,7 @@ final class MeetViewController: UIViewController {
         // 指で動かされたら「戻す」を出す（こちらからは向きを直さない）。
         vc.onUserMoved = { [weak self] in self?.refreshDials() }
         vc.onSelectPlace = { [weak self] item in self?.presentPlace(item) }
+        vc.onNavPaused = { [weak self] in self?.navOverlay.setRecenterVisible(true) }
         mapFloor = vc
     }
 
