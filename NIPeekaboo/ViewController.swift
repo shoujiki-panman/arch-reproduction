@@ -1926,23 +1926,24 @@ final class MeetViewController: UIViewController {
         var items: [UIMenuElement] = []
 
         // ■ 自分
-        let rename = UIAction(title: "表示名を変更", image: UIImage(systemName: "person.crop.circle")) { [weak self] _ in
+        // 大きすぎた（本人 9/25「サイズでかい」）。題は短く、補足の2行目は付けない。
+        // 「自分」は iOS 標準の横並び（アイコン＋短い題を3つ）にする。
+        let rename = UIAction(title: Self.myDisplayName, image: UIImage(systemName: "person.crop.circle")) { [weak self] _ in
             self?.renameTapped()
         }
-        rename.subtitle = Self.myDisplayName
         // A new name rebuilds every connection, which would end a meet-up in progress.
         if requestSent || activeRequest != nil { rename.attributes = .disabled }
-        let face = UIAction(title: myFace == nil ? "相手に見せる写真を選ぶ" : "相手に見せる写真を変える",
-                            image: UIImage(systemName: "person.crop.square")) { [weak self] _ in
+        let face = UIAction(title: "写真", image: UIImage(systemName: "person.crop.square")) { [weak self] _ in
             self?.pickFace()
         }
-        face.subtitle = myFace == nil ? "写真1枚。小さくして相手に送ります" : "いまは写真にしています"
         var me: [UIMenuElement] = [rename, face]
         if myFace != nil {
-            me.append(UIAction(title: "写真をやめる", image: UIImage(systemName: "arrow.uturn.backward"),
+            me.append(UIAction(title: "写真なし", image: UIImage(systemName: "arrow.uturn.backward"),
                                attributes: .destructive) { [weak self] _ in self?.setFace(nil) })
         }
-        items.append(UIMenu(title: "自分", options: .displayInline, children: me))
+        let meMenu = UIMenu(title: "", options: .displayInline, children: me)
+        if #available(iOS 16.0, *) { meMenu.preferredElementSize = .medium }
+        items.append(meMenu)
 
         // ■ 共有中
         // 共有の期限。いまのグループがあればその場で変わり、無ければ次のリンクから。
@@ -1951,7 +1952,7 @@ final class MeetViewController: UIViewController {
             action.state = shareLimit == choice.seconds ? .on : .off
             return action
         }
-        let limitMenu = UIMenu(title: "共有の期限（\(shareLimitShort)）",
+        let limitMenu = UIMenu(title: "期限 \(shareLimitShort)",
                                image: UIImage(systemName: "clock"),
                                children: limits)
 
@@ -1983,10 +1984,11 @@ final class MeetViewController: UIViewController {
             share.append(UIAction(title: "共有をやめる", image: UIImage(systemName: "xmark.circle"),
                                   attributes: .destructive) { [weak self] _ in self?.finishMeet() })
             let others = current.approved.filter { $0 != current.myMember }.map { name(ofMember: $0) }
-            let who = others.isEmpty ? "参加を待っています" : others.joined(separator: "、")
-            let shareMenu = UIMenu(title: "共有中", image: UIImage(systemName: "location.circle"), children: share)
-            if #available(iOS 15.0, *) { shareMenu.subtitle = "\(who)・\(untilText(current.expires))" }
-            items.append(shareMenu)
+            let who = others.isEmpty ? "参加待ち" : others.joined(separator: "、")
+            // 誰と・いつまでは中の1行目に書く（外の行は1行で収める）。
+            let info = UIAction(title: "\(who)・\(untilText(current.expires))", attributes: .disabled) { _ in }
+            items.append(UIMenu(title: "共有中", image: UIImage(systemName: "location.circle"),
+                                children: [info] + share))
         } else {
             items.append(limitMenu)
         }
@@ -2005,20 +2007,13 @@ final class MeetViewController: UIViewController {
                 KnownFriends.forget(key: friend.key)
                 self?.refreshDials()
             })
-            let menu = UIMenu(title: friend.name, image: UIImage(systemName: "person.circle"), children: actions)
-            if #available(iOS 15.0, *) {
-                let f = DateFormatter()
-                f.dateFormat = "M/d"
-                menu.subtitle = "最後につないだ日 \(f.string(from: friend.lastMet))"
-            }
-            return menu
+            return UIMenu(title: friend.name, image: UIImage(systemName: "person.circle"), children: actions)
         }
         if friendItems.isEmpty {
             let none = UIAction(title: "まだいません", attributes: .disabled) { _ in }
-            none.subtitle = "一度リンクでつなぐと、次からリンク無しでつなげます"
             friendItems = [none]
         }
-        items.append(UIMenu(title: "友だち（\(friends.count)人）", image: UIImage(systemName: "person.2"),
+        items.append(UIMenu(title: "友だち \(friends.count)", image: UIImage(systemName: "person.2"),
                             children: friendItems))
 
         // ■ 知らせと先回り
@@ -2042,8 +2037,7 @@ final class MeetViewController: UIViewController {
             self?.locations.applyBackground()
         }
         background.state = NearbyAlert.runsInBackground ? .on : .off
-        background.subtitle = "位置を背景で使います（電池を使います）"
-        let nearMenu = UIMenu(title: "近くにいたら知らせる（\(NearbyAlert.text(NearbyAlert.metres))）",
+        let nearMenu = UIMenu(title: "近くの知らせ",
                               image: UIImage(systemName: "bell.badge"),
                               children: [toggle, background,
                                          UIMenu(title: "知らせる距離", options: .displayInline, children: distances)])
@@ -2053,8 +2047,7 @@ final class MeetViewController: UIViewController {
             self?.refreshDials()
         }
         proactive.state = Proactive.isOn ? .on : .off
-        proactive.subtitle = "相手が店の前・先に着きそう・待ち合わせ未定のとき"
-        items.append(UIMenu(title: "知らせ", options: .displayInline, children: [nearMenu, proactive]))
+        items.append(UIMenu(title: "", options: .displayInline, children: [nearMenu, proactive]))
 
         // ■ 設定
         let haptics = UIAction(title: hapticsOn ? "振動を止める" : "振動を使う",
@@ -2063,7 +2056,6 @@ final class MeetViewController: UIViewController {
             self.hapticsOn = !self.hapticsOn
             if !self.hapticsOn { self.stopProximityFeedback() }
         }
-        haptics.subtitle = "近づくほど速くなります"
 
         let demo = UIAction(title: isDemo ? "デモを終了" : "デモを見る",
                             image: UIImage(systemName: isDemo ? "stop.circle" : "play.circle")) { [weak self] _ in
