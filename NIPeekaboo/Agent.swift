@@ -399,6 +399,36 @@ final class OrbView: UIView {
     }
 }
 
+// MARK: - 最近頼んだこと
+
+/// 「AIに頼む」で最近頼んだ文。この端末の中だけに残す（新しい順・同じ文は1つ）。
+/// Appleマップの検索画面の「最近」と同じ考え方。
+enum AskHistory {
+    private static let key = "kokodayo.askHistory"
+    static let capacity = 8
+
+    static var items: [String] {
+        get { UserDefaults.standard.stringArray(forKey: key) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+
+    static func record(_ text: String) { items = adding(text, to: items) }
+    static func remove(_ text: String) { items = items.filter { $0 != text } }
+    static func clear() { items = [] }
+
+    /// 新しい文を先頭に。前にもあれば先頭へ移す。空白だけの文は足さない。あふれた古いものは落とす。
+    static func adding(_ text: String, to list: [String], capacity: Int = capacity) -> [String] {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return list }
+        return Array(([t] + list.filter { $0 != t }).prefix(capacity))
+    }
+
+    /// 見せる分。いま候補のボタンに出ている文は重ねて出さない。
+    static func shown(_ list: [String], excluding chips: [String], max: Int = 5) -> [String] {
+        Array(list.filter { !chips.contains($0) }.prefix(max))
+    }
+}
+
 // MARK: - 頼む画面
 
 /// 一文を打つ（声でもいい。キーボードのマイク）→ 手順が1行ずつ進む → 送る前に確認の札。
@@ -410,6 +440,7 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
     private let orb = OrbView()
     private let field = UITextField()
     private let chips = WrappingRow()
+    private let recents = UIStackView()
     private let modeLabel = UILabel()
     private let titleLabel = UILabel()
     private let steps = UIStackView()
@@ -494,11 +525,16 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         card.layer.borderColor = UIColor(red: 0.43, green: 0.36, blue: 1, alpha: 0.9).cgColor
         card.isHidden = true
 
-        let column = UIStackView(arrangedSubviews: [inputRow, modeLabel, chips, titleLabel, steps, card])
+        recents.axis = .vertical
+        recents.spacing = 0
+        reloadRecents()
+
+        let column = UIStackView(arrangedSubviews: [inputRow, modeLabel, chips, recents, titleLabel, steps, card])
         column.axis = .vertical
         column.spacing = 12
         column.setCustomSpacing(6, after: inputRow)
         column.setCustomSpacing(16, after: chips)
+        column.setCustomSpacing(16, after: recents)
         let scroll = UIScrollView()
         scroll.keyboardDismissMode = .interactive
         scroll.addSubview(column)
@@ -517,9 +553,15 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         ])
     }
 
+    /// キーボードは板と一緒に上がってくる（出きってからだと、打てるまで一拍おそい）。
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        if titleLabel.isHidden { field.becomeFirstResponder() }
+    }
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        if titleLabel.isHidden { field.becomeFirstResponder() }
+        if titleLabel.isHidden, !field.isFirstResponder { field.becomeFirstResponder() }
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
@@ -531,7 +573,67 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         let text = (field.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         field.resignFirstResponder()
+        AskHistory.record(text)
         onSubmit?(text)
+    }
+
+    // MARK: 最近頼んだこと
+
+    /// 見出し（右に「消去」）と、押せばもう一度頼める行。長押しで1つずつ消せる。
+    private func reloadRecents() {
+        recents.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let list = AskHistory.shown(AskHistory.items, excluding: suggestions)
+        recents.isHidden = list.isEmpty
+        guard !list.isEmpty else { return }
+
+        let header = UILabel()
+        header.font = Type.font(15, .semibold, .subheadline)
+        header.textColor = MeetPalette.secondary
+        header.text = "最近頼んだこと"
+        var clearConf = UIButton.Configuration.plain()
+        clearConf.title = "消去"
+        clearConf.baseForegroundColor = MeetPalette.action
+        clearConf.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 0)
+        let clear = UIButton(configuration: clearConf)
+        clear.addAction(UIAction { [weak self] _ in
+            AskHistory.clear()
+            self?.reloadRecents()
+        }, for: .touchUpInside)
+        let headerRow = UIStackView(arrangedSubviews: [header, clear])
+        headerRow.axis = .horizontal
+        headerRow.alignment = .center
+        recents.addArrangedSubview(headerRow)
+
+        for text in list {
+            var conf = UIButton.Configuration.plain()
+            conf.title = text
+            conf.image = UIImage(systemName: "clock.arrow.circlepath")
+            conf.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 15)
+            conf.imagePadding = 12
+            conf.baseForegroundColor = MeetPalette.primary
+            conf.imageColorTransformer = UIConfigurationColorTransformer { _ in MeetPalette.secondary }
+            conf.titleLineBreakMode = .byTruncatingTail
+            conf.contentInsets = NSDirectionalEdgeInsets(top: 11, leading: 0, bottom: 11, trailing: 0)
+            conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                var a = attrs
+                a.font = Type.font(16, .regular, .body)
+                return a
+            }
+            let row = UIButton(configuration: conf)
+            row.contentHorizontalAlignment = .leading
+            row.accessibilityHint = "もう一度頼みます"
+            row.addAction(UIAction { [weak self] _ in
+                self?.field.text = text
+                self?.submit()
+            }, for: .touchUpInside)
+            row.menu = UIMenu(children: [
+                UIAction(title: "履歴から消す", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
+                    AskHistory.remove(text)
+                    self?.reloadRecents()
+                },
+            ])
+            recents.addArrangedSubview(row)
+        }
     }
 
     // MARK: 進み具合
@@ -539,6 +641,7 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
     /// 新しく頼まれた。前の手順を消して、考え始める。
     func begin(_ text: String) {
         chips.isHidden = true
+        recents.isHidden = true
         titleLabel.isHidden = false
         titleLabel.text = text
         steps.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -631,6 +734,7 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         let i = addStep(text)
         finishStep(i, failed: !ok)
         chips.isHidden = false
+        reloadRecents()
     }
 
     private func hideCard() {
