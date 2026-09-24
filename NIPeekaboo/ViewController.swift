@@ -12,6 +12,7 @@ import ARKit
 import SceneKit
 import CoreLocation
 import MapKit
+import AVFoundation
 import NearbyInteraction
 import MultipeerConnectivity
 import simd
@@ -1338,6 +1339,15 @@ final class MeetViewController: UIViewController {
     /// 「探す」の全画面。相手のカードの「探す」から入り、×で地図へ戻る。
     private let findScreen = FindScreen()
     private var finding = false
+    /// 案内中の帯。経路の「案内開始」から入り、「終了」か相手のすぐそばで終わる。
+    private let navOverlay = NavigationOverlay()
+    private var navRoute: MKRoute?
+    /// いま目指している曲がり角（route.steps の番号）。
+    private var navStep = 0
+    /// その曲がり角を、もう声で言ったか（遠くで一度・手前でもう一度）。
+    private var navSpokenFar = false
+    private var navSpokenNear = false
+    private let speech = AVSpeechSynthesizer()
     /// 輪の中がいま「まわりを見る」かどうか。
     private var dialExplores = false
     /// 地図の上に浮かぶ小さい丸。左が「まわりを見る」、右が地図⇄カメラ。
@@ -2333,6 +2343,7 @@ final class MeetViewController: UIViewController {
             self?.pushToMap()
             // 相手が止まっていても、自分が歩けば距離は縮む。こちらの動きでも見直す。
             self?.updateNearbyAlert()
+            self?.stepNavigation()
         }
         locations.start()
         // 立ち止まっていても相手の画面が止まらないよう、定期的にも送る
@@ -2545,6 +2556,10 @@ final class MeetViewController: UIViewController {
         impactGenerator.impactOccurred()
         floor.fitRoute()
         let vc = RouteSheetViewController(route: route, name: partnerName)
+        vc.onStart = { [weak self, weak vc] in
+            vc?.dismiss(animated: true)
+            self?.startNavigation()
+        }
         if let sheet = vc.sheetPresentationController {
             sheet.detents = [.medium(), .large()]
             sheet.prefersGrabberVisible = true
@@ -2552,6 +2567,111 @@ final class MeetViewController: UIViewController {
             sheet.largestUndimmedDetentIdentifier = .medium
         }
         presentOnTop(vc)
+    }
+
+    // MARK: - 案内（経路の「案内開始」から）
+
+    private func startNavigation() {
+        guard let floor = mapFloor, let route = floor.currentRoute else { return }
+        navigationMode(true)
+        adoptRoute(route)
+        floor.startFollowing()
+        locations.setPrecise(true)
+        UIApplication.shared.isIdleTimerDisabled = true
+        stepNavigation()
+    }
+
+    private func endNavigation(arrived: Bool) {
+        guard navRoute != nil else { return }
+        navRoute = nil
+        speech.stopSpeaking(at: .immediate)
+        navigationMode(false)
+        mapFloor?.stopFollowing()
+        locations.setPrecise(false)
+        refreshDials()
+        if arrived {
+            flash("\(partnerName)のすぐそばです。最後は「探す」で")
+            if hapticsOn { arrivalGenerator.notificationOccurred(.success) }
+        }
+    }
+
+    /// 案内中は、地図の上を帯2本だけにする（板も丸ボタンも引っ込める）。
+    private func navigationMode(_ on: Bool) {
+        navOverlay.isHidden = !on
+        homeSheet.alpha = on ? 0 : 1
+        homeSheet.isUserInteractionEnabled = !on
+        floatingButtons.alpha = on ? 0 : 1
+        floatingButtons.isUserInteractionEnabled = !on
+        demoButton.alpha = on ? 0 : 1
+    }
+
+    /// 経路を使い始める。相手が動いて経路が引き直されたときも、ここを通る。
+    /// 目指す曲がり角は「まだ過ぎていない、いちばん近いもの」から選び直す。
+    private func adoptRoute(_ route: MKRoute) {
+        navRoute = route
+        navSpokenFar = false
+        navSpokenNear = false
+        let steps = route.steps
+        guard let me = locations.last else { navStep = min(1, steps.count - 1); return }
+        let next = steps.indices.dropFirst().min { a, b in
+            Self.stepStart(steps[a]).distance(from: me) < Self.stepStart(steps[b]).distance(from: me)
+        } ?? 0
+        navStep = next
+    }
+
+    private static func stepStart(_ step: MKRoute.Step) -> CLLocation {
+        let c = step.polyline.points()[0].coordinate
+        return CLLocation(latitude: c.latitude, longitude: c.longitude)
+    }
+
+    /// 位置が届くたびに、次の曲がり角までの距離を見て、帯と声を進める。
+    private func stepNavigation() {
+        guard navRoute != nil, let me = locations.last else { return }
+        // 相手が動くと経路が引き直される。新しい経路に乗り換える。
+        if let fresh = mapFloor?.currentRoute, fresh !== navRoute { adoptRoute(fresh) }
+        guard let route = navRoute else { return }
+        // 相手のすぐそばまで来たら案内は終わり。最後の数mは「探す」の仕事。
+        if let metres = currentMetres(), metres < 25 {
+            endNavigation(arrived: true)
+            return
+        }
+        let steps = route.steps
+        // 曲がり角の15m以内に入ったら、それは済んだとみなして次へ。
+        while navStep < steps.count - 1, Self.stepStart(steps[navStep]).distance(from: me) < 15 {
+            navStep += 1
+            navSpokenFar = false
+            navSpokenNear = false
+            if hapticsOn { impactGenerator.impactOccurred() }
+        }
+        let step = steps[navStep]
+        let toTurn = Self.stepStart(step).distance(from: me)
+        let instruction = step.instructions.isEmpty ? "\(partnerName)のいる場所へ" : step.instructions
+        // 声は2回だけ。見えたとき（遠ければ）と、30m手前。
+        if !navSpokenFar {
+            navSpokenFar = true
+            if toTurn > 40 { say("\(Self.spokenDistance(toTurn))先、\(instruction)") } else { navSpokenNear = true; say(instruction) }
+        } else if !navSpokenNear, toTurn < 30 {
+            navSpokenNear = true
+            say("まもなく、\(instruction)")
+        }
+        let remaining = currentMetres() ?? route.distance
+        navOverlay.update(turn: instruction, distance: NearbyAlert.text(toTurn) + "先",
+                          remaining: NearbyAlert.walkText(remaining).replacingOccurrences(of: "歩いて", with: "あと"),
+                          detail: "\(partnerName)まで \(NearbyAlert.text(remaining))・相手が動くと道も変わります")
+    }
+
+    private func say(_ text: String) {
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "ja-JP")
+        speech.stopSpeaking(at: .word)
+        speech.speak(utterance)
+    }
+
+    /// 声で読む距離。「230メートル」より「200メートル」のほうが聞き取りやすい。
+    private static func spokenDistance(_ metres: Double) -> String {
+        if metres >= 1000 { return String(format: "%.1fキロ", metres / 1000) }
+        let rounded = metres >= 100 ? (metres / 50).rounded() * 50 : (metres / 10).rounded() * 10
+        return "\(Int(rounded))メートル"
     }
 
     /// 下の板の中身を、いまの状態から組む。
@@ -4084,6 +4204,7 @@ final class MeetViewController: UIViewController {
         // 上の大きな見出し、縦に積んだボタン、下の状態の行は出さない。
         let sheetUp = locations.last != nil
         homeSheet.isHidden = !sheetUp
+        if navRoute != nil { stepNavigation() }
         if sheetUp {
             actionStack.isHidden = true
             finderHeadline.isHidden = true
@@ -5210,6 +5331,17 @@ final class MeetViewController: UIViewController {
             self?.closeFind()
             self?.startGuidance()
         }
+        navOverlay.onEnd = { [weak self] in self?.endNavigation(arrived: false) }
+        navOverlay.isHidden = true
+        homeScreen.addSubview(navOverlay)
+        navOverlay.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            navOverlay.topAnchor.constraint(equalTo: homeScreen.topAnchor),
+            navOverlay.bottomAnchor.constraint(equalTo: homeScreen.bottomAnchor),
+            navOverlay.leadingAnchor.constraint(equalTo: homeScreen.leadingAnchor),
+            navOverlay.trailingAnchor.constraint(equalTo: homeScreen.trailingAnchor),
+        ])
+
         findScreen.isHidden = true
         view.addSubview(findScreen)
         findScreen.translatesAutoresizingMaskIntoConstraints = false

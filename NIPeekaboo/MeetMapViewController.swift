@@ -394,6 +394,19 @@ final class MeetMapViewController: UIViewController {
         }
     }
 
+    /// 案内中。地図を自分の位置と向きに合わせて付いていかせる（地図アプリの案内と同じ）。
+    func startFollowing() {
+        userMoved = true
+        fitted = true
+        map.setUserTrackingMode(.followWithHeading, animated: true)
+    }
+
+    /// 案内をやめたら、2人が入る見え方に戻す。
+    func stopFollowing() {
+        map.setUserTrackingMode(.none, animated: false)
+        refit()
+    }
+
     /// 次の更新で経路を引き直す（まだ取れていないときに押された）。
     func refreshRouteSoon() { routeAt = .distantPast }
 

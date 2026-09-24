@@ -482,6 +482,8 @@ final class RouteSheetViewController: UIViewController {
 
     private let route: MKRoute
     private let name: String
+    /// 「案内開始」が押された。
+    var onStart: (() -> Void)?
 
     init(route: MKRoute, name: String) {
         self.route = route
@@ -520,12 +522,31 @@ final class RouteSheetViewController: UIViewController {
             steps.addArrangedSubview(none)
         }
 
+        // 地図アプリと同じく、一覧の上にいちばん大きな「開始」を置く。
+        var startConf = UIButton.Configuration.filled()
+        startConf.title = "案内開始"
+        startConf.image = UIImage(systemName: "location.north.fill")
+        startConf.imagePadding = 8
+        startConf.baseBackgroundColor = MeetPalette.action
+        startConf.baseForegroundColor = MeetPalette.background
+        startConf.cornerStyle = .capsule
+        startConf.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 20, bottom: 14, trailing: 20)
+        startConf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = Type.font(17, .bold, .headline)
+            return a
+        }
+        let start = UIButton(type: .system)
+        start.configuration = startConf
+        start.addAction(UIAction { [weak self] _ in self?.onStart?() }, for: .touchUpInside)
+
         let scroll = UIScrollView()
         scroll.alwaysBounceVertical = true
-        let column = UIStackView(arrangedSubviews: [title, sub, steps])
+        let column = UIStackView(arrangedSubviews: [title, sub, start, steps])
         column.axis = .vertical
         column.spacing = 4
-        column.setCustomSpacing(16, after: sub)
+        column.setCustomSpacing(14, after: sub)
+        column.setCustomSpacing(10, after: start)
         scroll.addSubview(column)
         view.addSubview(scroll)
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -572,10 +593,127 @@ final class RouteSheetViewController: UIViewController {
     }
 
     /// 曲がる向きは案内文から拾う（MapKitは向きを別に渡してくれない）。
-    private static func symbol(for text: String) -> String {
+    static func symbol(for text: String) -> String {
         if text.contains("右") { return "arrow.turn.up.right" }
         if text.contains("左") { return "arrow.turn.up.left" }
         if text.contains("到着") || text.contains("目的地") { return "mappin.circle.fill" }
         return "arrow.up"
+    }
+}
+
+// MARK: - 案内中の帯
+
+/// 案内中の画面。上に次の曲がり角、下に残りと「終了」。
+/// Googleマップ・Appleマップの案内と同じ置き方にする。
+final class NavigationOverlay: UIView {
+
+    /// 帯のないところは地図に指を渡す（地図を動かして先を見られるように）。
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self ? nil : hit
+    }
+
+
+    var onEnd: (() -> Void)?
+
+    private let banner = UIView()
+    private let turnIcon = UIImageView()
+    private let turnDistance = UILabel()
+    private let turnText = UILabel()
+    private let bar = UIView()
+    private let remain = UILabel()
+    private let remainDetail = UILabel()
+    private let endButton = UIButton(type: .system)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        banner.backgroundColor = FindScreen.ink
+        banner.layer.cornerRadius = 20
+        banner.layer.cornerCurve = .continuous
+        turnIcon.tintColor = .white
+        turnIcon.contentMode = .scaleAspectFit
+        turnDistance.font = Type.font(26, .bold, .title2)
+        turnDistance.textColor = .white
+        turnText.font = Type.font(17, .semibold, .body)
+        turnText.textColor = UIColor(white: 1, alpha: 0.9)
+        turnText.numberOfLines = 2
+
+        bar.backgroundColor = MeetPalette.surface
+        bar.layer.cornerRadius = 22
+        bar.layer.cornerCurve = .continuous
+        bar.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        remain.font = Type.font(24, .bold, .title2)
+        remain.textColor = MeetPalette.primary
+        remainDetail.font = Type.caption
+        remainDetail.textColor = MeetPalette.secondary
+
+        var endConf = UIButton.Configuration.filled()
+        endConf.title = "終了"
+        endConf.baseBackgroundColor = UIColor.systemRed
+        endConf.baseForegroundColor = .white
+        endConf.cornerStyle = .capsule
+        endConf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 22, bottom: 12, trailing: 22)
+        endConf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = Type.font(17, .bold, .headline)
+            return a
+        }
+        endButton.configuration = endConf
+        endButton.addAction(UIAction { [weak self] _ in self?.onEnd?() }, for: .touchUpInside)
+
+        let turnTexts = UIStackView(arrangedSubviews: [turnDistance, turnText])
+        turnTexts.axis = .vertical
+        turnTexts.spacing = 2
+        let turnRow = UIStackView(arrangedSubviews: [turnIcon, turnTexts])
+        turnRow.axis = .horizontal
+        turnRow.alignment = .center
+        turnRow.spacing = 14
+
+        let remainTexts = UIStackView(arrangedSubviews: [remain, remainDetail])
+        remainTexts.axis = .vertical
+        remainTexts.spacing = 2
+        let barRow = UIStackView(arrangedSubviews: [remainTexts, endButton])
+        barRow.axis = .horizontal
+        barRow.alignment = .center
+        barRow.spacing = 12
+
+        for (parent, child) in [(banner, turnRow), (bar, barRow)] as [(UIView, UIView)] {
+            parent.addSubview(child)
+            child.translatesAutoresizingMaskIntoConstraints = false
+        }
+        for v in [banner, bar] {
+            addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+        let safe = safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            banner.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
+            banner.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            banner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            turnRow.topAnchor.constraint(equalTo: banner.topAnchor, constant: 16),
+            turnRow.bottomAnchor.constraint(equalTo: banner.bottomAnchor, constant: -16),
+            turnRow.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: 18),
+            turnRow.trailingAnchor.constraint(equalTo: banner.trailingAnchor, constant: -18),
+            turnIcon.widthAnchor.constraint(equalToConstant: 44),
+            turnIcon.heightAnchor.constraint(equalToConstant: 44),
+
+            bar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: trailingAnchor),
+            bar.bottomAnchor.constraint(equalTo: bottomAnchor),
+            barRow.topAnchor.constraint(equalTo: bar.topAnchor, constant: 18),
+            barRow.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 22),
+            barRow.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -18),
+            barRow.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -8),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func update(turn: String, distance: String, remaining: String, detail: String) {
+        turnIcon.image = UIImage(systemName: RouteSheetViewController.symbol(for: turn),
+                                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 34, weight: .bold))
+        turnDistance.text = distance
+        turnText.text = turn
+        remain.text = remaining
+        remainDetail.text = detail
     }
 }

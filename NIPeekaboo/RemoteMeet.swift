@@ -213,6 +213,12 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
         manager.activityType = .fitness
     }
 
+    /// 案内中だけ細かく取る（曲がり角の手前で知らせるため）。ふだんは10m単位で十分。
+    func setPrecise(_ on: Bool) {
+        manager.desiredAccuracy = on ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
+        manager.distanceFilter = on ? 2 : 5
+    }
+
     /// 共有しているあいだだけ true。画面を閉じても位置を取り続けるのはこの間だけ。
     private var sharing = false
 
