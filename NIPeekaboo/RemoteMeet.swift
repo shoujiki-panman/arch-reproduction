@@ -213,16 +213,32 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
         manager.activityType = .fitness
     }
 
+    /// 共有しているあいだだけ true。画面を閉じても位置を取り続けるのはこの間だけ。
+    private var sharing = false
+
+    /// 共有を始める。設定しだいで、画面を閉じていても取り続ける。
     func start() {
+        sharing = true
         if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
         applyBackground()
         manager.startUpdatingLocation()
     }
 
+    /// 画面を開いているあいだだけ、自分の場所を取る（誰とも共有しない）。
+    /// 相手がいない最初の画面でも、自分の地図と「まわりを見る」を使えるようにするため。
+    /// 背景での取得は切るので、閉じればiOSが止める。どこにも送らない。
+    func startForeground() {
+        sharing = false
+        if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
+        manager.allowsBackgroundLocationUpdates = false
+        manager.startUpdatingLocation()
+    }
+
+    /// 共有をやめる。背景での取得を切り、画面を開いているあいだだけに戻す。
     func stop() {
         // 先に背景での更新を切る。切らずに止めると青い表示が残ることがある。
+        sharing = false
         manager.allowsBackgroundLocationUpdates = false
-        manager.stopUpdatingLocation()
         stopHeading()
     }
 
@@ -254,7 +270,7 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
             .contains("location") ?? false
         let authorised = manager.authorizationStatus == .authorizedWhenInUse
             || manager.authorizationStatus == .authorizedAlways
-        manager.allowsBackgroundLocationUpdates = declared && authorised && NearbyAlert.runsInBackground
+        manager.allowsBackgroundLocationUpdates = sharing && declared && authorised && NearbyAlert.runsInBackground
         // 止まっている時に更新が勝手に止まると、相手の画面から自分が消える。
         manager.pausesLocationUpdatesAutomatically = false
     }

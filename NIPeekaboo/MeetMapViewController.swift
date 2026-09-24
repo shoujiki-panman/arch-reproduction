@@ -99,6 +99,8 @@ final class MeetMapViewController: UIViewController {
     private var routeFrom: CLLocationCoordinate2D?
     private var routeMinutes: Int?
     private var routeMetres: Double?
+    /// いちばん新しい徒歩の経路。曲がり角の一覧を出すために持っておく。
+    private(set) var currentRoute: MKRoute?
 
     /// 画面の下地として埋め込むときは true。自前の帯と閉じるボタンを出さない
     /// （数字と操作は上に乗るホーム画面の側が持つ）。
@@ -214,27 +216,19 @@ final class MeetMapViewController: UIViewController {
 
     /// 印（写真）を貼り替える。地図の点や向きはそのまま。
     private func refreshFaces() {
-        if let peer, let view = map.view(for: peer) { applyFace(peerFace, to: view, fallback: "figure.walk") }
-        if let view = map.view(for: map.userLocation) { applyFace(myFace, to: view, fallback: "figure.stand") }
+        if let peer, let view = map.view(for: peer) { applyFace(peerFace, to: view, name: peerName) }
+        if let view = map.view(for: map.userLocation) { applyFace(myFace, to: view, name: myName) }
     }
 
     /// 丸の中身を写真にする。写真が無ければこれまでの人の形。
-    private func applyFace(_ image: UIImage?, to view: MKAnnotationView, fallback symbol: String) {
+    /// 丸の中身。写真があれば写真、無ければ名前の頭文字（「探す」やLife360と同じ）。
+    /// 以前は人の形の記号で、2人とも同じ絵になり、どちらが誰か分からなかった。
+    private func applyFace(_ image: UIImage?, to view: MKAnnotationView, name: String) {
         guard let dot = view.subviews.first(where: { $0.tag == Self.dotTag }) else { return }
         dot.subviews.forEach { $0.removeFromSuperview() }
-        let inner = UIImageView(frame: dot.bounds)
-        if let image {
-            inner.image = image
-            inner.contentMode = .scaleAspectFill
-            inner.layer.cornerRadius = dot.bounds.width / 2
-            inner.clipsToBounds = true
-        } else {
-            inner.image = UIImage(systemName: symbol)
-            inner.tintColor = MeetPalette.background
-            inner.contentMode = .scaleAspectFit
-            inner.frame = dot.bounds.insetBy(dx: dot.bounds.width * 0.23, dy: dot.bounds.width * 0.23)
-        }
-        dot.addSubview(inner)
+        let face = FaceView(frame: dot.bounds.insetBy(dx: 3, dy: 3))
+        face.set(name: name, face: image)
+        dot.addSubview(face)
     }
 
     private static let dotTag = 8802
@@ -361,6 +355,7 @@ final class MeetMapViewController: UIViewController {
         MKDirections(request: request).calculate { [weak self] response, _ in
             guard let self, let route = response?.routes.first else { return }
             DispatchQueue.main.async {
+                self.currentRoute = route
                 self.routeMinutes = max(1, Int((route.expectedTravelTime / 60).rounded()))
                 self.routeMetres = route.distance
                 if let line = self.line { self.map.removeOverlay(line) }
@@ -397,6 +392,25 @@ final class MeetMapViewController: UIViewController {
             number.text = "直線で \(straight)"
             detail.text = "道なりを調べています"
         }
+    }
+
+    /// 次の更新で経路を引き直す（まだ取れていないときに押された）。
+    func refreshRouteSoon() { routeAt = .distantPast }
+
+    /// 経路の線が全部入るように見せる。下半分は一覧が乗るので広く空ける。
+    /// 自分で動かしたのと同じ扱いにして、こちらからは向きを戻さない（戻すのは矢印）。
+    func fitRoute() {
+        guard let route = currentRoute else { return }
+        let flat = MKMapCamera(lookingAtCenter: map.centerCoordinate,
+                               fromDistance: map.camera.centerCoordinateDistance,
+                               pitch: 0, heading: 0)
+        map.setCamera(flat, animated: false)
+        map.setVisibleMapRect(route.polyline.boundingMapRect,
+                              edgePadding: UIEdgeInsets(top: 130, left: 50, bottom: 440, right: 50),
+                              animated: true)
+        fitted = true
+        userMoved = true
+        onUserMoved?()
     }
 
     /// 2人（と目印）が画面に入っているか。端に寄った時点で外に出たとみなす。
@@ -495,7 +509,7 @@ extension MeetMapViewController: MKMapViewDelegate {
             dot.layer.borderColor = UIColor.white.cgColor
             dot.clipsToBounds = true
             view.addSubview(dot)
-            applyFace(myFace, to: view, fallback: "figure.stand")
+            applyFace(myFace, to: view, name: myName)
             attachCard(to: view, name: myName, mood: myMood)
             return view
         }
@@ -551,7 +565,7 @@ extension MeetMapViewController: MKMapViewDelegate {
         view.layer.shadowOpacity = 0.4
         view.layer.shadowRadius = 6
         view.layer.shadowOffset = CGSize(width: 0, height: 3)
-        applyFace(peerFace, to: view, fallback: "figure.walk")
+        applyFace(peerFace, to: view, name: peerName)
 
         attachCard(to: view, name: peerName, mood: peerMood)
         return view
