@@ -232,6 +232,80 @@ struct AskPlanAI {
 }
 #endif
 
+// MARK: - 先回り（頼まなくても提案する）
+//
+// Muse の「頼まなくても状況を見て提案し、決めるのは人」の形（本人 9/25「3も一緒に」）。
+// 何を出すかは観測できる事実だけで決める純粋な関数。AIには判断させない
+// （小さいモデルに「状況を判断して」は筋が悪い。Jevで測った教訓）。
+
+struct Suggestion: Equatable {
+    enum Kind: String { case errandStore, earlyArrival, decideMeet }
+    var kind: Kind
+    var title: String
+    var detail: String
+    var primary: String
+}
+
+struct ProactiveState {
+    var partner: String
+    var connected: Bool
+    var me: CLLocation?
+    var peer: CLLocation?
+    /// 相手の居場所が何秒前のものか。古ければ何も言わない。
+    var peerAge: TimeInterval
+    /// 相手のそばの店と、相手からの距離（m）。
+    var store: (name: String, metres: Double)?
+    var errandActive: Bool
+    var pin: (name: String, coordinate: CLLocationCoordinate2D)?
+    /// 電波が届くほど近い（もう「探す」の出番。提案は黙る）。
+    var radioNear: Bool
+}
+
+enum Proactive {
+    private static let key = "kokodayo.proactive"
+
+    /// ⋯ の「先回りの提案」。はじめは入。
+    static var isOn: Bool {
+        get { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+
+    /// 歩いて何分か。道は直線より長いので1.25倍、分速80m（地図の画面と同じ値）。
+    static func walkMinutes(_ metres: Double) -> Int { max(1, Int((metres * 1.25 / 80).rounded())) }
+
+    /// いま出す提案を1つ。上から順に、当てはまった最初のもの。
+    static func decide(_ s: ProactiveState) -> Suggestion? {
+        guard s.connected, let me = s.me, let peer = s.peer, s.peerAge < 180, !s.radioNear else { return nil }
+        // ① 相手が店の前（60m以内）で、おつかいを頼んでいない
+        if !s.errandActive, let store = s.store, store.metres <= 60 {
+            return Suggestion(kind: .errandStore,
+                              title: "\(s.partner)がいま「\(store.name)」の前です",
+                              detail: "ついでに何か頼みますか？", primary: "頼む")
+        }
+        // ② 待ち合わせ場所に、自分が8分以上先に着きそう
+        if let pin = s.pin {
+            let spot = CLLocation(latitude: pin.coordinate.latitude, longitude: pin.coordinate.longitude)
+            let mine = walkMinutes(me.distance(from: spot))
+            let theirs = walkMinutes(peer.distance(from: spot))
+            if theirs - mine >= 8, mine <= 30 {
+                return Suggestion(kind: .earlyArrival,
+                                  title: "あなたが\(theirs - mine)分ほど先に着きそうです",
+                                  detail: "\(pin.name)まで あなた約\(mine)分・\(s.partner)約\(theirs)分。まわりで待てる場所を見ますか？",
+                                  primary: "まわりを見る")
+            }
+        }
+        // ③ 1.5km以内まで来たのに、どこで会うか決まっていない
+        let apart = me.distance(from: peer)
+        if s.pin == nil, apart <= 1_500, apart >= 200 {
+            return Suggestion(kind: .decideMeet,
+                              title: "\(s.partner)まで あと\(NearbyAlert.text(apart))です",
+                              detail: "どこで会うか決めておきますか？（2人の真ん中から探します）",
+                              primary: "決める")
+        }
+        return nil
+    }
+}
+
 // MARK: - 場所の名前から、その場所を1つ決める
 
 /// 「ラゾーナ」で探すと、地図の検索は中のお店を25件返し、施設そのもの（ラゾーナ川崎

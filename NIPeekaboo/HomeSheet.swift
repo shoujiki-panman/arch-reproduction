@@ -117,6 +117,10 @@ final class HomeSheetView: UIView {
     var onSearch: (() -> Void)?
     var onExplore: (() -> Void)?
     var onAsk: (() -> Void)?
+    /// 先回りの提案。あるときだけ、板のいちばん上に出す。
+    var suggestion: Suggestion?
+    var onSuggestion: (() -> Void)?
+    var onSuggestionDismiss: (() -> Void)?
 
     private let stack = UIStackView()
     private let grabber = UIView()
@@ -174,6 +178,7 @@ final class HomeSheetView: UIView {
         self.mode = mode
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         more.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        if let suggestion { stack.addArrangedSubview(suggestionRow(suggestion)) }
         // いちばん上は検索（Appleマップ・Googleマップと同じ）。つないでいなくても使える。
         stack.addArrangedSubview(searchRow())
         switch mode {
@@ -307,6 +312,59 @@ final class HomeSheetView: UIView {
             button.addAction(UIAction { _ in action?() }, for: .touchUpInside)
             row.addArrangedSubview(button)
         }
+        return row
+    }
+
+    /// 先回りの提案の行。✨・一言・理由、「頼む」と「いい」。
+    private func suggestionRow(_ s: Suggestion) -> UIView {
+        let icon = UIImageView(image: UIImage(systemName: "sparkles"))
+        icon.tintColor = .systemPurple
+        icon.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        let title = UILabel()
+        title.font = Type.font(15, .bold, .headline)
+        title.textColor = MeetPalette.primary
+        title.numberOfLines = 2
+        title.text = s.title
+        let detail = UILabel()
+        detail.font = Type.caption
+        detail.textColor = MeetPalette.secondary
+        detail.numberOfLines = 3
+        detail.text = s.detail
+
+        var go = UIButton.Configuration.filled()
+        go.title = s.primary
+        go.baseBackgroundColor = MeetPalette.action
+        go.baseForegroundColor = MeetPalette.onAction
+        go.cornerStyle = .capsule
+        go.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16)
+        let goButton = UIButton(type: .system)
+        goButton.configuration = go
+        goButton.addAction(UIAction { [weak self] _ in self?.onSuggestion?() }, for: .touchUpInside)
+        var no = UIButton.Configuration.plain()
+        no.title = "いい"
+        no.baseForegroundColor = MeetPalette.secondary
+        let noButton = UIButton(type: .system)
+        noButton.configuration = no
+        noButton.addAction(UIAction { [weak self] _ in self?.onSuggestionDismiss?() }, for: .touchUpInside)
+        let buttons = UIStackView(arrangedSubviews: [goButton, noButton, UIView()])
+        buttons.axis = .horizontal
+        buttons.spacing = 6
+
+        let texts = UIStackView(arrangedSubviews: [title, detail, buttons])
+        texts.axis = .vertical
+        texts.spacing = 3
+        texts.setCustomSpacing(8, after: detail)
+        let row = UIStackView(arrangedSubviews: [icon, texts])
+        row.axis = .horizontal
+        row.alignment = .top
+        row.spacing = 10
+        row.isLayoutMarginsRelativeArrangement = true
+        row.layoutMargins = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        row.backgroundColor = MeetPalette.raised
+        row.layer.cornerRadius = 16
+        row.layer.borderWidth = 1
+        row.layer.borderColor = UIColor.systemPurple.withAlphaComponent(0.6).cgColor
         return row
     }
 

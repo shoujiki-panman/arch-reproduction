@@ -1919,72 +1919,109 @@ final class MeetViewController: UIViewController {
     /// 「…」の中身。歩きながら押す道具なので、上に出すのは4つまで。
     /// いま相手にできること（様子・おつかい）と、見る場所（地図・カメラ）だけを上に置き、
     /// 設定はまとめて下に畳む。12行あったものを5行にした。
+    /// 右上の ⋯ 。Googleマップの右上（自分のアイコン）と同じく「自分のこと・位置の共有・
+    /// 設定」だけを置く。操作（地図・カメラ・様子・おつかい・招待）は地図と下の板にあるので
+    /// ここには並べない（本人 9/25「機能も重複があるから」）。
     private func moreMenuItems() -> [UIMenuElement] {
-        var actions: [UIMenuElement] = []
+        var items: [UIMenuElement] = []
 
-        // ① いま見る場所。近いときはカメラ、遠いときは地図しか意味がない。
-        if theirFix != nil {
-            actions.append(UIAction(title: "地図で見る", image: UIImage(systemName: "map")) { [weak self] _ in
-                self?.openMap()
-            })
-        }
-        if activePeerID != nil, latestDistance != nil, supportsUWB {
-            // Camera assistance is the only way a 16 Pro gives a direction
-            // (supportsDirectionMeasurement=false).
-            actions.append(UIAction(title: "カメラで見る", image: UIImage(systemName: "camera.viewfinder")) { [weak self] _ in
-                self?.startGuidance()
-            })
-        }
-
-        // ② いま相手にできること。
-        if group != nil {
-            let mood = UIAction(title: "いまの様子を伝える", image: UIImage(systemName: "text.bubble")) { [weak self] _ in
-                self?.askMood()
-            }
-            mood.subtitle = myMood ?? "相手の地図に一言で出ます"
-            actions.append(mood)
-        }
-        if group != nil, myErrand == nil {
-            // 店が見つかっていなくても頼めるようにしておく（小さな店は地図に無いことがある）。
-            let errand = UIAction(title: sentErrand == nil ? "おつかいを頼む" : "頼んだリストを見る",
-                                  image: UIImage(systemName: "cart")) { [weak self] _ in
-                self?.errandTapped()
-            }
-            errand.subtitle = peerStore.map { "\(partnerName)は\($0.name)のそば" } ?? "店は見つかっていません"
-            actions.append(errand)
-        }
-
-        if group?.isHost == true {
-            let invite = UIAction(title: "招待リンクを送る",
-                                  image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in
-                self?.callPartnerTapped()
-            }
-            invite.subtitle = "もう1人に渡すとき"
-            actions.append(invite)
-        }
-
-        actions.append(UIMenu(title: "設定", image: UIImage(systemName: "gearshape"),
-                              children: settingsMenuItems()))
-        return actions
-    }
-
-    /// 設定。一度決めたら当分さわらないものだけ。
-    private func settingsMenuItems() -> [UIMenuElement] {
+        // ■ 自分
         let rename = UIAction(title: "表示名を変更", image: UIImage(systemName: "person.crop.circle")) { [weak self] _ in
             self?.renameTapped()
         }
         rename.subtitle = Self.myDisplayName
         // A new name rebuilds every connection, which would end a meet-up in progress.
         if requestSent || activeRequest != nil { rename.attributes = .disabled }
-
-        let haptics = UIAction(title: hapticsOn ? "振動を止める" : "振動を使う",
-                               image: UIImage(systemName: hapticsOn ? "iphone.slash" : "iphone.radiowaves.left.and.right")) { [weak self] _ in
-            guard let self else { return }
-            self.hapticsOn = !self.hapticsOn
-            if !self.hapticsOn { self.stopProximityFeedback() }
+        let face = UIAction(title: myFace == nil ? "相手に見せる写真を選ぶ" : "相手に見せる写真を変える",
+                            image: UIImage(systemName: "person.crop.square")) { [weak self] _ in
+            self?.pickFace()
         }
-        haptics.subtitle = "近づくほど速くなります"
+        face.subtitle = myFace == nil ? "写真1枚。小さくして相手に送ります" : "いまは写真にしています"
+        var me: [UIMenuElement] = [rename, face]
+        if myFace != nil {
+            me.append(UIAction(title: "写真をやめる", image: UIImage(systemName: "arrow.uturn.backward"),
+                               attributes: .destructive) { [weak self] _ in self?.setFace(nil) })
+        }
+        items.append(UIMenu(title: "自分", options: .displayInline, children: me))
 
+        // ■ 共有中
+        // 共有の期限。いまのグループがあればその場で変わり、無ければ次のリンクから。
+        let limits = Self.limitChoices.map { choice in
+            let action = UIAction(title: choice.label) { [weak self] _ in self?.setShareLimit(choice.seconds) }
+            action.state = shareLimit == choice.seconds ? .on : .off
+            return action
+        }
+        let limitMenu = UIMenu(title: "共有の期限（\(shareLimitShort)）",
+                               image: UIImage(systemName: "clock"),
+                               children: limits)
+
+        if let current = group {
+            var share: [UIMenuElement] = [limitMenu]
+            // One person at a time, without ending it for everyone.
+            let people = current.approved.filter { $0 != current.myMember }.map { member in
+                UIAction(title: "\(name(ofMember: member))（\(Badge.of(member))）",
+                         image: UIImage(systemName: "person.crop.circle.badge.minus"),
+                         attributes: .destructive) { [weak self] _ in self?.stopSharing(with: member) }
+            }
+            if !people.isEmpty {
+                share.append(UIMenu(title: current.isHost ? "グループから外す" : "この人との共有をやめる",
+                                    image: UIImage(systemName: "person.crop.circle.badge.minus"),
+                                    children: people))
+            }
+            // ホストだけができる、相手への伝え方2つ。頻度が低いのでここに置く。
+            if current.isHost {
+                let spot = UIAction(title: "いる場所を一言で伝える", image: UIImage(systemName: "mappin.and.ellipse")) { [weak self] _ in
+                    self?.askSpot()
+                }
+                spot.subtitle = current.spot ?? "相手の画面に一言で出ます"
+                let card = UIAction(title: "場所を画像で送る", image: UIImage(systemName: "photo")) { [weak self] _ in
+                    self?.shareSpotCard()
+                }
+                card.subtitle = "アプリがない人にも"
+                share.append(contentsOf: [spot, card])
+            }
+            share.append(UIAction(title: "共有をやめる", image: UIImage(systemName: "xmark.circle"),
+                                  attributes: .destructive) { [weak self] _ in self?.finishMeet() })
+            let others = current.approved.filter { $0 != current.myMember }.map { name(ofMember: $0) }
+            let who = others.isEmpty ? "参加を待っています" : others.joined(separator: "、")
+            let shareMenu = UIMenu(title: "共有中", image: UIImage(systemName: "location.circle"), children: share)
+            if #available(iOS 15.0, *) { shareMenu.subtitle = "\(who)・\(untilText(current.expires))" }
+            items.append(shareMenu)
+        } else {
+            items.append(limitMenu)
+        }
+
+        // ■ 友だち（リンク無しでつなげる相手）
+        let friends = KnownFriends.all()
+        var friendItems: [UIMenuElement] = friends.map { friend in
+            var actions: [UIMenuElement] = []
+            if group == nil {
+                actions.append(UIAction(title: "つなぐ", image: UIImage(systemName: "link")) { [weak self] _ in
+                    self?.connectToFriend(friend)
+                })
+            }
+            actions.append(UIAction(title: "友だちから外す", image: UIImage(systemName: "person.crop.circle.badge.xmark"),
+                                    attributes: .destructive) { [weak self] _ in
+                KnownFriends.forget(key: friend.key)
+                self?.refreshDials()
+            })
+            let menu = UIMenu(title: friend.name, image: UIImage(systemName: "person.circle"), children: actions)
+            if #available(iOS 15.0, *) {
+                let f = DateFormatter()
+                f.dateFormat = "M/d"
+                menu.subtitle = "最後につないだ日 \(f.string(from: friend.lastMet))"
+            }
+            return menu
+        }
+        if friendItems.isEmpty {
+            let none = UIAction(title: "まだいません", attributes: .disabled) { _ in }
+            none.subtitle = "一度リンクでつなぐと、次からリンク無しでつなげます"
+            friendItems = [none]
+        }
+        items.append(UIMenu(title: "友だち（\(friends.count)人）", image: UIImage(systemName: "person.2"),
+                            children: friendItems))
+
+        // ■ 知らせと先回り
         // 近くにいたら知らせる。距離は街の広さで変わるので本人が決める。
         let toggle = UIAction(title: NearbyAlert.isOn ? "知らせを止める" : "知らせを使う",
                               image: UIImage(systemName: NearbyAlert.isOn ? "bell.slash" : "bell")) { [weak self] _ in
@@ -2011,63 +2048,29 @@ final class MeetViewController: UIViewController {
                               children: [toggle, background,
                                          UIMenu(title: "知らせる距離", options: .displayInline, children: distances)])
 
-        // 共有の期限。いまのグループがあればその場で変わり、無ければ次のリンクから。
-        let limits = Self.limitChoices.map { choice in
-            let action = UIAction(title: choice.label) { [weak self] _ in self?.setShareLimit(choice.seconds) }
-            action.state = shareLimit == choice.seconds ? .on : .off
-            return action
+        let proactive = UIAction(title: "先回りの提案", image: UIImage(systemName: "sparkles")) { [weak self] _ in
+            Proactive.isOn.toggle()
+            self?.refreshDials()
         }
-        let limitMenu = UIMenu(title: "共有の期限（\(shareLimitShort)）",
-                               image: UIImage(systemName: "clock"),
-                               children: limits)
+        proactive.state = Proactive.isOn ? .on : .off
+        proactive.subtitle = "相手が店の前・先に着きそう・待ち合わせ未定のとき"
+        items.append(UIMenu(title: "知らせ", options: .displayInline, children: [nearMenu, proactive]))
 
-        let face = UIAction(title: myFace == nil ? "地図に出る印を選ぶ" : "地図に出る印を変える",
-                            image: UIImage(systemName: "person.crop.square")) { [weak self] _ in
-            self?.pickFace()
+        // ■ 設定
+        let haptics = UIAction(title: hapticsOn ? "振動を止める" : "振動を使う",
+                               image: UIImage(systemName: hapticsOn ? "iphone.slash" : "iphone.radiowaves.left.and.right")) { [weak self] _ in
+            guard let self else { return }
+            self.hapticsOn = !self.hapticsOn
+            if !self.hapticsOn { self.stopProximityFeedback() }
         }
-        face.subtitle = myFace == nil ? "写真1枚。小さくして相手に送ります" : "いまは写真にしています"
-        var items: [UIMenuElement] = [rename, face, haptics, nearMenu, limitMenu]
-        if myFace != nil {
-            items.insert(UIAction(title: "印を写真から戻す", image: UIImage(systemName: "arrow.uturn.backward"),
-                                  attributes: .destructive) { [weak self] _ in self?.setFace(nil) }, at: 2)
-        }
-
-        // ホストだけができる、相手への伝え方2つ。頻度が低いのでここに置く。
-        if let current = group, current.isHost {
-            let spot = UIAction(title: "いる場所を伝える", image: UIImage(systemName: "mappin.and.ellipse")) { [weak self] _ in
-                self?.askSpot()
-            }
-            spot.subtitle = current.spot ?? "相手の画面に一言で出ます"
-            let card = UIAction(title: "場所を画像で送る", image: UIImage(systemName: "photo")) { [weak self] _ in
-                self?.shareSpotCard()
-            }
-            card.subtitle = "アプリがない人にも"
-            items.append(contentsOf: [spot, card])
-        }
+        haptics.subtitle = "近づくほど速くなります"
 
         let demo = UIAction(title: isDemo ? "デモを終了" : "デモを見る",
                             image: UIImage(systemName: isDemo ? "stop.circle" : "play.circle")) { [weak self] _ in
             self?.demoTapped()
         }
         if !demoAllowed { demo.attributes = .disabled }
-        items.append(demo)
-
-        // One person at a time, without ending it for everyone.
-        if let current = group {
-            // Everyone on the list, not just whoever is in range right now: the
-            // person a host most wants out is often the one who has walked off.
-            let people = current.approved.filter { $0 != current.myMember }.map { member in
-                UIAction(title: "\(name(ofMember: member))（\(Badge.of(member))）",
-                         image: UIImage(systemName: "person.crop.circle.badge.minus"),
-                         attributes: .destructive) { [weak self] _ in self?.stopSharing(with: member) }
-            }
-            if !people.isEmpty {
-                items.append(UIMenu(title: current.isHost ? "グループから外す" : "この人との共有をやめる",
-                                    image: UIImage(systemName: "person.crop.circle.badge.minus"),
-                                    children: people))
-            }
-        }
-
+        var settings: [UIMenuElement] = [haptics, demo]
         #if DEBUG
         // 確認用: 電波（UWB）が届かない状況をその場で作る。屋外の実測前に地図側を試すため。
         let noRadio = UIAction(title: previewNoRadio ? "電波を使う（試験）" : "電波を無いことにする（試験）",
@@ -2101,8 +2104,9 @@ final class MeetViewController: UIViewController {
             }
             self.presentOnTop(vc)
         }
-        items.append(UIMenu(title: "試験", options: .displayInline, children: [noRadio, tryErrand]))
+        settings.append(UIMenu(title: "試験", options: .displayInline, children: [noRadio, tryErrand]))
         #endif
+        items.append(UIMenu(title: "設定", image: UIImage(systemName: "gearshape"), children: settings))
         return items
     }
 
@@ -3192,8 +3196,76 @@ final class MeetViewController: UIViewController {
         presentOnTop(vc)
     }
 
+    // MARK: - 先回りの提案
+
+    private var suggestion: Suggestion?
+    /// 同じ提案を何度も出さないための覚え書き。出した時刻と、断られた時刻。
+    private var suggestedAt: [Suggestion.Kind: Date] = [:]
+    private var declinedAt: [Suggestion.Kind: Date] = [:]
+
+    /// いまの事実から提案を決める。出し直しは控えめに（同じ種類は20分、断られたら1時間あける）。
+    private func evaluateProactive() {
+        guard Proactive.isOn else { suggestion = nil; return }
+        let state = ProactiveState(
+            partner: partnerName,
+            connected: group != nil,
+            me: locations.last,
+            peer: theirFix.map { CLLocation(latitude: $0.lat, longitude: $0.lon) },
+            peerAge: theirFix?.age ?? .greatestFiniteMagnitude,
+            store: peerStore.map { ($0.name, $0.metres) },
+            errandActive: sentErrand != nil || myErrand != nil,
+            pin: meetPin,
+            radioNear: radioIsFresh())
+        let next = Proactive.decide(state)
+        // 出ている提案は、当てはまっているあいだは出し続ける。
+        if let current = suggestion, next?.kind == current.kind {
+            suggestion = next
+            return
+        }
+        guard let next else { suggestion = nil; return }
+        let now = Date()
+        if let d = declinedAt[next.kind], now.timeIntervalSince(d) < 3_600 { suggestion = nil; return }
+        if let d = suggestedAt[next.kind], now.timeIntervalSince(d) < 1_200 { suggestion = nil; return }
+        suggestedAt[next.kind] = now
+        suggestion = next
+        if hapticsOn { impactGenerator.impactOccurred() }
+        // 画面を見ていないときは知らせで。見ていれば板に出るだけ。
+        if UIApplication.shared.applicationState != .active {
+            NearbyAlert.notify(title: next.title, body: next.detail)
+        }
+    }
+
+    private func actOnSuggestion() {
+        guard let s = suggestion else { return }
+        declinedAt[s.kind] = Date()          // やったら、しばらく同じことは言わない
+        suggestion = nil
+        refreshDials()
+        switch s.kind {
+        case .errandStore:
+            openErrandCompose(preset: [])
+        case .earlyArrival:
+            let vc = ExploreViewController(centre: meetPin?.coordinate ?? locations.last?.coordinate)
+            vc.onPick = { [weak self] item in self?.presentPlace(item) }
+            if let sheet = vc.sheetPresentationController {
+                sheet.detents = [.medium(), .large()]
+                sheet.prefersGrabberVisible = true
+            }
+            presentOnTop(vc)
+        case .decideMeet:
+            midpointTapped()
+        }
+    }
+
+    private func dismissSuggestion() {
+        if let s = suggestion { declinedAt[s.kind] = Date() }
+        suggestion = nil
+        refreshDials()
+    }
+
     /// 下の板の中身を、いまの状態から組む。
     private func renderHomeSheet() {
+        evaluateProactive()
+        homeSheet.suggestion = suggestion
         if let fix = theirFix, group != nil {
             let radio = radioIsFresh() ? latestDistance : nil
             let metres = currentMetres()
@@ -5870,6 +5942,8 @@ final class MeetViewController: UIViewController {
         homeSheet.onEnd = { [weak self] in self?.finishMeet() }
         homeSheet.onSearch = { [weak self] in self?.openSearch() }
         homeSheet.onAsk = { [weak self] in self?.openAsk() }
+        homeSheet.onSuggestion = { [weak self] in self?.actOnSuggestion() }
+        homeSheet.onSuggestionDismiss = { [weak self] in self?.dismissSuggestion() }
         homeSheet.onExplore = { [weak self] in self?.exploreTapped() }
         homeSheet.onConnect = { [weak self] index in
             let friends = KnownFriends.all()
