@@ -2934,12 +2934,9 @@ final class MeetViewController: UIViewController {
             self.mapFloor?.showPlace(nil)
         }
         if let sheet = vc.sheetPresentationController {
-            if #available(iOS 16.0, *) {
-                sheet.detents = [.custom(identifier: .init("place")) { _ in 190 }, .medium()]
-                sheet.largestUndimmedDetentIdentifier = .init("place")
-            } else {
-                sheet.detents = [.medium()]
-            }
+            // 詳しいこと（標準の場所カード）が入るので、半分の高さから始めて引き上げられるように。
+            sheet.detents = [.medium(), .large()]
+            sheet.largestUndimmedDetentIdentifier = .medium
             sheet.prefersGrabberVisible = true
         }
         presentOnTop(vc)

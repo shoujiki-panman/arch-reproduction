@@ -1337,6 +1337,26 @@ final class PlaceCardViewController: UIViewController {
             column.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 22),
             column.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -22),
         ])
+
+        // 店の詳しいこと（営業時間・電話・サイト・写真・評価）は、Appleマップと同じ
+        // 標準の場所カード（MKMapItemDetailViewController）をそのまま下に埋める。
+        // 自分で並べない（本人 9/25「押したのに詳細出てこなかった」「デザインは自前しないで」）。
+        if #available(iOS 18.0, *) {
+            let detail = MKMapItemDetailViewController(mapItem: item, displaysMap: false)
+            detail.delegate = self
+            addChild(detail)
+            view.addSubview(detail.view)
+            detail.view.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                detail.view.topAnchor.constraint(equalTo: column.bottomAnchor, constant: 14),
+                detail.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                detail.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                detail.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+            detail.didMove(toParent: self)
+            // 名前は標準カードにも出るので、こちらは距離の一行とボタンだけにする。
+            title.isHidden = true
+        }
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -1375,6 +1395,14 @@ final class PlaceCardViewController: UIViewController {
             .movieTheater: "映画館", .nightlife: "夜のお店", .fitnessCenter: "ジム",
         ]
         return names[c]
+    }
+}
+
+@available(iOS 18.0, *)
+extension PlaceCardViewController: MKMapItemDetailViewControllerDelegate {
+    /// 標準カードの × は、この札ごと閉じる。
+    func mapItemDetailViewControllerDidFinish(_ detailViewController: MKMapItemDetailViewController) {
+        dismiss(animated: true)
     }
 }
 
