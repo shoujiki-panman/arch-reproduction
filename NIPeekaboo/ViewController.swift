@@ -1293,6 +1293,14 @@ final class MeetViewController: UIViewController {
     private let inviteButton = UIButton(type: .system)
     /// 相手が店のそばにいる間だけ出る。用が無いときは画面から消えている。
     private let errandButton = UIButton(type: .system)
+    /// ホームの見せ方。大きいボタンは、この切り替えになっている。
+    private enum HomeView: Int { case map = 0, compass = 1, camera = 2 }
+    private var homeView: HomeView = .map
+    private let viewSwitch = UISegmentedControl(items: ["地図", "方角", "カメラ"])
+    /// 方角の画面。相手がどっちにいるかの矢印だけを、地図の上に置く。
+    private let compassLayer = TouchThroughView()
+    private let compassArrow = UIImageView(image: UIImage(systemName: "location.north.fill"))
+    private let compassCaption = UILabel()
     /// 輪の中がいま「まわりを見る」かどうか。
     private var dialExplores = false
     /// 地図の上に浮かぶ小さい丸。左が「まわりを見る」、右が地図⇄カメラ。
@@ -2246,6 +2254,7 @@ final class MeetViewController: UIViewController {
         }
         channel.connect()
         remote = channel
+        locations.onHeading = { [weak self] _ in self?.updateCompass() }
         locations.onFix = { [weak self] _ in
             self?.pushLocationIfFar()
             self?.pushToMap()
@@ -2393,6 +2402,54 @@ final class MeetViewController: UIViewController {
             sheet.prefersGrabberVisible = true
         }
         presentOnTop(vc)
+    }
+
+    /// 地図・方角・カメラの切り替え。カメラだけは別の画面なので、
+    /// 開いて戻ってきたときに元の見せ方へ戻す。
+    @objc private func viewSwitchChanged() {
+        impactGenerator.impactOccurred()
+        let wanted = HomeView(rawValue: viewSwitch.selectedSegmentIndex) ?? .map
+        guard wanted != .camera else {
+            viewSwitch.selectedSegmentIndex = homeView.rawValue
+            // カメラは電波（UWB）の距離で丸を描く画面なので、届いていない間は
+            // 何も描けない。黙って開くと「見つけた」と出てしまう。
+            guard radioIsFresh() else {
+                flash("カメラは電波が届いてから使えます")
+                return
+            }
+            startGuidance()
+            return
+        }
+        homeView = wanted
+        if wanted == .compass { locations.startHeading() } else { locations.stopHeading() }
+        refreshDials()
+    }
+
+    /// 相手がどっちにいるか。地図の北ではなく、いま体が向いている向きから引く。
+    /// 距離は上の見出しが言っているので、ここは向きだけを言う。
+    private func updateCompass() {
+        guard homeView == .compass, !compassLayer.isHidden,
+              let me = locations.last, let fix = theirFix else { return }
+        let bearing = Self.bearing(from: me.coordinate, to: fix.coordinate)
+        let heading = locations.heading?.trueHeading ?? -1
+        let angle = heading >= 0 ? bearing - heading : bearing
+        let radians = CGFloat(angle * .pi / 180)
+        Trans.run(Trans.smoothOut(Trans.fast)) {
+            self.compassArrow.transform = CGAffineTransform(rotationAngle: radians)
+        }
+        // どこから出した向きかを必ず書く。磁石が無ければ「北が上」だと言う。
+        compassCaption.text = heading >= 0
+            ? "\(partnerName)はこの向きです"
+            : "北を上にしたときの向きです（この端末では方角が取れません）"
+    }
+
+    /// 2点のあいだの方位角（北から時計回りの度数）。
+    private static func bearing(from a: CLLocationCoordinate2D, to b: CLLocationCoordinate2D) -> Double {
+        let rad = Double.pi / 180
+        let y = sin((b.longitude - a.longitude) * rad) * cos(b.latitude * rad)
+        let x = cos(a.latitude * rad) * sin(b.latitude * rad)
+            - sin(a.latitude * rad) * cos(b.latitude * rad) * cos((b.longitude - a.longitude) * rad)
+        return (atan2(y, x) / rad + 360).truncatingRemainder(dividingBy: 360)
     }
 
     /// 地図を動かしたあと、2人が入る向きへ戻す。
@@ -3725,8 +3782,19 @@ final class MeetViewController: UIViewController {
         let floorUp = group != nil && theirFix != nil
         let ringHidden = floorUp && !radioIsFresh() && !showRadar
         finderDial.isHidden = showRadar || ringHidden
-        // 輪が前に出ている間は地図を落とす。地図だけのときは落とさない。
-        let dim = floorUp && !ringHidden
+        // 相手の居場所が無くなったら、切り替えは地図に戻しておく。
+        if !floorUp, homeView != .map {
+            homeView = .map
+            viewSwitch.selectedSegmentIndex = 0
+            locations.stopHeading()
+        }
+        viewSwitch.isHidden = !floorUp
+        // 方角は、地図が床にあるあいだだけ。電波が届いたら輪が前に出る。
+        let compassUp = floorUp && ringHidden && homeView == .compass
+        compassLayer.isHidden = !compassUp
+        if compassUp { updateCompass() }
+        // 輪か矢印が前に出ている間は地図を落とす。地図だけのときは落とさない。
+        let dim = (floorUp && !ringHidden) || compassUp
         if floorDim.isHidden != !dim {
             Trans.run(Trans.smoothOut(Trans.fast)) { self.floorDim.alpha = dim ? 1 : 0 }
             floorDim.isHidden = !dim
@@ -3757,6 +3825,11 @@ final class MeetViewController: UIViewController {
             ? (meetPin.map { "待ち合わせ: \($0.name)" } ?? "中間で待ち合わせ")
             : "ここだよ！ 合図する"
         cameraButton.configuration?.image = UIImage(systemName: farApart ? "mappin.and.ellipse" : "hand.wave.fill")
+        // 切り替えが出ているあいだは、大きいボタンの座をそちらに譲る。
+        // 目立つものが2つ並ぶと、どちらを押せばいいのか分からなくなる。
+        let secondary = !viewSwitch.isHidden
+        cameraButton.configuration?.baseBackgroundColor = secondary ? MeetPalette.raised : actionColour
+        cameraButton.configuration?.baseForegroundColor = secondary ? MeetPalette.primary : .black
         cameraButton.isEnabled = true
         cameraButton.alpha = 1
         refreshErrandButton()
@@ -5153,10 +5226,37 @@ final class MeetViewController: UIViewController {
         endButton.addTarget(self, action: #selector(finishMeet), for: .touchUpInside)
         respondOnPress(endButton)
 
+        // 大きいボタンの場所は「いまどう見るか」の切り替えにする。
+        // 地図で場所、方角で向き、カメラで最後の数m。押した分だけ行き来できる。
+        viewSwitch.selectedSegmentIndex = 0
+        viewSwitch.selectedSegmentTintColor = actionColour
+        viewSwitch.backgroundColor = MeetPalette.surface
+        viewSwitch.setTitleTextAttributes([.foregroundColor: MeetPalette.primary,
+                                           .font: Type.button], for: .normal)
+        viewSwitch.setTitleTextAttributes([.foregroundColor: UIColor.black,
+                                           .font: Type.font(15, .bold, .body)], for: .selected)
+        viewSwitch.addTarget(self, action: #selector(viewSwitchChanged), for: .valueChanged)
+        viewSwitch.isHidden = true
+        viewSwitch.heightAnchor.constraint(equalToConstant: 52).isActive = true
+
         actionStack.axis = .vertical
         actionStack.spacing = 10
-        for v in [connectStack, friendsStack, inviteButton, cameraButton, errandButton, endButton] as [UIView] {
+        for v in [connectStack, friendsStack, inviteButton, viewSwitch, cameraButton,
+                  errandButton, endButton] as [UIView] {
             actionStack.addArrangedSubview(v)
+        }
+
+        // 方角の画面。輪と同じ場所に置いて、地図を一段落として前に出す。
+        compassArrow.contentMode = .scaleAspectFit
+        compassArrow.tintColor = actionColour
+        compassCaption.font = Type.caption
+        compassCaption.textColor = MeetPalette.secondary
+        compassCaption.textAlignment = .center
+        compassCaption.numberOfLines = 2
+        compassLayer.isHidden = true
+        for v in [compassArrow, compassCaption] as [UIView] {
+            compassLayer.addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
         }
 
         for v in [finderChips, finderHeadline, finderDial, actionStack, finderTip, finderStatus, toast,
@@ -5220,6 +5320,9 @@ final class MeetViewController: UIViewController {
             v.translatesAutoresizingMaskIntoConstraints = false
         }
 
+        finderPanel.addSubview(compassLayer)
+        compassLayer.translatesAutoresizingMaskIntoConstraints = false
+
         // The ring gives way to the actions on a short screen, never the other way.
         let dialCentre = finderDial.centerYAnchor.constraint(equalTo: finderPanel.centerYAnchor, constant: -40)
         dialCentre.priority = .defaultLow
@@ -5253,6 +5356,18 @@ final class MeetViewController: UIViewController {
             finderStatus.leadingAnchor.constraint(equalTo: finderPanel.leadingAnchor, constant: 24),
             finderStatus.trailingAnchor.constraint(equalTo: finderPanel.trailingAnchor, constant: -24),
             finderStatus.bottomAnchor.constraint(equalTo: finderPanel.bottomAnchor, constant: -10),
+
+            compassLayer.centerXAnchor.constraint(equalTo: finderDial.centerXAnchor),
+            compassLayer.centerYAnchor.constraint(equalTo: finderDial.centerYAnchor),
+            compassLayer.widthAnchor.constraint(equalTo: finderDial.widthAnchor),
+            compassLayer.heightAnchor.constraint(equalTo: finderDial.heightAnchor),
+            compassArrow.centerXAnchor.constraint(equalTo: compassLayer.centerXAnchor),
+            compassArrow.centerYAnchor.constraint(equalTo: compassLayer.centerYAnchor, constant: -18),
+            compassArrow.widthAnchor.constraint(equalTo: compassLayer.widthAnchor, multiplier: 0.58),
+            compassArrow.heightAnchor.constraint(equalTo: compassArrow.widthAnchor),
+            compassCaption.topAnchor.constraint(equalTo: compassArrow.bottomAnchor, constant: 14),
+            compassCaption.leadingAnchor.constraint(equalTo: compassLayer.leadingAnchor, constant: -8),
+            compassCaption.trailingAnchor.constraint(equalTo: compassLayer.trailingAnchor, constant: 8),
 
             floatingButtons.trailingAnchor.constraint(equalTo: finderPanel.trailingAnchor, constant: -20),
             floatingButtons.bottomAnchor.constraint(equalTo: actionStack.topAnchor, constant: -16),

@@ -201,6 +201,9 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private(set) var last: CLLocation?
     var onFix: ((CLLocation) -> Void)?
+    /// いま体が向いている向き。方角の画面を見ているあいだだけ入る。
+    private(set) var heading: CLHeading?
+    var onHeading: ((CLHeading) -> Void)?
 
     override init() {
         super.init()
@@ -220,6 +223,28 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
         // 先に背景での更新を切る。切らずに止めると青い表示が残ることがある。
         manager.allowsBackgroundLocationUpdates = false
         manager.stopUpdatingLocation()
+        stopHeading()
+    }
+
+    /// 方角は電気を食うので、その画面を見ているあいだだけ回す。
+    /// シミュレータには磁石が無いので、ここは何も返さない。
+    func startHeading() {
+        guard CLLocationManager.headingAvailable() else { return }
+        manager.headingFilter = 2
+        manager.headingOrientation = .portrait
+        manager.startUpdatingHeading()
+    }
+
+    func stopHeading() {
+        heading = nil
+        manager.stopUpdatingHeading()
+    }
+
+    func locationManager(_ m: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        // 精度が負の値のときは、磁石が狂っている合図。使わない。
+        guard newHeading.headingAccuracy >= 0 else { return }
+        heading = newHeading
+        onHeading?(newHeading)
     }
 
     /// 画面を閉じているあいだも受け取るか。Info.plist に background location が
