@@ -1477,8 +1477,13 @@ final class MeetViewController: UIViewController {
 
         // 自分の場所は、誰ともつないでいなくても画面を開いているあいだは取る。
         // 位置が届くたびに地図へ渡す（最初の一回で自分のまわりに寄る）。
-        locations.onFix = { [weak self] _ in self?.refreshMapFloor() }
+        locations.onFix = { [weak self] _ in
+            self?.refreshMapFloor()
+            self?.pushMyHeading()
+        }
+        locations.onHeading = { [weak self] _ in self?.pushMyHeading() }
         locations.startForeground()
+        locations.keepHeading = true
 
         loadTodayGroup()
         endOrphanedActivities()
@@ -2177,6 +2182,7 @@ final class MeetViewController: UIViewController {
 
     /// Timers stop in the background, so the expiry is checked on the way back.
     @objc private func appWillEnterForeground() {
+        locations.startHeading()
         expireGroup()
         refreshDials()
         askToResumeIfNeeded()
@@ -2344,6 +2350,7 @@ final class MeetViewController: UIViewController {
         channel.connect()
         remote = channel
         locations.onHeading = { [weak self] _ in
+            self?.pushMyHeading()
             self?.refreshFind()
             self?.updateCameraCards()
             self?.updateNavFacing()
@@ -2352,6 +2359,7 @@ final class MeetViewController: UIViewController {
             self?.pushLocationIfFar()
             self?.pushToMap()
             self?.refreshMapFloor()
+            self?.pushMyHeading()
             // 相手が止まっていても、自分が歩けば距離は縮む。こちらの動きでも見直す。
             self?.updateNearbyAlert()
             self?.stepNavigation()
@@ -2816,6 +2824,17 @@ final class MeetViewController: UIViewController {
                               : "\(goalName)まで \(NearbyAlert.text(remaining))")
     }
 
+    /// 地図の自分の三角に向きを渡す。磁石が無ければ歩いている向き、どちらも無ければ点。
+    private func pushMyHeading() {
+        if let h = locations.heading?.trueHeading, h >= 0 {
+            mapFloor?.setMyHeading(h)
+        } else if let me = locations.last, me.course >= 0, me.speed > 0.4 {
+            mapFloor?.setMyHeading(me.course)
+        } else if locations.heading == nil {
+            mapFloor?.setMyHeading(nil)
+        }
+    }
+
     /// 始めた直後の「右を向いて」を一度だけ声で言ったか。
     private var navFacingSpoken = false
 
@@ -2928,7 +2947,7 @@ final class MeetViewController: UIViewController {
     private var placeRoutePreview: MKRoute?
 
     /// 選んだ場所までの徒歩の経路を出し、一覧から「案内開始」できるようにする。
-    private func routeToPlace(_ item: MKMapItem) {
+    private func routeToPlace(_ item: MKMapItem, startNow: Bool = false) {
         guard let me = locations.last else { return }
         let request = MKDirections.Request()
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: me.coordinate))
@@ -2942,7 +2961,14 @@ final class MeetViewController: UIViewController {
                     return
                 }
                 self.placeRoutePreview = route
+                self.mapFloor?.showPlace(item)
                 self.mapFloor?.showPlaceRoute(route)
+                // 「〇〇に案内して」と頼まれたときは、一覧を挟まずにそのまま始める。
+                if startNow {
+                    self.placeRoutePreview = nil
+                    self.startNavigation(route: route, place: item)
+                    return
+                }
                 let vc = RouteSheetViewController(route: route, name: item.name ?? "目的地", movingGoal: false)
                 vc.onStart = { [weak self, weak vc] in
                     vc?.dismiss(animated: true)
@@ -3120,38 +3146,39 @@ final class MeetViewController: UIViewController {
             ui.finish("いまいる場所がまだ分かりません", ok: false)
             return
         }
-        let query = [intent.query, intent.placeKind, text].first { !$0.isEmpty } ?? text
-        let finding = ui.addStep("近くで「\(query)」を探しています")
-        let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = query.replacingOccurrences(of: "近くの", with: "")
+        let raw = [intent.query, intent.placeKind, text].first { !$0.isEmpty } ?? text
+        let query = raw.replacingOccurrences(of: "近くの", with: "")
             .replacingOccurrences(of: "いちばん近い", with: "")
-        request.region = MKCoordinateRegion(center: me.coordinate, latitudinalMeters: 3000, longitudinalMeters: 3000)
-        MKLocalSearch(request: request).start { [weak self] response, _ in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                let items = (response?.mapItems ?? []).sorted {
-                    ($0.placemark.location?.distance(from: me) ?? .greatestFiniteMagnitude)
-                        < ($1.placemark.location?.distance(from: me) ?? .greatestFiniteMagnitude)
-                }
-                guard let best = items.first, let loc = best.placemark.location else {
-                    ui.finishStep(finding, note: "見つかりませんでした", failed: true)
-                    ui.finish("言い方を変えてみてください", ok: false)
-                    return
-                }
-                ui.finishStep(finding, note: "\(items.count)件見つけました。いちばん近いのは「\(best.name ?? "")」")
-                let d = me.distance(from: loc)
-                ui.ask(title: best.name ?? "この場所",
-                       detail: "\(NearbyAlert.text(d))・\(NearbyAlert.walkText(d))",
-                       primary: "経路", secondary: "地図で見る",
-                       onPrimary: { [weak self] in
-                           ui.dismiss(animated: true) { self?.routeToPlace(best) }
-                       },
-                       onSecondary: { [weak self] in
-                           ui.dismiss(animated: true) { self?.presentPlace(best) }
-                       })
+        let finding = ui.addStep("「\(query)」を探しています")
+        let resolver = PlaceResolver()
+        placeResolver = resolver
+        Task { @MainActor [weak self] in
+            let items = await resolver.resolve(query, near: me)
+            guard let self else { return }
+            self.placeResolver = nil
+            guard let best = items.first, let loc = best.placemark.location else {
+                ui.finishStep(finding, note: "見つかりませんでした", failed: true)
+                ui.finish("言い方を変えてみてください", ok: false)
+                return
             }
+            ui.finishStep(finding, note: items.count == 1 ? "「\(best.name ?? "")」が見つかりました"
+                                                          : "\(items.count)件見つけました。いちばん近いのは「\(best.name ?? "")」")
+            let d = me.distance(from: loc)
+            let where_ = best.placemark.title.map { "\n\($0)" } ?? ""
+            ui.ask(title: intent.go ? "「\(best.name ?? "この場所")」へ案内しますか？" : (best.name ?? "この場所"),
+                   detail: "\(NearbyAlert.text(d))・\(NearbyAlert.walkText(d))" + where_,
+                   primary: intent.go ? "案内開始" : "経路", secondary: "地図で見る",
+                   onPrimary: { [weak self] in
+                       ui.dismiss(animated: true) { self?.routeToPlace(best, startNow: intent.go) }
+                   },
+                   onSecondary: { [weak self] in
+                       ui.dismiss(animated: true) { self?.presentPlace(best) }
+                   })
         }
     }
+
+    /// 場所の名前を1つに決める係（入力候補の返事を待つあいだ持っておく）。
+    private var placeResolver: PlaceResolver?
 
     private func openSearch() {
         let vc = SearchPlacesViewController(near: locations.last)
@@ -5632,6 +5659,7 @@ final class MeetViewController: UIViewController {
     }
 
     @objc private func appDidEnterBackground() {
+        locations.pauseHeading()
         syncLiveActivity(markStale: true)
     }
 

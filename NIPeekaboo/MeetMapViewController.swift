@@ -223,7 +223,6 @@ final class MeetMapViewController: UIViewController {
     /// 印（写真）を貼り替える。地図の点や向きはそのまま。
     private func refreshFaces() {
         if let peer, let view = map.view(for: peer) { applyFace(peerFace, to: view, name: peerName) }
-        if let view = map.view(for: map.userLocation) { applyFace(myFace, to: view, name: myName) }
     }
 
     /// 丸の中身を写真にする。写真が無ければこれまでの人の形。
@@ -242,7 +241,6 @@ final class MeetMapViewController: UIViewController {
     /// 名前と一言の札だけを作り直す。地図の点や向きはそのまま。
     private func refreshCards() {
         if let peer, let view = map.view(for: peer) { attachCard(to: view, name: peerName, mood: peerMood) }
-        if let view = map.view(for: map.userLocation) { attachCard(to: view, name: myName, mood: myMood) }
     }
 
     /// 人の上に札を付ける（すでに付いていれば取り替える）。
@@ -469,25 +467,36 @@ final class MeetMapViewController: UIViewController {
     /// 案内中は、自分の印を顔の丸から向きの三角にする（地図が向いている方を上に
     /// 回るので、三角はいつも上＝進む向き）。道なりの線も太くする。
     private func refreshNavLook() {
-        if let view = map.view(for: map.userLocation) { applyNavLook(to: view) }
+        refreshMeLook()
         let overlays = map.overlays
         map.removeOverlays(overlays)
         map.addOverlays(overlays)
     }
 
-    private func applyNavLook(to view: MKAnnotationView) {
-        view.subviews.filter { $0.tag == Self.navArrowTag }.forEach { $0.removeFromSuperview() }
-        for sub in view.subviews where sub.tag == Self.dotTag || sub.tag == Self.cardTag {
-            sub.isHidden = navigating
+    /// いま向いている方（北から時計回りの度）。分からなければ nil（三角ではなく点）。
+    private var myHeading: CLLocationDirection?
+
+    func setMyHeading(_ heading: CLLocationDirection?) {
+        myHeading = heading
+        refreshMeLook()
+    }
+
+    private func refreshMeLook() {
+        if let view = map.view(for: map.userLocation) { applyMeLook(to: view) }
+    }
+
+    /// 三角は「向いている方 − 地図の向き」だけ回す。地図が回っても、三角は実際の向きを指す。
+    private func applyMeLook(to view: MKAnnotationView) {
+        guard let arrow = view.subviews.first(where: { $0.tag == Self.navArrowTag }) as? UIImageView else { return }
+        let size = view.bounds.width
+        if let h = myHeading {
+            arrow.image = NavArrow.image(size: size)
+            let angle = (h - map.camera.heading) * .pi / 180
+            arrow.transform = CGAffineTransform(rotationAngle: CGFloat(angle))
+        } else {
+            arrow.image = NavArrow.dot(size: size)
+            arrow.transform = .identity
         }
-        guard navigating else { return }
-        let size: CGFloat = 46
-        let arrow = UIImageView(image: NavArrow.image(size: size))
-        arrow.tag = Self.navArrowTag
-        // 印の下端がちょうど自分の位置なので、三角の中心をそこに置く。
-        arrow.frame = CGRect(x: (view.bounds.width - size) / 2, y: view.bounds.height - size / 2,
-                             width: size, height: size)
-        view.addSubview(arrow)
     }
 
     /// 選んだ場所に印を立て、自分とその場所が入るように見せる。nil で消す。
@@ -646,6 +655,11 @@ extension MeetMapViewController: MKMapViewDelegate {
         }
     }
 
+    /// 地図が回ったら、自分の三角を向き直す（三角は実際の向きを指し続ける）。
+    func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+        refreshMeLook()
+    }
+
     func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
         if let placeLine, overlay === placeLine {
             let r = MKPolylineRenderer(overlay: overlay)
@@ -664,26 +678,29 @@ extension MeetMapViewController: MKMapViewDelegate {
     // 相手がどこかにいる、という感じは、記号よりも姿のほうが伝わる（マリオカートの選択画面のように）。
     func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
         // 自分も同じ姿で立たせる。青い点だと、自分だけ地図アプリのままになる
+        // 自分は小さな青い三角（Android XR・Googleマップと同じ）。先が向いている方。
+        // 以前は顔の丸（64pt）と名札で、自分がどこに立っているか分からなかった（本人 9/25）。
+        // 自分の名前は自分の地図に要らないので出さない（様子は相手の地図に出る）。
         if annotation is MKUserLocation {
             let id = "me"
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
                 ?? MKAnnotationView(annotation: annotation, reuseIdentifier: id)
             view.annotation = annotation
+            view.canShowCallout = false
             view.subviews.forEach { $0.removeFromSuperview() }
-            let size: CGFloat = 64
+            let size: CGFloat = 34
             view.frame = CGRect(x: 0, y: 0, width: size, height: size)
-            view.centerOffset = CGPoint(x: 0, y: -size / 2)
-            let dot = UIView(frame: view.bounds)
-            dot.tag = Self.dotTag
-            dot.backgroundColor = MeetPalette.primary
-            dot.layer.cornerRadius = size / 2
-            dot.layer.borderWidth = 3
-            dot.layer.borderColor = UIColor.white.cgColor
-            dot.clipsToBounds = true
-            view.addSubview(dot)
-            applyFace(myFace, to: view, name: myName)
-            attachCard(to: view, name: myName, mood: myMood)
-            applyNavLook(to: view)
+            view.centerOffset = .zero                     // 印の真ん中＝自分の位置
+            let arrow = UIImageView(frame: view.bounds)
+            arrow.tag = Self.navArrowTag
+            view.addSubview(arrow)
+            view.layer.shadowColor = UIColor.black.cgColor
+            view.layer.shadowOpacity = 0.35
+            view.layer.shadowRadius = 4
+            view.layer.shadowOffset = .zero
+            view.displayPriority = .required
+            view.zPriority = .max
+            applyMeLook(to: view)
             return view
         }
         if let flag = annotation as? PinPoint {
@@ -721,9 +738,10 @@ extension MeetMapViewController: MKMapViewDelegate {
         view.canShowCallout = false
         view.subviews.forEach { $0.removeFromSuperview() }
 
-        let size: CGFloat = 72
+        // 相手の顔も小さく（72→48）。大きいと地図の上で場所がぼやける。
+        let size: CGFloat = 48
         view.frame = CGRect(x: 0, y: 0, width: size, height: size)
-        view.centerOffset = CGPoint(x: 0, y: -(size / 2 + 8))
+        view.centerOffset = CGPoint(x: 0, y: -(size / 2 + 4))
 
         let avatar = UIView(frame: CGRect(x: 0, y: 0, width: size, height: size))
         avatar.tag = Self.dotTag

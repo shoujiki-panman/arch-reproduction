@@ -257,8 +257,20 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
         manager.startUpdatingHeading()
     }
 
+    /// 地図の自分の三角のために、画面を開いているあいだは向きを取り続ける。
+    /// 立てているあいだは、ほかの画面が閉じても止めない。
+    var keepHeading = false {
+        didSet { if keepHeading { startHeading() } }
+    }
+
     func stopHeading() {
+        guard !keepHeading else { return }
         heading = nil
+        manager.stopUpdatingHeading()
+    }
+
+    /// 画面を閉じたときは、keepHeading でも止める（裏で磁石を回し続けない）。
+    func pauseHeading() {
         manager.stopUpdatingHeading()
     }
 

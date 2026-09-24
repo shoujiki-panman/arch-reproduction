@@ -26,6 +26,8 @@ struct AskIntent: Sendable {
     var items: [String] = []
     var mood: String = ""
     var query: String = ""
+    /// 「〇〇に案内して」のように、そこへ行きたいと言っている。見つけたら案内開始を勧める。
+    var go: Bool = false
 }
 
 enum AskParser {
@@ -35,15 +37,21 @@ enum AskParser {
         // 「伝えて」「言っといて」「行き方」ははっきりした合図なので、言葉で決める。
         // Macで同じAIに6文かけたら、「ちょっと遅れるって言っといて」「改札の前で
         // 待ってると伝えて」を「会う」と取り違えた（2/6）。小さいモデルに迷わせない。
-        let rule = keywordParse(text)
+        let rule = keywordParse(text, partner: partner)
         if (rule.kind == .mood || rule.kind == .route), hasStrongSignal(text) { return (rule, false) }
+        // 「ラゾーナに案内して」「〇〇まで行きたい」も言葉で決める（AIは「連れてって」を
+        // 「会う」と取り違えた）。
+        if rule.go { return (rule, false) }
+        // 「近くのカフェ」「いちばん近い駅」も言葉で決める（AIは「いちばん近い駅」を
+        // 相手への行き方と取り違えた）。
+        if rule.kind == .place, nearbyMarkers.contains(where: { text.contains($0) }) { return (rule, false) }
         #if canImport(FoundationModels)
         if #available(iOS 26.0, *), SystemLanguageModel.default.isAvailable {
             let result = await withTimeout(seconds: 10) { try await aiParse(text, partner: partner) }
             if let result { return (result, true) }
         }
         #endif
-        return (keywordParse(text), false)
+        return (keywordParse(text, partner: partner), false)
     }
 
     private static func hasStrongSignal(_ text: String) -> Bool {
@@ -91,6 +99,7 @@ enum AskParser {
         「駅で会おう」→ meet（placeKind: 駅）
         「帰りにパンとお茶買ってきて」→ errand（items: パン, お茶）
         「近くでそば食べたい」→ place（query: そば）
+        「東京駅に連れてって」→ place（query: 東京駅）
         """)
         let response = try await session.respond(to: text, generating: AskPlanAI.self)
         let p = response.content
@@ -104,10 +113,22 @@ enum AskParser {
 
     // MARK: かんたんな読み方（AIが使えないとき）
 
-    static func keywordParse(_ raw: String) -> AskIntent {
+    static func keywordParse(_ raw: String, partner: String = "") -> AskIntent {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         func has(_ words: [String]) -> Bool { words.contains { text.contains($0) } }
 
+        // 「〇〇に案内して」「〇〇まで行きたい」「〇〇へ連れてって」
+        if let dest = destination(in: text) {
+            let toPartner = (!partner.isEmpty && dest.contains(partner)) || dest.contains("のところ") || dest.contains("相手")
+            if toPartner { return AskIntent(kind: .route) }
+            return AskIntent(kind: .place, query: dest, go: true)
+        }
+
+        if has(nearbyMarkers) {
+            var q = text
+            for m in nearbyMarkers { q = q.replacingOccurrences(of: m, with: "") }
+            return AskIntent(kind: .place, placeKind: placeWord(in: text) ?? "", query: q)
+        }
         if has(["伝えて", "様子", "って言って", "と言って", "言っといて", "と伝え", "って伝え"]) {
             return AskIntent(kind: .mood, mood: quoted(text) ?? String(before(text, ["って伝え", "と伝え", "って言っ", "と言っ"]).prefix(20)))
         }
@@ -124,6 +145,31 @@ enum AskParser {
     }
 
     private static let placeWords = ["カフェ", "喫茶", "ごはん", "ランチ", "食事", "レストラン", "駅", "公園", "コンビニ"]
+    static let nearbyMarkers = ["近くの", "いちばん近い", "一番近い", "最寄りの", "この辺の", "この辺で"]
+
+    /// 種類の言葉（ある1つの店ではない）。これで探すときは近い順にする。
+    static let genericWords = ["カフェ", "喫茶", "コーヒー", "ごはん", "ランチ", "ディナー", "食事", "レストラン",
+                               "ラーメン", "そば", "うどん", "寿司", "焼肉", "居酒屋", "ファミレス", "ハンバーガー",
+                               "パン", "駅", "コンビニ", "公園", "トイレ", "薬局", "ドラッグストア", "スーパー",
+                               "ATM", "銀行", "病院", "本屋", "書店", "ホテル", "駐車場", "駐輪場", "休憩"]
+
+    /// 言葉そのもの（「カフェ」「ラーメン屋」）のときだけ。「東京駅」は駅という種類ではなく
+    /// 1つの場所なので、末尾が「駅」でも種類とはみなさない（近くの別の駅を選んでいた）。
+    static func isGeneric(_ query: String) -> Bool {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        return genericWords.contains { w in [w, w + "屋", w + "屋さん", w + "店"].contains(q) }
+    }
+
+    /// 行き先。「ラゾーナに案内して」→「ラゾーナ」。
+    private static func destination(in text: String) -> String? {
+        let pattern = "^(.+?)(に|まで|へ)(案内|連れて|行きたい|行こう|行って|行く|向かいたい)"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let m = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let r = Range(m.range(at: 1), in: text) else { return nil }
+        var dest = String(text[r]).trimmingCharacters(in: .whitespaces)
+        for lead in ["今から", "いまから", "これから"] where dest.hasPrefix(lead) { dest.removeFirst(lead.count) }
+        return dest.isEmpty ? nil : dest
+    }
 
     private static func placeWord(in text: String) -> String? {
         placeWords.first { text.contains($0) }
@@ -185,6 +231,66 @@ struct AskPlanAI {
     var query: String
 }
 #endif
+
+// MARK: - 場所の名前から、その場所を1つ決める
+
+/// 「ラゾーナ」で探すと、地図の検索は中のお店を25件返し、施設そのもの（ラゾーナ川崎
+/// プラザ）は入っていなかった。近い順に並べていたので、隣の「ミューザ川崎駐車場」を
+/// 選んでいた（本人 9/25「ラゾーナに案内してって言ったらミューザに案内した」）。
+/// データはあった。選び方が悪かった。
+/// 名前で探すときは、Appleマップと同じく入力候補（MKLocalSearchCompleter）の
+/// 1つ目を使う。「カフェ」のような種類の言葉なら、これまでどおり近い順。
+/// 入力候補は、頼んだスレッドの run loop に返事を返す。メインで頼まないと返事が
+/// 来ず、4秒待って空で終わっていた（Macで測って分かった）。だから丸ごとメインで動かす。
+@MainActor
+final class PlaceResolver: NSObject, MKLocalSearchCompleterDelegate {
+    private let completer = MKLocalSearchCompleter()
+    private var waiting: CheckedContinuation<[MKLocalSearchCompletion], Never>?
+
+    func resolve(_ query: String, near me: CLLocation) async -> [MKMapItem] {
+        if AskParser.isGeneric(query) { return await nearest(query, near: me) }
+        completer.delegate = self
+        // 「近くを検索」のような候補を混ぜると、それが1つ目に来て施設を取り逃がした。
+        completer.resultTypes = [.pointOfInterest, .address]
+        completer.region = MKCoordinateRegion(center: me.coordinate, latitudinalMeters: 5000, longitudinalMeters: 5000)
+        let completions: [MKLocalSearchCompletion] = await withCheckedContinuation { k in
+            waiting = k
+            completer.queryFragment = query
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.finish([]) }
+        }
+        // 上から3つまで見て、3km以内に入る最初のものを採る。チェーン店（「スタバ」）は
+        // 1つ目が遠くの有名店（目黒のロースタリー）になり、近くの店を取り逃がしていた。
+        // どれも遠ければ1つ目（「東京駅」のような、遠くても行きたい1つの場所）。
+        var firstItem: MKMapItem?
+        for completion in completions.prefix(3) {
+            guard let response = try? await MKLocalSearch(request: MKLocalSearch.Request(completion: completion)).start(),
+                  let item = response.mapItems.first else { continue }
+            if firstItem == nil { firstItem = item }
+            if let loc = item.placemark.location, loc.distance(from: me) <= 3_000 { return [item] }
+        }
+        if let firstItem { return [firstItem] }
+        return await nearest(query, near: me)
+    }
+
+    private func nearest(_ query: String, near me: CLLocation) async -> [MKMapItem] {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = query
+        request.region = MKCoordinateRegion(center: me.coordinate, latitudinalMeters: 3000, longitudinalMeters: 3000)
+        let items = (try? await MKLocalSearch(request: request).start())?.mapItems ?? []
+        return items.sorted {
+            ($0.placemark.location?.distance(from: me) ?? .greatestFiniteMagnitude)
+                < ($1.placemark.location?.distance(from: me) ?? .greatestFiniteMagnitude)
+        }
+    }
+
+    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) { finish(completer.results) }
+    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) { finish([]) }
+
+    private func finish(_ results: [MKLocalSearchCompletion]) {
+        waiting?.resume(returning: results)
+        waiting = nil
+    }
+}
 
 // MARK: - 考えている玉
 

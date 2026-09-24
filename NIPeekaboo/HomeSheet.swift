@@ -1043,6 +1043,18 @@ final class CameraCard: UIView {
 
 /// 自分の位置の印。青い丸に白い三角（Android XR・Googleマップの案内と同じ）。
 enum NavArrow {
+    /// 向きが分からないときの、ただの青い点（Appleマップの現在地と同じ）。
+    static func dot(size: CGFloat) -> UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { ctx in
+            let rect = CGRect(x: 0, y: 0, width: size, height: size)
+            let g = ctx.cgContext
+            g.setFillColor(UIColor.white.cgColor)
+            g.fillEllipse(in: rect.insetBy(dx: size * 0.18, dy: size * 0.18))
+            g.setFillColor(UIColor(red: 0.26, green: 0.45, blue: 1.0, alpha: 1).cgColor)
+            g.fillEllipse(in: rect.insetBy(dx: size * 0.27, dy: size * 0.27))
+        }
+    }
+
     static func image(size: CGFloat) -> UIImage {
         UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { ctx in
             let rect = CGRect(x: 0, y: 0, width: size, height: size)
