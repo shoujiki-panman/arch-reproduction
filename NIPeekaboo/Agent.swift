@@ -294,49 +294,33 @@ final class PlaceResolver: NSObject, MKLocalSearchCompleterDelegate {
 
 // MARK: - 考えている玉
 
-/// 考えているあいだ回って脈打つ玉（libraries.dev の Thinking orb の見せ方にならう）。
+/// 考えている印。手描きの玉はやめて、SF Symbols の ✨ と iOS 標準の
+/// アニメーション（variableColor）を使う（本人 9/25「デザインは自前しないで」）。
 final class OrbView: UIView {
-    private let gradient = CAGradientLayer()
+    private let symbol = UIImageView(image: UIImage(systemName: "sparkles"))
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        gradient.type = .conic
-        gradient.colors = [UIColor(red: 0.43, green: 0.36, blue: 1, alpha: 1).cgColor,
-                           UIColor(red: 0.66, green: 0.79, blue: 1, alpha: 1).cgColor,
-                           UIColor(red: 0.78, green: 0.71, blue: 1, alpha: 1).cgColor,
-                           UIColor(red: 0.43, green: 0.36, blue: 1, alpha: 1).cgColor]
-        gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
-        gradient.endPoint = CGPoint(x: 0.5, y: 0)
-        layer.addSublayer(gradient)
-        clipsToBounds = true
+        symbol.tintColor = .systemPurple
+        symbol.contentMode = .scaleAspectFit
+        symbol.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
+        addSubview(symbol)
+        symbol.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            symbol.topAnchor.constraint(equalTo: topAnchor),
+            symbol.bottomAnchor.constraint(equalTo: bottomAnchor),
+            symbol.leadingAnchor.constraint(equalTo: leadingAnchor),
+            symbol.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        gradient.frame = bounds
-        layer.cornerRadius = bounds.width / 2
-    }
-
     func setThinking(_ on: Bool) {
+        guard #available(iOS 17.0, *) else { return }
         if on {
-            guard gradient.animation(forKey: "spin") == nil else { return }
-            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-            spin.fromValue = 0
-            spin.toValue = Double.pi * 2
-            spin.duration = 1.6
-            spin.repeatCount = .infinity
-            gradient.add(spin, forKey: "spin")
-            let pulse = CABasicAnimation(keyPath: "transform.scale")
-            pulse.fromValue = 0.9
-            pulse.toValue = 1.06
-            pulse.duration = 0.8
-            pulse.autoreverses = true
-            pulse.repeatCount = .infinity
-            layer.add(pulse, forKey: "pulse")
+            symbol.addSymbolEffect(.variableColor.iterative.reversing)
         } else {
-            gradient.removeAnimation(forKey: "spin")
-            layer.removeAnimation(forKey: "pulse")
+            symbol.removeAllSymbolEffects()
         }
     }
 }
@@ -584,7 +568,7 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         var conf = UIButton.Configuration.filled()
         conf.title = title
         conf.baseBackgroundColor = primary ? MeetPalette.action : MeetPalette.raised
-        conf.baseForegroundColor = primary ? MeetPalette.background : MeetPalette.primary
+        conf.baseForegroundColor = primary ? MeetPalette.onAction : MeetPalette.primary
         conf.cornerStyle = .capsule
         conf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
         conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in

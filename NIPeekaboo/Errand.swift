@@ -250,7 +250,7 @@ final class ErrandComposeViewController: UIViewController {
             conf.image = selected ? UIImage(systemName: "checkmark") : nil
             conf.imagePadding = 6
             conf.baseBackgroundColor = selected ? MeetPalette.action : MeetPalette.raised
-            conf.baseForegroundColor = selected ? .black : MeetPalette.primary
+            conf.baseForegroundColor = selected ? MeetPalette.onAction : MeetPalette.primary
             conf.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16)
             conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
                 var a = attrs
@@ -277,7 +277,7 @@ final class ErrandComposeViewController: UIViewController {
         conf.image = UIImage(systemName: "cart.fill")
         conf.imagePadding = 10
         conf.baseBackgroundColor = chosen.isEmpty ? MeetPalette.raised : MeetPalette.action
-        conf.baseForegroundColor = chosen.isEmpty ? MeetPalette.secondary : .black
+        conf.baseForegroundColor = chosen.isEmpty ? MeetPalette.secondary : MeetPalette.onAction
         conf.cornerStyle = .capsule
         conf.contentInsets = NSDirectionalEdgeInsets(top: 16, leading: 24, bottom: 16, trailing: 24)
         conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
@@ -358,7 +358,7 @@ final class ErrandListViewController: UIViewController {
         conf.image = UIImage(systemName: "checkmark.circle.fill")
         conf.imagePadding = 10
         conf.baseBackgroundColor = MeetPalette.action
-        conf.baseForegroundColor = .black
+        conf.baseForegroundColor = MeetPalette.onAction
         conf.cornerStyle = .capsule
         conf.contentInsets = NSDirectionalEdgeInsets(top: 16, leading: 24, bottom: 16, trailing: 24)
         conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in

@@ -33,7 +33,7 @@ final class FaceView: UIView {
         clipsToBounds = true
         photo.contentMode = .scaleAspectFill
         initial.textAlignment = .center
-        initial.textColor = MeetPalette.background
+        initial.textColor = .black
         for v in [photo, initial] as [UIView] {
             addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -114,16 +114,26 @@ final class HomeSheetView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = MeetPalette.surface
-        layer.cornerRadius = 22
-        layer.cornerCurve = .continuous
-        layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        // 地は iOS 標準のすりガラス（Appleマップの下の板と同じ素材）。
+        let material = UIVisualEffectView(effect: UIBlurEffect(style: .systemThickMaterial))
+        material.layer.cornerRadius = 26
+        material.layer.cornerCurve = .continuous
+        material.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        material.clipsToBounds = true
+        addSubview(material)
+        material.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            material.topAnchor.constraint(equalTo: topAnchor),
+            material.bottomAnchor.constraint(equalTo: bottomAnchor),
+            material.leadingAnchor.constraint(equalTo: leadingAnchor),
+            material.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
         layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.3
-        layer.shadowRadius = 12
+        layer.shadowOpacity = 0.12
+        layer.shadowRadius = 10
         layer.shadowOffset = CGSize(width: 0, height: -2)
 
-        grabber.backgroundColor = MeetPalette.raised
+        grabber.backgroundColor = .tertiaryLabel
         grabber.layer.cornerRadius = 2.5
         addSubview(grabber)
         grabber.translatesAutoresizingMaskIntoConstraints = false
@@ -278,7 +288,7 @@ final class HomeSheetView: UIView {
             conf.imagePlacement = .top
             conf.imagePadding = 6
             conf.baseBackgroundColor = strong ? MeetPalette.action : MeetPalette.raised
-            conf.baseForegroundColor = strong ? MeetPalette.background : MeetPalette.primary
+            conf.baseForegroundColor = strong ? MeetPalette.onAction : MeetPalette.primary
             conf.cornerStyle = .large
             conf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 2, bottom: 10, trailing: 2)
             conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
@@ -386,7 +396,7 @@ final class HomeSheetView: UIView {
             var conf = UIButton.Configuration.filled()
             conf.title = "つなぐ"
             conf.baseBackgroundColor = MeetPalette.action
-            conf.baseForegroundColor = MeetPalette.background
+            conf.baseForegroundColor = MeetPalette.onAction
             conf.cornerStyle = .capsule
             conf.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16)
             conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
@@ -601,7 +611,7 @@ final class RouteSheetViewController: UIViewController {
         startConf.image = UIImage(systemName: "location.north.fill")
         startConf.imagePadding = 8
         startConf.baseBackgroundColor = MeetPalette.action
-        startConf.baseForegroundColor = MeetPalette.background
+        startConf.baseForegroundColor = MeetPalette.onAction
         startConf.cornerStyle = .capsule
         startConf.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 20, bottom: 14, trailing: 20)
         startConf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
@@ -889,7 +899,7 @@ final class MiniMapView: UIView, MKMapViewDelegate {
         clipsToBounds = true
 
         map.delegate = self
-        map.overrideUserInterfaceStyle = .dark
+        map.overrideUserInterfaceStyle = .unspecified
         map.showsUserLocation = true
         map.showsCompass = false
         map.isUserInteractionEnabled = false
@@ -1043,38 +1053,17 @@ final class CameraCard: UIView {
 
 /// 自分の位置の印。青い丸に白い三角（Android XR・Googleマップの案内と同じ）。
 enum NavArrow {
-    /// 向きが分からないときの、ただの青い点（Appleマップの現在地と同じ）。
-    static func dot(size: CGFloat) -> UIImage {
-        UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { ctx in
-            let rect = CGRect(x: 0, y: 0, width: size, height: size)
-            let g = ctx.cgContext
-            g.setFillColor(UIColor.white.cgColor)
-            g.fillEllipse(in: rect.insetBy(dx: size * 0.18, dy: size * 0.18))
-            g.setFillColor(UIColor(red: 0.26, green: 0.45, blue: 1.0, alpha: 1).cgColor)
-            g.fillEllipse(in: rect.insetBy(dx: size * 0.27, dy: size * 0.27))
-        }
+    /// 手描きの三角はやめて、SF Symbols の「location.north.circle.fill」を使う。
+    static func image(size: CGFloat) -> UIImage {
+        let config = UIImage.SymbolConfiguration(pointSize: size * 0.9)
+            .applying(UIImage.SymbolConfiguration(paletteColors: [.white, .systemBlue]))
+        return UIImage(systemName: "location.north.circle.fill", withConfiguration: config) ?? UIImage()
     }
 
-    static func image(size: CGFloat) -> UIImage {
-        UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { ctx in
-            let rect = CGRect(x: 0, y: 0, width: size, height: size)
-            let g = ctx.cgContext
-            g.setFillColor(UIColor(red: 0.26, green: 0.45, blue: 1.0, alpha: 0.95).cgColor)
-            g.fillEllipse(in: rect.insetBy(dx: 1, dy: 1))
-            g.setStrokeColor(UIColor.white.cgColor)
-            g.setLineWidth(size * 0.06)
-            g.strokeEllipse(in: rect.insetBy(dx: size * 0.04, dy: size * 0.04))
-            // 上を指す矢じり（下が切れ込んだ三角）。
-            let c = size / 2
-            let path = UIBezierPath()
-            path.move(to: CGPoint(x: c, y: size * 0.2))
-            path.addLine(to: CGPoint(x: size * 0.74, y: size * 0.76))
-            path.addLine(to: CGPoint(x: c, y: size * 0.62))
-            path.addLine(to: CGPoint(x: size * 0.26, y: size * 0.76))
-            path.close()
-            UIColor.white.setFill()
-            path.fill()
-        }
+    static func dot(size: CGFloat) -> UIImage {
+        let config = UIImage.SymbolConfiguration(pointSize: size * 0.6)
+            .applying(UIImage.SymbolConfiguration(paletteColors: [.systemBlue, .white]))
+        return UIImage(systemName: "circle.inset.filled", withConfiguration: config) ?? UIImage()
     }
 }
 
@@ -1298,7 +1287,7 @@ final class PlaceCardViewController: UIViewController {
         conf.image = UIImage(systemName: symbol)
         conf.imagePadding = 6
         conf.baseBackgroundColor = primary ? MeetPalette.action : MeetPalette.raised
-        conf.baseForegroundColor = primary ? MeetPalette.background : MeetPalette.primary
+        conf.baseForegroundColor = primary ? MeetPalette.onAction : MeetPalette.primary
         conf.cornerStyle = .capsule
         conf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 10, bottom: 12, trailing: 10)
         conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
@@ -1347,7 +1336,6 @@ final class SearchPlacesViewController: UIViewController, UISearchBarDelegate, U
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = MeetPalette.background
-        overrideUserInterfaceStyle = .dark
         searchBar.placeholder = "場所・お店・駅を検索"
         searchBar.searchBarStyle = .minimal
         searchBar.delegate = self

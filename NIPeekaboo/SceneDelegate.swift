@@ -12,7 +12,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
         let window = UIWindow(windowScene: windowScene)
         window.rootViewController = MeetViewController()
-        window.overrideUserInterfaceStyle = .dark
+        // 端末のライト／ダークに合わせる（以前は暗い色で固定していた）。
         self.window = window
         window.makeKeyAndVisible()
 

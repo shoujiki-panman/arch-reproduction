@@ -393,15 +393,16 @@ extension Data {
 // Blue means an action or guidance; mint is reserved for arrival.
 // Opaque text colours retain their contrast on the dark sheet material.
 enum MeetPalette {
-    static let background = UIColor(red: 16/255, green: 22/255, blue: 32/255, alpha: 1)
-    static let surface = UIColor(red: 30/255, green: 40/255, blue: 55/255, alpha: 1)
-    static let raised = UIColor(red: 44/255, green: 57/255, blue: 76/255, alpha: 1)
-    static let primary = UIColor(red: 244/255, green: 247/255, blue: 252/255, alpha: 1)
-    static let secondary = UIColor(red: 184/255, green: 196/255, blue: 213/255, alpha: 1)
-    static let action = UIColor(red: 169/255, green: 202/255, blue: 255/255, alpha: 1)
-    /// Arrival is the seal being pressed: the same ink gold as the scale, not a
-    /// second colour. Mint was the sample app's; a mint sheet with black type is
-    /// the one screen everyone has seen before.
+    // iOS 標準の色（ライト／ダークで自動に切り替わる）。自前の紺色はやめた
+    // （本人 9/25「デザインは自前しないで、ダサい」）。Appleマップと同じ並び。
+    static let background = UIColor.systemBackground
+    static let surface = UIColor.secondarySystemBackground
+    static let raised = UIColor.tertiarySystemFill
+    static let primary = UIColor.label
+    static let secondary = UIColor.secondaryLabel
+    static let action = UIColor.systemBlue
+    /// 青い地の上の文字。
+    static let onAction = UIColor.white
     static let arrival = UIColor(red: 198/255, green: 164/255, blue: 92/255, alpha: 1)
     /// The trail left behind while the distance was growing. Warm, not alarming:
     /// walking away is not an error, it is information. Kept well off the gold.
@@ -1357,6 +1358,10 @@ final class MeetViewController: UIViewController {
     private let switchButton = UIButton(type: .system)
     /// 地図を指で動かしたあと、2人が入る向きへ戻すボタン。動かしたときだけ出る。
     private let recenterButton = UIButton(type: .system)
+    /// 標準の現在地ボタン（押すと自分に寄る・もう一度で向きに合わせて回る）とコンパス。
+    /// 地図ができてから中身を入れる。
+    private let trackingSlot = UIView()
+    private let compassSlot = UIView()
     private let floatingButtons = TouchThroughStack()
     private let endButton = UIButton(type: .system)
     private let motionActivity = CMMotionActivityManager()
@@ -2182,6 +2187,7 @@ final class MeetViewController: UIViewController {
 
     /// Timers stop in the background, so the expiry is checked on the way back.
     @objc private func appWillEnterForeground() {
+        mapFloor?.followSystemAppearance()
         locations.startHeading()
         expireGroup()
         refreshDials()
@@ -4627,7 +4633,7 @@ final class MeetViewController: UIViewController {
         floatingButtons.isHidden = !floorUp
         // 地図を指で動かしたあとだけ「戻す」を出す。動かしていないのに出すと、
         // 押しても何も変わらないボタンになる。
-        recenterButton.isHidden = !(floorUp && mapFloor?.userMoved == true)
+        recenterButton.isHidden = true
         // 「まわりを見る」は自分の場所だけで動く。相手を待つあいだこそ使う。
         exploreButton.isHidden = !(floorUp || dialExplores || ringHidden)
         // カメラ（実際の道の上に曲がり角と相手を重ねる見え方）へは、右上から一押しで。
@@ -5793,11 +5799,14 @@ final class MeetViewController: UIViewController {
         // 並びの基準としては残すので、見えなくするだけ。
         title.alpha = 0
 
-        var more = UIButton.Configuration.plain()
-        more.image = UIImage(systemName: "ellipsis.circle",
-                             withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .regular))
+        // ⋯ も右のボタンと同じ iOS 標準のガラスのボタン。
+        var more: UIButton.Configuration
+        if #available(iOS 26.0, *) { more = .glass() } else { more = .plain() }
+        more.image = UIImage(systemName: "ellipsis",
+                             withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))
         more.baseForegroundColor = MeetPalette.primary
-        more.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+        more.cornerStyle = .capsule
+        more.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 12, bottom: 14, trailing: 12)
         demoButton.configuration = more
         demoButton.accessibilityLabel = "その他"
         demoButton.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
@@ -5812,7 +5821,7 @@ final class MeetViewController: UIViewController {
         roleSwitch.backgroundColor = MeetPalette.surface
         roleSwitch.setTitleTextAttributes([.foregroundColor: MeetPalette.secondary,
                                            .font: Type.button], for: .normal)
-        roleSwitch.setTitleTextAttributes([.foregroundColor: MeetPalette.background,
+        roleSwitch.setTitleTextAttributes([.foregroundColor: MeetPalette.onAction,
                                            .font: Type.font(15, .bold, .body)], for: .selected)
         roleSwitch.addTarget(self, action: #selector(roleChanged), for: .valueChanged)
         roleSwitch.isHidden = true
@@ -5913,6 +5922,28 @@ final class MeetViewController: UIViewController {
         ])
     }
 
+    /// Apple の標準部品（MKUserTrackingButton・MKCompassButton）をそのまま置く。
+    private func installStandardMapControls(for map: MKMapView) {
+        let tracking = MKUserTrackingButton(mapView: map)
+        let compass = MKCompassButton(mapView: map)
+        compass.compassVisibility = .adaptive      // 北が上でないときだけ出る
+        for (slot, control) in [(trackingSlot, tracking as UIView), (compassSlot, compass as UIView)] {
+            slot.addSubview(control)
+            control.translatesAutoresizingMaskIntoConstraints = false
+            slot.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                control.topAnchor.constraint(equalTo: slot.topAnchor),
+                control.bottomAnchor.constraint(equalTo: slot.bottomAnchor),
+                control.leadingAnchor.constraint(equalTo: slot.leadingAnchor),
+                control.trailingAnchor.constraint(equalTo: slot.trailingAnchor),
+            ])
+        }
+        if #available(iOS 26.0, *) {} else {
+            tracking.backgroundColor = MeetPalette.surface
+            tracking.layer.cornerRadius = 8
+        }
+    }
+
     /// 地図の床。相手の居場所が届いている間だけ敷く。
     /// 画面をもう1枚作らず、いまある地図の画面をそのまま下に埋める。
     private func buildMapFloor() {
@@ -5931,6 +5962,8 @@ final class MeetViewController: UIViewController {
         vc.view.isHidden = true
         // 指で動かされたら「戻す」を出す（こちらからは向きを直さない）。
         vc.onUserMoved = { [weak self] in self?.refreshDials() }
+        vc.loadViewIfNeeded()
+        installStandardMapControls(for: vc.mapView)
         vc.onSelectPlace = { [weak self] item in self?.presentPlace(item) }
         vc.onNavPaused = { [weak self] in self?.navOverlay.setRecenterVisible(true) }
         mapFloor = vc
@@ -5942,8 +5975,9 @@ final class MeetViewController: UIViewController {
         let show = true
         if show, floor.view.isHidden { floor.refit() }   // 出た瞬間に2人が入る向きへ
         floor.view.isHidden = !show
-        topScrim.isHidden = !show
-        bottomScrim.isHidden = !show
+        // 地図の上下を暗くしていた影は外す（Appleマップに無い。地図が読みにくくなっていた）。
+        topScrim.isHidden = true
+        bottomScrim.isHidden = true
         homeScreen.backgroundColor = show ? .clear : bgColour
         guard show else { return }
         floor.rename(peer: partnerName)
@@ -5991,7 +6025,7 @@ final class MeetViewController: UIViewController {
         sendButton.configuration = primaryConfig(title: "知らせる",
                                                  image: "hand.wave.fill",
                                                  background: actionColour,
-                                                 foreground: .black)
+                                                 foreground: MeetPalette.onAction)
         // Who it goes to and what they will see, under the verb.
         sendButton.configuration?.titleAlignment = .center
         sendButton.configuration?.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
@@ -6005,7 +6039,7 @@ final class MeetViewController: UIViewController {
         let callConf = primaryConfig(title: "招待を送る",
                                      image: "square.and.arrow.up",
                                      background: actionColour,
-                                     foreground: MeetPalette.background)
+                                     foreground: MeetPalette.onAction)
         callButton.configuration = callConf
         callButton.titleLabel?.font = Type.button
         callButton.addTarget(self, action: #selector(callPartnerTapped), for: .touchUpInside)
@@ -6118,7 +6152,7 @@ final class MeetViewController: UIViewController {
         cameraButton.configuration = primaryConfig(title: "ここだよ！ 合図する",
                                                    image: "hand.wave.fill",
                                                    background: actionColour,
-                                                   foreground: .black)
+                                                   foreground: MeetPalette.onAction)
         cameraButton.addTarget(self, action: #selector(primaryTapped), for: .touchUpInside)
         respondOnPress(cameraButton)
         cameraButton.isEnabled = false
@@ -6153,7 +6187,7 @@ final class MeetViewController: UIViewController {
         inviteButton.configuration = primaryConfig(title: "招待リンクを送る",
                                                    image: "square.and.arrow.up",
                                                    background: actionColour,
-                                                   foreground: .black)
+                                                   foreground: MeetPalette.onAction)
         inviteButton.addTarget(self, action: #selector(callPartnerTapped), for: .touchUpInside)
         respondOnPress(inviteButton)
 
@@ -6198,26 +6232,31 @@ final class MeetViewController: UIViewController {
         // 地図の上に置く小さい丸2つ。地図が床のときだけ出る。
         // 戻すボタンは、地図アプリでおなじみの矢印にする。人2人の絵だと、
         // 相手がいないときに何のボタンか分からなかった。
+        // 右上の丸いボタンは iOS 26 標準のガラスのボタン（手作りの丸をやめた）。
         for (button, symbol, action) in [(recenterButton, "location.fill", #selector(recenterTapped)),
                                          (exploreButton, "binoculars", #selector(exploreTapped)),
                                          (switchButton, "camera.viewfinder", #selector(switchTapped))] {
-            var conf = UIButton.Configuration.filled()
+            var conf: UIButton.Configuration
+            if #available(iOS 26.0, *) {
+                conf = .glass()
+            } else {
+                conf = .filled()
+                conf.baseBackgroundColor = MeetPalette.surface
+                conf.baseForegroundColor = MeetPalette.primary
+            }
             conf.image = UIImage(systemName: symbol,
-                                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .semibold))
-            conf.baseBackgroundColor = MeetPalette.surface
-            conf.baseForegroundColor = MeetPalette.primary
+                                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))
             conf.cornerStyle = .capsule
-            conf.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14)
+            conf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
             button.configuration = conf
             button.addTarget(self, action: action, for: .touchUpInside)
             respondOnPress(button)
-            button.layer.shadowColor = UIColor.black.cgColor
-            button.layer.shadowOpacity = 0.35
-            button.layer.shadowRadius = 10
-            button.layer.shadowOffset = CGSize(width: 0, height: 4)
         }
         floatingButtons.axis = .vertical
         floatingButtons.spacing = 10
+        floatingButtons.alignment = .center
+        floatingButtons.addArrangedSubview(trackingSlot)
+        floatingButtons.addArrangedSubview(compassSlot)
         floatingButtons.addArrangedSubview(recenterButton)
         floatingButtons.addArrangedSubview(exploreButton)
         floatingButtons.addArrangedSubview(switchButton)
@@ -7913,7 +7952,7 @@ final class WelcomeViewController: UIViewController, UITextFieldDelegate {
         var conf = UIButton.Configuration.filled()
         conf.title = "続ける"
         conf.baseBackgroundColor = MeetPalette.action
-        conf.baseForegroundColor = MeetPalette.background
+        conf.baseForegroundColor = MeetPalette.onAction
         conf.cornerStyle = .large
         conf.contentInsets = NSDirectionalEdgeInsets(top: 16, leading: 20, bottom: 16, trailing: 20)
         conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in

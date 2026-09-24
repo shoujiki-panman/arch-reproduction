@@ -128,7 +128,7 @@ final class MeetMapViewController: UIViewController {
         map.delegate = self
         map.showsUserLocation = true
         map.showsCompass = false
-        map.overrideUserInterfaceStyle = .dark
+        followSystemAppearance()
         // 普通の地図として使う。店・駅・公園の印を出し、押せるようにする。
         // 以前は「地図は床」として印を全部消していたが、つないでいないと周りも
         // 見られない地図になっていた（本人 9/25「普通のマップや周辺見れるように」）。
@@ -221,9 +221,7 @@ final class MeetMapViewController: UIViewController {
     }
 
     /// 印（写真）を貼り替える。地図の点や向きはそのまま。
-    private func refreshFaces() {
-        if let peer, let view = map.view(for: peer) { applyFace(peerFace, to: view, name: peerName) }
-    }
+    private func refreshFaces() {}
 
     /// 丸の中身を写真にする。写真が無ければこれまでの人の形。
     /// 丸の中身。写真があれば写真、無ければ名前の頭文字（「探す」やLife360と同じ）。
@@ -240,7 +238,13 @@ final class MeetMapViewController: UIViewController {
 
     /// 名前と一言の札だけを作り直す。地図の点や向きはそのまま。
     private func refreshCards() {
-        if let peer, let view = map.view(for: peer) { attachCard(to: view, name: peerName, mood: peerMood) }
+        guard let peer else { return }
+        peer.title = peerName
+        peer.subtitle = peerMood
+        if let view = map.view(for: peer) as? MKMarkerAnnotationView {
+            view.annotation = peer
+            view.glyphText = peerName.first.map(String.init)
+        }
     }
 
     /// 人の上に札を付ける（すでに付いていれば取り替える）。
@@ -330,7 +334,7 @@ final class MeetMapViewController: UIViewController {
                 fit(me: me.coordinate, peer: coordinate)
                 fitted = true
                 refitAt = Date()
-            } else if !userMoved, drifted(me: me.coordinate, peer: coordinate),
+            } else if !userMoved, map.userTrackingMode == .none, drifted(me: me.coordinate, peer: coordinate),
                       Date().timeIntervalSince(refitAt) > 5 {
                 // 2人は歩くので、最初に決めた画面のままだと相手がすぐ外に出る。
                 // 指で動かされていないあいだは、こちらで取り直す。
@@ -422,6 +426,16 @@ final class MeetMapViewController: UIViewController {
         refreshNavLook()
         refit()
     }
+
+    /// 地図だけは端末の「ライト／ダーク」に合わせる（Appleマップと同じ）。
+    /// アプリは暗い色で固定しているが、昼の屋外で暗い地図は読みにくい。
+    func followSystemAppearance() {
+        // 固定しない。画面全体がライト／ダークに合わせて切り替わるので、地図もそれに付いていく。
+        map.overrideUserInterfaceStyle = .unspecified
+    }
+
+    /// 地図そのもの（標準の現在地ボタン・コンパスをつなぐため）。
+    var mapView: MKMapView { map }
 
     /// 案内中。指で地図を動かしたら、カメラは止める（「中央に戻す」で戻る）。
     private(set) var navigating = false
@@ -678,87 +692,28 @@ extension MeetMapViewController: MKMapViewDelegate {
     // 相手がどこかにいる、という感じは、記号よりも姿のほうが伝わる（マリオカートの選択画面のように）。
     func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
         // 自分も同じ姿で立たせる。青い点だと、自分だけ地図アプリのままになる
-        // 自分は小さな青い三角（Android XR・Googleマップと同じ）。先が向いている方。
-        // 以前は顔の丸（64pt）と名札で、自分がどこに立っているか分からなかった（本人 9/25）。
-        // 自分の名前は自分の地図に要らないので出さない（様子は相手の地図に出る）。
-        if annotation is MKUserLocation {
-            let id = "me"
-            let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
-                ?? MKAnnotationView(annotation: annotation, reuseIdentifier: id)
+        // 自分は iOS 標準の青い点（向きの扇つき）。手描きの印はやめた（本人 9/25「デザインは自前しないで」）。
+        if annotation is MKUserLocation { return nil }
+        if annotation is PinPoint {
+            let view = (mapView.dequeueReusableAnnotationView(withIdentifier: "pin") as? MKMarkerAnnotationView)
+                ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "pin")
             view.annotation = annotation
-            view.canShowCallout = false
-            view.subviews.forEach { $0.removeFromSuperview() }
-            let size: CGFloat = 34
-            view.frame = CGRect(x: 0, y: 0, width: size, height: size)
-            view.centerOffset = .zero                     // 印の真ん中＝自分の位置
-            let arrow = UIImageView(frame: view.bounds)
-            arrow.tag = Self.navArrowTag
-            view.addSubview(arrow)
-            view.layer.shadowColor = UIColor.black.cgColor
-            view.layer.shadowOpacity = 0.35
-            view.layer.shadowRadius = 4
-            view.layer.shadowOffset = .zero
+            view.markerTintColor = .systemGreen
+            view.glyphImage = UIImage(systemName: "flag.fill")
+            view.titleVisibility = .visible
             view.displayPriority = .required
-            view.zPriority = .max
-            applyMeLook(to: view)
             return view
         }
-        if let flag = annotation as? PinPoint {
-            let id = "pin"
-            let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
-                ?? MKAnnotationView(annotation: annotation, reuseIdentifier: id)
-            view.annotation = annotation
-            view.canShowCallout = false
-            view.subviews.forEach { $0.removeFromSuperview() }
-            let size: CGFloat = 46
-            view.frame = CGRect(x: 0, y: 0, width: size, height: size)
-            view.centerOffset = CGPoint(x: 0, y: -size / 2)
-            let disc = UIView(frame: view.bounds)
-            disc.backgroundColor = MeetPalette.ink
-            disc.layer.cornerRadius = size / 2
-            disc.layer.borderWidth = 3
-            disc.layer.borderColor = UIColor.white.cgColor
-            let symbol = UIImageView(image: UIImage(systemName: "flag.fill"))
-            symbol.tintColor = .black
-            symbol.contentMode = .scaleAspectFit
-            symbol.frame = disc.bounds.insetBy(dx: 12, dy: 12)
-            disc.addSubview(symbol)
-            view.addSubview(disc)
-            let card = Self.nameCard(flag.title ?? "待ち合わせ", mood: nil)
-            card.frame.origin = CGPoint(x: (size - card.frame.width) / 2, y: -card.frame.height - 6)
-            view.addSubview(card)
-            view.clipsToBounds = false
-            return view
-        }
-        guard let point = annotation as? PeerPoint else { return nil }
-        let id = "peer"
-        let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
-            ?? MKAnnotationView(annotation: annotation, reuseIdentifier: id)
+        guard annotation is PeerPoint else { return nil }
+        // 相手も iOS 標準のピン（Appleマップと同じ見た目）。名前はピンの下、一言はその下。
+        let view = (mapView.dequeueReusableAnnotationView(withIdentifier: "peer") as? MKMarkerAnnotationView)
+            ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "peer")
         view.annotation = annotation
-        view.canShowCallout = false
-        view.subviews.forEach { $0.removeFromSuperview() }
-
-        // 相手の顔も小さく（72→48）。大きいと地図の上で場所がぼやける。
-        let size: CGFloat = 48
-        view.frame = CGRect(x: 0, y: 0, width: size, height: size)
-        view.centerOffset = CGPoint(x: 0, y: -(size / 2 + 4))
-
-        let avatar = UIView(frame: CGRect(x: 0, y: 0, width: size, height: size))
-        avatar.tag = Self.dotTag
-        avatar.backgroundColor = MeetPalette.action
-        avatar.layer.cornerRadius = size / 2
-        avatar.layer.borderWidth = 3
-        avatar.layer.borderColor = UIColor.white.cgColor
-        avatar.clipsToBounds = true
-        view.addSubview(avatar)
-        // 影は切り抜きに消されるので、丸の外側（台）に付ける。
-        view.layer.shadowColor = UIColor.black.cgColor
-        view.layer.shadowOpacity = 0.4
-        view.layer.shadowRadius = 6
-        view.layer.shadowOffset = CGSize(width: 0, height: 3)
-        applyFace(peerFace, to: view, name: peerName)
-
-        attachCard(to: view, name: peerName, mood: peerMood)
+        view.markerTintColor = .systemOrange
+        view.glyphText = peerName.first.map(String.init)
+        view.titleVisibility = .visible
+        view.subtitleVisibility = .visible
+        view.displayPriority = .required
         return view
     }
 }
