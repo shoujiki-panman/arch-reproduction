@@ -2415,6 +2415,11 @@ final class MeetViewController: UIViewController {
     /// 輪の中が「まわりを見る」になっているか。距離を地図で見ているあいだだけ。
     @objc private func dialTapped() {
         guard dialExplores else { return }
+        exploreTapped()
+    }
+
+    /// 地図の上の双眼鏡。自分の場所だけで動くので、相手を待つあいだも押せる。
+    @objc private func exploreTapped() {
         impactGenerator.impactOccurred()
         let vc = ExploreViewController(centre: locations.last?.coordinate)
         if let sheet = vc.sheetPresentationController {
@@ -3801,8 +3806,11 @@ final class MeetViewController: UIViewController {
 
         // 地図が床のときは輪を引っ込める。地図と輪が同じ場所で重なると、
         // どちらも読めなくなる（近づいて電波が届いたら、輪がまた前に出る）。
-        let floorUp = group != nil && theirFix != nil
-        let ringHidden = floorUp && !radioIsFresh() && !showRadar
+        // 相手が来る前から地図を出す。待っているあいだ砂時計しか出ないと、
+        // 1人でも使えるもの（自分の場所・まわりを見る）まで使えなくなる。
+        let floorUp = locations.last != nil
+        // まだ誰とも始めていないときは、輪の中の説明だけが頼りなので残す。
+        let ringHidden = floorUp && !radioIsFresh() && !showRadar && group != nil
         finderDial.isHidden = showRadar || ringHidden
         // 相手の居場所が無くなったら、切り替えは地図に戻しておく。
         if !floorUp, homeView != .map {
@@ -3810,7 +3818,8 @@ final class MeetViewController: UIViewController {
             viewSwitch.selectedSegmentIndex = 0
             locations.stopHeading()
         }
-        viewSwitch.isHidden = !floorUp
+        // 方角もカメラも相手がいないと出せないので、切り替えは届いてから。
+        viewSwitch.isHidden = !(floorUp && theirFix != nil)
         // 方角は、地図が床にあるあいだだけ。電波が届いたら輪が前に出る。
         let compassUp = floorUp && ringHidden && homeView == .compass
         compassLayer.isHidden = !compassUp
@@ -3826,7 +3835,8 @@ final class MeetViewController: UIViewController {
         // 地図を指で動かしたあとだけ「戻す」を出す。動かしていないのに出すと、
         // 押しても何も変わらないボタンになる。
         recenterButton.isHidden = !(floorUp && mapFloor?.userMoved == true)
-        exploreButton.isHidden = !dialExplores && !ringHidden
+        // 「まわりを見る」は自分の場所だけで動く。相手を待つあいだこそ使う。
+        exploreButton.isHidden = !(floorUp || dialExplores || ringHidden)
         switchButton.isHidden = !(activePeerID != nil && latestDistance != nil && supportsUWB)
 
         // Measuring stops when the phone locks, and finding someone in a crowd is
@@ -3884,6 +3894,11 @@ final class MeetViewController: UIViewController {
             finderStatus.text = "デモ中です。距離は実際の値ではありません。"
         } else if !supportsUWB {
             finderStatus.text = "デモは右上のメニューから利用できます。"
+        } else if group != nil, theirFix == nil, !connected {
+            // 相手を待っているあいだ。画面は自分の地図のままにして、状態はここで言う。
+            finderStatus.text = awaitingApproval
+                ? "ホストの許可を待っています。いまは自分の場所だけ見えています"
+                : "リンクを開いた人が入ると、ここに出ます。いまは自分の場所だけ見えています"
         } else if mapOnly {
             let until = group.map { untilText($0.expires) } ?? "今日"
             finderStatus.text = "電波はまだ届いていません。地図で見ています（\(until)）"
@@ -5012,7 +5027,7 @@ final class MeetViewController: UIViewController {
     /// 床の出し入れ。相手の居場所が無い間は、これまでどおりの紺一色。
     private func refreshMapFloor() {
         guard let floor = mapFloor else { return }
-        let show = group != nil && theirFix != nil
+        let show = locations.last != nil
         if show, floor.view.isHidden { floor.refit() }   // 出た瞬間に2人が入る向きへ
         floor.view.isHidden = !show
         topScrim.isHidden = !show
@@ -5294,7 +5309,7 @@ final class MeetViewController: UIViewController {
 
         // 地図の上に置く小さい丸2つ。地図が床のときだけ出る。
         for (button, symbol, action) in [(recenterButton, "person.2.fill", #selector(recenterTapped)),
-                                         (exploreButton, "binoculars", #selector(dialTapped)),
+                                         (exploreButton, "binoculars", #selector(exploreTapped)),
                                          (switchButton, "camera.viewfinder", #selector(switchTapped))] {
             var conf = UIButton.Configuration.filled()
             conf.image = UIImage(systemName: symbol,

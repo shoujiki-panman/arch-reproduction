@@ -300,6 +300,16 @@ final class MeetMapViewController: UIViewController {
         lastByRadio = byRadio
         showNumbers()
 
+        // 相手がまだ居ないとき。自分のまわりだけを見せる（何も映らない黒より、
+        // いま立っている場所が出ているほうが、待つあいだの役に立つ）。
+        if coordinate == nil, let me, !fitted {
+            let camera = MKMapCamera(lookingAtCenter: me.coordinate,
+                                     fromDistance: 700, pitch: 0, heading: 0)
+            map.setCamera(camera, animated: true)
+            fitted = true
+            refitAt = Date()
+        }
+
         // 2つの点を結ぶ線。どちら側にいるかは、線の向きでひと目でわかる。
         if let me, let coordinate {
             updateRoute(me: me.coordinate, peer: coordinate)
