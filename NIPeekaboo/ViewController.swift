@@ -1424,6 +1424,9 @@ final class MeetViewController: UIViewController {
     /// ほかの部品（閉じる・札）と奥行きで前後が入れ替わり、カメラの面の後ろに隠れた。
     private let arGroundHolder = UIView()
     private let tiltMotion = CMMotionManager()
+    /// 実機では、足もとの地図は画面の上ではなく実際の床に貼りつける。
+    private let groundMap = GroundMap()
+    private var groundLink: CADisplayLink?
     private let arMarkerChip = PaddedLabel()
     /// Held so it can stand down while the arrival overlay owns the screen: its
     /// material is meant for camera video, and over an opaque colour it leaves
@@ -2635,9 +2638,45 @@ final class MeetViewController: UIViewController {
         tiltMotion.stopDeviceMotionUpdates()
     }
 
+    /// 床に地図を貼りつける。カメラが動くたびに位置と向きを合わせる（毎フレーム）。
+    /// ARKitが動かない端末（シミュレータ）では、画面の上に傾けて描く代わりの地図を使う。
+    private var groundOnFloor: Bool {
+        #if targetEnvironment(simulator)
+        return false
+        #else
+        return ARWorldTrackingConfiguration.isSupported
+        #endif
+    }
+
+    private func startGroundMap() {
+        guard groundOnFloor else { return }
+        if groundMap.root.parent == nil { sceneView.scene.rootNode.addChildNode(groundMap.root) }
+        groundLink?.invalidate()
+        let link = CADisplayLink(target: self, selector: #selector(stepGroundMap))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30)
+        link.add(to: .main, forMode: .common)
+        groundLink = link
+    }
+
+    private func stopGroundMap() {
+        groundLink?.invalidate()
+        groundLink = nil
+        groundMap.root.opacity = 0
+    }
+
+    @objc private func stepGroundMap() {
+        guard let frame = sceneView.session.currentFrame else { return }
+        groundMap.place(camera: frame.camera.transform, heading: locations.heading?.trueHeading)
+        if let me = locations.last {
+            groundMap.refresh(center: me, route: (navRoute ?? mapFloor?.currentRoute)?.polyline,
+                              peer: theirFix?.coordinate, peerName: partnerName)
+        }
+    }
+
     /// 0 = 前を見ている、1 = 足もとを見ている。
     private func setGroundLook(_ look: Double) {
-        arGroundHolder.alpha = CGFloat(look)
+        // 床に貼りつけているときは、画面の上の代わりの地図は出さない（二重になる）。
+        arGroundHolder.alpha = groundOnFloor ? 0 : CGFloat(look)
         arTurnCard.alpha = CGFloat(1 - look * 0.85)
         arHint.alpha = CGFloat(1 - look)
     }
@@ -4671,6 +4710,7 @@ final class MeetViewController: UIViewController {
         arGroundMap.start()
         startTiltWatch()
         startARIfNeeded()
+        startGroundMap()
         if let id = activePeerID, let link = links[id] { runConfig(for: link, cameraAssist: true) }
         phase = .guiding
         updateGuidance()
@@ -4690,6 +4730,7 @@ final class MeetViewController: UIViewController {
         if !finding { locations.stopHeading() }
         arGroundMap.stop()
         stopTiltWatch()
+        stopGroundMap()
         stopProximityFeedback()
         floorRingsOnly = false
         clearPossibleRings()

@@ -10,6 +10,7 @@
 // この2つは渡された状態を描くだけにする。
 import UIKit
 import MapKit
+import SceneKit
 
 // MARK: - 顔の丸
 
@@ -820,6 +821,16 @@ final class MiniMapView: UIView, MKMapViewDelegate {
     }
 
     func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+        // 自分は丸ではなく、向いている方を指す三角（Android XRと同じ）。
+        // 地図は体の向きに合わせて回っているので、上を指す三角がそのまま進む向きになる。
+        if annotation is MKUserLocation {
+            let view = mapView.dequeueReusableAnnotationView(withIdentifier: "me")
+                ?? MKAnnotationView(annotation: annotation, reuseIdentifier: "me")
+            view.annotation = annotation
+            view.image = NavArrow.image(size: 34)
+            view.canShowCallout = false
+            return view
+        }
         guard annotation === peer else { return nil }
         let view = MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "peer")
         view.markerTintColor = MeetPalette.arrival
@@ -895,5 +906,176 @@ final class CameraCard: UIView {
         icon.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .bold))
         title.text = text
         subtitle.text = detail
+    }
+}
+
+// MARK: - 自分の三角
+
+/// 自分の位置の印。青い丸に白い三角（Android XR・Googleマップの案内と同じ）。
+enum NavArrow {
+    static func image(size: CGFloat) -> UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { ctx in
+            let rect = CGRect(x: 0, y: 0, width: size, height: size)
+            let g = ctx.cgContext
+            g.setFillColor(UIColor(red: 0.26, green: 0.45, blue: 1.0, alpha: 0.95).cgColor)
+            g.fillEllipse(in: rect.insetBy(dx: 1, dy: 1))
+            g.setStrokeColor(UIColor.white.cgColor)
+            g.setLineWidth(size * 0.06)
+            g.strokeEllipse(in: rect.insetBy(dx: size * 0.04, dy: size * 0.04))
+            // 上を指す矢じり（下が切れ込んだ三角）。
+            let c = size / 2
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: c, y: size * 0.2))
+            path.addLine(to: CGPoint(x: size * 0.74, y: size * 0.76))
+            path.addLine(to: CGPoint(x: c, y: size * 0.62))
+            path.addLine(to: CGPoint(x: size * 0.26, y: size * 0.76))
+            path.close()
+            UIColor.white.setFill()
+            path.fill()
+        }
+    }
+}
+
+// MARK: - 地面に貼りつく地図
+
+/// カメラの映像の足もとの床に貼りつく丸い地図（Android XRと同じ）。
+/// 地図の画像は北が上。床に寝かせたうえで世界の北に向けるので、描かれた道は
+/// 実際の道の向きと重なる。自分の三角だけは、いま向いている方へ回す。
+/// 床の上に置くので、前を向いていれば目に入らず、下を向いたときだけ見える。
+final class GroundMap {
+    let root = SCNNode()
+    private let disc = SCNNode()
+    private let meYaw = SCNNode()
+    private var center: CLLocation?
+    private var routeRef: MKPolyline?
+    private var snapshotAt = Date.distantPast
+    private var working = false
+    /// 地図に写す範囲（半径 m）と、床の上の直径（m）。
+    private let radius: CLLocationDistance = 220
+    private let diameter: CGFloat = 1.3
+
+    init() {
+        let plane = SCNPlane(width: diameter, height: diameter)
+        plane.cornerRadius = diameter / 2
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor.clear
+        material.lightingModel = .constant
+        material.isDoubleSided = true
+        material.writesToDepthBuffer = false
+        plane.materials = [material]
+        disc.geometry = plane
+        disc.eulerAngles.x = -.pi / 2
+        root.addChildNode(disc)
+
+        let arrow = SCNPlane(width: 0.17, height: 0.17)
+        let arrowMaterial = SCNMaterial()
+        arrowMaterial.diffuse.contents = NavArrow.image(size: 128)
+        arrowMaterial.lightingModel = .constant
+        arrowMaterial.isDoubleSided = true
+        arrowMaterial.writesToDepthBuffer = false
+        arrow.materials = [arrowMaterial]
+        let arrowNode = SCNNode(geometry: arrow)
+        arrowNode.eulerAngles.x = -.pi / 2
+        arrowNode.position.y = 0.003
+        arrowNode.renderingOrder = 10
+        meYaw.addChildNode(arrowNode)
+        root.addChildNode(meYaw)
+        root.opacity = 0
+    }
+
+    /// 毎フレーム。カメラの前1.1mの床に置き、地図の上を北へ、三角を向いている方へ。
+    /// 方角が取れないときは、向きの合わない地図を見せないよう消す。
+    func place(camera: simd_float4x4, heading degrees: Double?) {
+        guard let degrees, degrees >= 0 else { root.opacity = 0; return }
+        let pos = simd_float3(camera.columns.3.x, camera.columns.3.y, camera.columns.3.z)
+        let back = simd_float3(camera.columns.2.x, 0, camera.columns.2.z)   // カメラは -z を見ている
+        let len = simd_length(back)
+        guard len > 0.05 else { return }
+        let forward = -back / len
+        // 世界の向きの角度（-z が0、上から見て反時計回りが正）。
+        let camYaw = atan2(-forward.x, -forward.z)
+        let heading = Float(degrees * .pi / 180)          // 北から時計回り
+        root.simdPosition = simd_float3(pos.x + forward.x * 1.1, pos.y - 1.25, pos.z + forward.z * 1.1)
+        root.eulerAngles.y = camYaw + heading              // 地図の上（北）を世界の北へ
+        meYaw.eulerAngles.y = -heading                      // 三角は向いている方へ
+        if root.opacity < 1 {
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.4
+            root.opacity = 1
+            SCNTransaction.commit()
+        }
+    }
+
+    /// 地図の画像を作り直す。15m以上動いたか、道なりの線が変わったときだけ（重いので）。
+    func refresh(center me: CLLocation, route: MKPolyline?, peer: CLLocationCoordinate2D?, peerName: String) {
+        let moved = center.map { $0.distance(from: me) } ?? .greatestFiniteMagnitude
+        guard !working, moved > 15 || route !== routeRef,
+              Date().timeIntervalSince(snapshotAt) > 2 else { return }
+        working = true
+        snapshotAt = Date()
+        let options = MKMapSnapshotter.Options()
+        options.region = MKCoordinateRegion(center: me.coordinate,
+                                            latitudinalMeters: radius * 2, longitudinalMeters: radius * 2)
+        options.size = CGSize(width: 512, height: 512)
+        options.scale = 2
+        options.traitCollection = UITraitCollection(userInterfaceStyle: .dark)
+        options.pointOfInterestFilter = .excludingAll
+        MKMapSnapshotter(options: options).start { [weak self] snapshot, _ in
+            guard let self else { return }
+            self.working = false
+            guard let snapshot else { return }
+            let image = Self.compose(snapshot, route: route, peer: peer, peerName: peerName)
+            DispatchQueue.main.async {
+                (self.disc.geometry?.firstMaterial)?.diffuse.contents = image
+                self.center = me
+                self.routeRef = route
+            }
+        }
+    }
+
+    /// 地図に道なりの線と相手のピンを描き、丸く切り抜く。
+    private static func compose(_ snapshot: MKMapSnapshotter.Snapshot, route: MKPolyline?,
+                                peer: CLLocationCoordinate2D?, peerName: String) -> UIImage {
+        let size = snapshot.image.size
+        return UIGraphicsImageRenderer(size: size).image { ctx in
+            let g = ctx.cgContext
+            let rect = CGRect(origin: .zero, size: size)
+            g.addEllipse(in: rect)
+            g.clip()
+            snapshot.image.draw(at: .zero)
+            UIColor(white: 0, alpha: 0.18).setFill()
+            g.fill(rect)
+            if let route, route.pointCount > 1 {
+                let points = route.points()
+                let path = UIBezierPath()
+                for i in 0..<route.pointCount {
+                    let p = snapshot.point(for: points[i].coordinate)
+                    if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+                }
+                path.lineWidth = 14
+                path.lineCapStyle = .round
+                path.lineJoinStyle = .round
+                UIColor(red: 0.45, green: 0.75, blue: 1.0, alpha: 0.95).setStroke()
+                path.stroke()
+            }
+            if let peer {
+                let p = snapshot.point(for: peer)
+                let pin = CGRect(x: p.x - 26, y: p.y - 26, width: 52, height: 52)
+                UIColor(red: 0.98, green: 0.45, blue: 0.4, alpha: 1).setFill()
+                g.fillEllipse(in: pin)
+                UIColor.white.setStroke()
+                g.setLineWidth(5)
+                g.strokeEllipse(in: pin.insetBy(dx: 2.5, dy: 2.5))
+                let initial = (peerName.first.map(String.init) ?? "?") as NSString
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.systemFont(ofSize: 26, weight: .bold), .foregroundColor: UIColor.white]
+                let t = initial.size(withAttributes: attrs)
+                initial.draw(at: CGPoint(x: p.x - t.width / 2, y: p.y - t.height / 2), withAttributes: attrs)
+            }
+            // 縁を白く（床の上で地図の範囲が分かるように）。
+            UIColor(white: 1, alpha: 0.7).setStroke()
+            g.setLineWidth(8)
+            g.strokeEllipse(in: rect.insetBy(dx: 4, dy: 4))
+        }
     }
 }
