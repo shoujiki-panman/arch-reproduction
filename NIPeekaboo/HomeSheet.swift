@@ -125,10 +125,15 @@ final class HomeSheetView: UIView {
 
     private let stack = UIStackView()
     private let grabber = UIView()
+    /// ふだん出ている行（相手・タイル・友だち）。地図を触ると隠れて、検索だけになる。
+    private let body = UIStackView()
     /// 引き上げたときだけ出る行（様子・追加・やめる）。
     private let more = UIStackView()
-    private(set) var expanded = false
+    /// 板の高さは3段：検索だけ・ふだん・引き上げ。Appleマップの下の板と同じく、地図を触ると検索だけまで下がる。
+    enum Level: Int { case minimized, normal, expanded }
+    private(set) var level: Level = .normal
     private var mode: Mode?
+    private var wasPeer: Bool?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -153,6 +158,8 @@ final class HomeSheetView: UIView {
         addSubview(stack)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
+        body.axis = .vertical
+        body.spacing = 12
         more.axis = .vertical
         more.spacing = 0
 
@@ -175,21 +182,65 @@ final class HomeSheetView: UIView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// 影の形を先に渡す（渡さないと、地図を動かすたびに毎フレーム影を計算し直す）。
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layer.shadowPath = UIBezierPath(roundedRect: bounds, byRoundingCorners: [.topLeft, .topRight],
+                                        cornerRadii: CGSize(width: 22, height: 22)).cgPath
+    }
+
+    /// 板の形（どの行が並ぶか）。距離の一行（歩くたびに変わる）は入れない。
+    static func shape(of mode: Mode, suggestion: Suggestion?) -> String {
+        func faceKey(_ image: UIImage?) -> String { image.map { "\(ObjectIdentifier($0))" } ?? "-" }
+        var parts: [String] = []
+        if let s = suggestion { parts += ["s", s.kind.rawValue, s.title, s.detail, s.primary] }
+        switch mode {
+        case let .peer(p, canInvite):
+            parts += ["p", p.name, faceKey(p.face), p.mood ?? "", "\(p.radioNear)", p.pinName ?? "",
+                      p.errandText ?? "", "\(canInvite)"]
+        case let .friends(friends, waitingLine, canInvite, canEnd):
+            parts += ["f", waitingLine ?? "", "\(canInvite)", "\(canEnd)"]
+            for f in friends { parts += [f.name, faceKey(f.face), "\(f.waiting)"] }
+        }
+        return parts.joined(separator: "\u{1F}")
+    }
+
+    /// 前に並べた形と、相手の距離の一行（形が同じなら、ここだけ書き換える）。
+    private var lastShape: String?
+    private weak var peerDetailLabel: UILabel?
+
     func render(_ mode: Mode) {
+        // 形が同じなら作り直さない。作り直すと、押している最中のボタンが消えて押しが空振りする
+        // （電波の距離は1秒に何度も届くので、ほとんどの押しが消えていた）。
+        let shape = Self.shape(of: mode, suggestion: suggestion)
+        if shape == lastShape {
+            self.mode = mode
+            if case let .peer(peer, _) = mode, peerDetailLabel?.text != peer.detail {
+                peerDetailLabel?.text = peer.detail
+            }
+            return
+        }
+        lastShape = shape
         self.mode = mode
+        // 相手とつながった・離れたときは、下げていても「ふだん」に戻す（大事な行が隠れたままにしない）。
+        var isPeer = false
+        if case .peer = mode { isPeer = true }
+        if let wasPeer, wasPeer != isPeer, level == .minimized { level = .normal }
+        wasPeer = isPeer
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        body.arrangedSubviews.forEach { $0.removeFromSuperview() }
         more.arrangedSubviews.forEach { $0.removeFromSuperview() }
         if let suggestion { stack.addArrangedSubview(suggestionRow(suggestion)) }
         // いちばん上は検索（Appleマップ・Googleマップと同じ）。つないでいなくても使える。
         stack.addArrangedSubview(searchRow())
         switch mode {
         case let .peer(peer, canInvite):
-            stack.addArrangedSubview(peerRow(peer))
+            body.addArrangedSubview(peerRow(peer))
             for line in [peer.pinName.map { "待ち合わせ：\($0)" }, peer.errandText.map { "おつかい：\($0)" }] {
                 guard let line else { continue }
-                stack.addArrangedSubview(statusLine(line))
+                body.addArrangedSubview(statusLine(line))
             }
-            stack.addArrangedSubview(tiles(peer))
+            body.addArrangedSubview(tiles(peer))
             more.addArrangedSubview(moreRow("まわりを見る", symbol: "binoculars", action: onExplore))
             more.addArrangedSubview(moreRow("いま近くで（災害・話題・もしものとき）", symbol: "exclamationmark.shield",
                                             action: onNearbyNow))
@@ -199,53 +250,74 @@ final class HomeSheetView: UIView {
             }
             more.addArrangedSubview(moreRow("共有をやめる", symbol: "xmark.circle", action: onEnd, danger: true))
         case let .friends(friends, waitingLine, canInvite, canEnd):
-            stack.addArrangedSubview(moreRow("まわりを見る（カフェ・ごはん・公園）", symbol: "binoculars",
+            body.addArrangedSubview(moreRow("まわりを見る（カフェ・ごはん・公園）", symbol: "binoculars",
                                              action: onExplore))
-            stack.addArrangedSubview(moreRow("いま近くで（災害・話題・もしものとき）", symbol: "exclamationmark.shield",
+            body.addArrangedSubview(moreRow("いま近くで（災害・話題・もしものとき）", symbol: "exclamationmark.shield",
                                              action: onNearbyNow))
-            stack.addArrangedSubview(sectionTitle(!friends.isEmpty ? "友だち"
+            body.addArrangedSubview(sectionTitle(!friends.isEmpty ? "友だち"
                                                   : waitingLine != nil ? "待っています" : "人と会う"))
-            if let waitingLine { stack.addArrangedSubview(statusLine(waitingLine)) }
+            if let waitingLine { body.addArrangedSubview(statusLine(waitingLine)) }
             for (index, friend) in friends.enumerated() {
-                stack.addArrangedSubview(friendRow(friend, index: index))
+                body.addArrangedSubview(friendRow(friend, index: index))
             }
             if canInvite {
-                stack.addArrangedSubview(moreRow(waitingLine != nil ? "リンクを共有"
+                body.addArrangedSubview(moreRow(waitingLine != nil ? "リンクを共有"
                                                  : friends.isEmpty ? "招待リンクを送る" : "人を追加（リンク）",
                                                  symbol: "plus.circle.fill", action: onInvite, accent: true))
             }
             if canEnd {
-                stack.addArrangedSubview(moreRow("やめる", symbol: "xmark.circle", action: onEnd, danger: true))
+                body.addArrangedSubview(moreRow("やめる", symbol: "xmark.circle", action: onEnd, danger: true))
             }
         }
-        if !more.arrangedSubviews.isEmpty {
-            more.isHidden = !expanded
-            stack.addArrangedSubview(more)
-        }
+        if !body.arrangedSubviews.isEmpty { stack.addArrangedSubview(body) }
+        if !more.arrangedSubviews.isEmpty { stack.addArrangedSubview(more) }
+        applyLevel()
     }
 
-    func setExpanded(_ open: Bool) {
-        guard expanded != open else { return }
-        expanded = open
+    /// 引き上げで出せる段があるか（友だちの一覧のときは「ふだん」が上限）。
+    private var hasMore: Bool { !more.arrangedSubviews.isEmpty }
+
+    private func applyLevel() {
+        body.isHidden = level == .minimized
+        body.alpha = level == .minimized ? 0 : 1
+        more.isHidden = level != .expanded
+        more.alpha = level == .expanded ? 1 : 0
+    }
+
+    func setLevel(_ next: Level) {
+        let next: Level = (next == .expanded && !hasMore) ? .normal : next
+        guard level != next else { return }
+        level = next
         UISelectionFeedbackGenerator().selectionChanged()
         Trans.run(Trans.smoothOut(Trans.fast)) {
-            self.more.isHidden = !open
-            self.more.alpha = open ? 1 : 0
+            self.applyLevel()
             self.superview?.layoutIfNeeded()
         }
     }
+
+    /// 地図を触った：検索だけの高さまで下げる。
+    func minimize() { setLevel(.minimized) }
 
     @objc private func panned(_ pan: UIPanGestureRecognizer) {
         guard pan.state == .ended else { return }
         let dy = pan.translation(in: self).y
         let vy = pan.velocity(in: self).y
-        if dy < -20 || vy < -300 { setExpanded(true) } else if dy > 20 || vy > 300 { setExpanded(false) }
+        if dy < -20 || vy < -300 {
+            setLevel(Level(rawValue: level.rawValue + 1) ?? .expanded)
+        } else if dy > 20 || vy > 300 {
+            setLevel(Level(rawValue: level.rawValue - 1) ?? .minimized)
+        }
     }
 
     @objc private func grabberTapped(_ tap: UITapGestureRecognizer) {
         // つまみのまわり（上の帯）を押したときだけ。行やタイルの押下は邪魔しない。
+        // 検索だけ → ふだん → 引き上げ → ふだん（引き上げの段が無ければ、検索だけ ⇄ ふだん）。
         guard tap.location(in: self).y < 30 else { return }
-        setExpanded(!expanded)
+        switch level {
+        case .minimized: setLevel(.normal)
+        case .normal: setLevel(hasMore ? .expanded : .minimized)
+        case .expanded: setLevel(.normal)
+        }
     }
 
     // MARK: 部品
@@ -267,6 +339,7 @@ final class HomeSheetView: UIView {
         detail.text = peer.detail
         detail.adjustsFontSizeToFitWidth = true
         detail.minimumScaleFactor = 0.8
+        peerDetailLabel = detail
         let texts = UIStackView(arrangedSubviews: [name, detail])
         texts.axis = .vertical
         texts.spacing = 2
@@ -605,7 +678,10 @@ final class FindScreen: UIView {
         cameraButton.isHidden = !cameraAvailable
         if let angle {
             arrow.isHidden = false
-            Trans.run(Trans.smoothOut(Trans.fast)) {
+            // 向きは1秒に何十回も届く。毎回新しい動きを足すと積み重なって矢印が遅れるので、
+            // いまの位置から短く引き継ぐ。
+            UIView.animate(withDuration: 0.12, delay: 0,
+                           options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseOut]) {
                 self.arrow.transform = CGAffineTransform(rotationAngle: angle)
             }
         } else {
@@ -614,11 +690,65 @@ final class FindScreen: UIView {
     }
 }
 
+// MARK: - 地図と並べる板（地図を触ると下がる）
+
+/// 地図と一緒に見る板（場所カード・経路）。地図を触ると、上の部分だけ見える高さまで下がる。
+/// Appleマップの場所カードと同じ動き（本人 9/25「地図などタップするとさがって欲しい」）。
+protocol MapSideSheet: UIViewController {
+    /// 下げたときに見せる高さ（名前とボタンまで）。
+    var peekHeight: CGFloat { get }
+    /// 下げた・上げた。下げたときだけ見せたい行があれば、ここで切り替える。
+    func didSettle(peek: Bool)
+}
+
+extension MapSideSheet {
+    func didSettle(peek: Bool) {}
+}
+
+extension UISheetPresentationController.Detent.Identifier {
+    static let peek = Self("peek")
+}
+
+enum MapSheets {
+    /// 高さは3つ：上だけ・半分・全部。半分までは後ろの地図も触れる。はじめは半分。
+    static func configure(_ vc: MapSideSheet) {
+        guard let sheet = vc.sheetPresentationController else { return }
+        sheet.prefersGrabberVisible = true
+        if #available(iOS 16.0, *) {
+            let peek = UISheetPresentationController.Detent.custom(identifier: .peek) { [weak vc] context in
+                min(vc?.peekHeight ?? 170, context.maximumDetentValue * 0.45)
+            }
+            sheet.detents = [peek, .medium(), .large()]
+            sheet.largestUndimmedDetentIdentifier = .medium
+            sheet.selectedDetentIdentifier = .medium
+        } else {
+            sheet.detents = [.medium(), .large()]
+            sheet.largestUndimmedDetentIdentifier = .medium
+        }
+    }
+
+    /// 地図を触った。板を上だけの高さまで下げる。
+    static func lower(_ vc: UIViewController?) {
+        guard #available(iOS 16.0, *), let vc = vc as? MapSideSheet, !vc.isBeingDismissed,
+              let sheet = vc.sheetPresentationController, sheet.selectedDetentIdentifier != .peek else { return }
+        sheet.animateChanges { sheet.selectedDetentIdentifier = .peek }
+        vc.didSettle(peek: true)
+    }
+
+    /// 新しい場所を見せる。半分の高さまで上げる。
+    static func raise(_ vc: MapSideSheet) {
+        guard #available(iOS 16.0, *), let sheet = vc.sheetPresentationController,
+              sheet.selectedDetentIdentifier == .peek else { return }
+        sheet.animateChanges { sheet.selectedDetentIdentifier = .medium }
+        vc.didSettle(peek: false)
+    }
+}
+
 // MARK: - 経路（アプリの中で）
 
 /// 徒歩の経路の一覧。上に「徒歩◯分・◯km」、下に曲がり角を順に並べる。
 /// 地図の線と一緒に見るので、シートは半分の高さで止める。
-final class RouteSheetViewController: UIViewController {
+final class RouteSheetViewController: UIViewController, MapSideSheet {
 
     private let route: MKRoute
     private let name: String
@@ -628,6 +758,21 @@ final class RouteSheetViewController: UIViewController {
     var onStart: (() -> Void)?
     /// 閉じられた（案内を始めずに）。
     var onDismiss: (() -> Void)?
+    /// 下げたときに見せる所（「案内開始」まで）。
+    private let scroll = UIScrollView()
+    private weak var startButton: UIButton?
+    private var measuredPeek: CGFloat = 0
+
+    var peekHeight: CGFloat { measuredPeek > 0 ? measuredPeek : 190 }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard let start = startButton, let column = start.superview else { return }
+        let h = scroll.frame.minY + column.frame.minY + start.frame.maxY + 14
+        guard abs(h - measuredPeek) > 1 else { return }
+        measuredPeek = h
+        if #available(iOS 16.0, *) { sheetPresentationController?.invalidateDetents() }
+    }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
@@ -690,8 +835,8 @@ final class RouteSheetViewController: UIViewController {
         let start = UIButton(type: .system)
         start.configuration = startConf
         start.addAction(UIAction { [weak self] _ in self?.onStart?() }, for: .touchUpInside)
+        startButton = start
 
-        let scroll = UIScrollView()
         scroll.alwaysBounceVertical = true
         let column = UIStackView(arrangedSubviews: [title, sub, start, steps])
         column.axis = .vertical
@@ -914,7 +1059,8 @@ final class NavigationOverlay: UIView {
         facing.backgroundColor = a <= 25 ? UIColor(red: 0.12, green: 0.45, blue: 0.3, alpha: 0.92)
                                          : UIColor(white: 0.08, alpha: 0.85)
         facingArrow.tintColor = a <= 25 ? .white : MeetPalette.action
-        UIView.animate(withDuration: 0.2) {
+        UIView.animate(withDuration: 0.12, delay: 0,
+                       options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseOut]) {
             self.facingArrow.transform = CGAffineTransform(rotationAngle: CGFloat(degrees * .pi / 180))
         }
     }
@@ -1283,13 +1429,21 @@ final class GroundMap {
 
 /// 選んだ場所の札。名前・種類・歩いて何分、下に「経路」と「ここで待ち合わせ」。
 /// Appleマップ・Googleマップの場所の札と同じ並び。
-final class PlaceCardViewController: UIViewController {
-    private let item: MKMapItem
-    private let from: CLLocation?
-    private let canMeet: Bool
-    var onRoute: (() -> Void)?
-    var onMeet: (() -> Void)?
+final class PlaceCardViewController: UIViewController, MapSideSheet, UISheetPresentationControllerDelegate {
+    private(set) var item: MKMapItem
+    private var from: CLLocation?
+    private var canMeet: Bool
+    var onRoute: ((MKMapItem) -> Void)?
+    var onMeet: ((MKMapItem) -> Void)?
     var onClose: (() -> Void)?
+
+    private let titleLabel = UILabel()
+    private let sub = UILabel()
+    private let buttons = UIStackView()
+    private let header = UIStackView()
+    private var detail: UIViewController?
+    private var atPeek = false
+    private var measuredPeek: CGFloat = 0
 
     init(item: MKMapItem, from: CLLocation?, canMeet: Bool) {
         self.item = item
@@ -1302,15 +1456,44 @@ final class PlaceCardViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = MeetPalette.background
-        let title = UILabel()
-        title.font = Type.font(22, .bold, .title2)
-        title.textColor = MeetPalette.primary
-        title.numberOfLines = 2
-        title.text = item.name ?? "この場所"
-        let sub = UILabel()
+        titleLabel.font = Type.font(22, .bold, .title2)
+        titleLabel.textColor = MeetPalette.primary
+        titleLabel.numberOfLines = 2
         sub.font = Type.caption
         sub.textColor = MeetPalette.secondary
         sub.numberOfLines = 2
+        buttons.axis = .horizontal
+        buttons.spacing = 10
+        buttons.distribution = .fillEqually
+
+        header.addArrangedSubview(titleLabel)
+        header.addArrangedSubview(sub)
+        header.addArrangedSubview(buttons)
+        header.axis = .vertical
+        header.spacing = 4
+        header.setCustomSpacing(16, after: sub)
+        view.addSubview(header)
+        header.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 22),
+            header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 22),
+            header.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -22),
+        ])
+        if let sheet = sheetPresentationController { sheet.delegate = self }
+        fill()
+    }
+
+    /// 別の場所を押された。札を出し直さずに、中身だけ入れ替える（Appleマップと同じ）。
+    func update(item: MKMapItem, from: CLLocation?, canMeet: Bool) {
+        self.item = item
+        self.from = from
+        self.canMeet = canMeet
+        guard isViewLoaded else { return }
+        fill()
+    }
+
+    private func fill() {
+        titleLabel.text = item.name ?? "この場所"
         var parts: [String] = []
         if let kind = Self.kind(item.pointOfInterestCategory) { parts.append(kind) }
         if let from, let loc = item.placemark.location {
@@ -1319,49 +1502,83 @@ final class PlaceCardViewController: UIViewController {
         }
         sub.text = parts.joined(separator: "・")
 
-        let buttons = UIStackView()
-        buttons.axis = .horizontal
-        buttons.spacing = 10
-        buttons.distribution = .fillEqually
+        buttons.arrangedSubviews.forEach { $0.removeFromSuperview() }
         buttons.addArrangedSubview(button("経路", symbol: "figure.walk", primary: true) { [weak self] in
-            self?.onRoute?()
+            guard let self else { return }
+            self.onRoute?(self.item)
         })
         if canMeet {
             buttons.addArrangedSubview(button("ここで待ち合わせ", symbol: "flag.fill", primary: false) { [weak self] in
-                self?.onMeet?()
+                guard let self else { return }
+                self.onMeet?(self.item)
             })
         }
-        let column = UIStackView(arrangedSubviews: [title, sub, buttons])
-        column.axis = .vertical
-        column.spacing = 4
-        column.setCustomSpacing(16, after: sub)
-        view.addSubview(column)
-        column.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            column.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 22),
-            column.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 22),
-            column.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -22),
-        ])
 
         // 店の詳しいこと（営業時間・電話・サイト・写真・評価）は、Appleマップと同じ
         // 標準の場所カード（MKMapItemDetailViewController）をそのまま下に埋める。
         // 自分で並べない（本人 9/25「押したのに詳細出てこなかった」「デザインは自前しないで」）。
-        if #available(iOS 18.0, *) {
-            let detail = MKMapItemDetailViewController(mapItem: item, displaysMap: false)
-            detail.delegate = self
-            addChild(detail)
-            view.addSubview(detail.view)
-            detail.view.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                detail.view.topAnchor.constraint(equalTo: column.bottomAnchor, constant: 14),
-                detail.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                detail.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                detail.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            ])
-            detail.didMove(toParent: self)
-            // 名前は標準カードにも出るので、こちらは距離の一行とボタンだけにする。
-            title.isHidden = true
+        // 地図の店を押した直後は、まだ詳しいことが届いていない（識別子が無い）。届いたら埋める。
+        if let old = detail {
+            old.willMove(toParent: nil)
+            old.view.removeFromSuperview()
+            old.removeFromParent()
+            detail = nil
         }
+        if #available(iOS 18.0, *), item.identifier != nil {
+            let card = MKMapItemDetailViewController(mapItem: item, displaysMap: false)
+            card.delegate = self
+            addChild(card)
+            view.addSubview(card.view)
+            card.view.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                card.view.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
+                card.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                card.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                card.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+            card.didMove(toParent: self)
+            card.view.alpha = atPeek ? 0 : 1
+            detail = card
+        }
+        showTitleIfNeeded()
+    }
+
+    /// 名前は標準カードにも出るので、ふだんは距離の一行とボタンだけ。
+    /// 下げたとき（標準カードが隠れる）と、標準カードがまだ無いときだけ、こちらにも名前を出す。
+    private func showTitleIfNeeded() {
+        titleLabel.isHidden = detail != nil && !atPeek
+    }
+
+    // MARK: MapSideSheet
+
+    /// 下げたときは、名前・距離・ボタンまで見せる（名前が隠れていても、その分を足して測る）。
+    var peekHeight: CGFloat { measuredPeek > 0 ? measuredPeek : 170 }
+
+    func didSettle(peek: Bool) {
+        atPeek = peek
+        showTitleIfNeeded()
+        // 下げたときは、標準カードの頭が下からのぞかないように隠す。
+        UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.detail?.view.alpha = peek ? 0 : 1
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let width = header.bounds.width
+        guard width > 0 else { return }
+        let titleBlock = titleLabel.isHidden
+            ? titleLabel.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height + header.spacing
+            : 0
+        let h = header.frame.maxY + titleBlock + 16
+        guard abs(h - measuredPeek) > 1 else { return }
+        measuredPeek = h
+        if #available(iOS 16.0, *) { sheetPresentationController?.invalidateDetents() }
+    }
+
+    func sheetPresentationControllerDidChangeSelectedDetentIdentifier(_ sheet: UISheetPresentationController) {
+        guard #available(iOS 16.0, *) else { return }
+        didSettle(peek: sheet.selectedDetentIdentifier == .peek)
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -1460,9 +1677,15 @@ final class SearchPlacesViewController: UIViewController, UISearchBarDelegate, U
         ])
     }
 
+    /// キーボードは板と一緒に上がってくる（出きってからだと、打てるまで一拍おそい）。
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        searchBar.becomeFirstResponder()
+    }
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        searchBar.becomeFirstResponder()
+        if !searchBar.isFirstResponder { searchBar.becomeFirstResponder() }
     }
 
     func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
@@ -1492,9 +1715,12 @@ final class SearchPlacesViewController: UIViewController, UISearchBarDelegate, U
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        MKLocalSearch(request: MKLocalSearch.Request(completion: results[indexPath.row])).start { [weak self] response, _ in
-            guard let self, let item = response?.mapItems.first else { return }
-            self.dismiss(animated: true) { self.onPick?(item) }
+        // 閉じるのと、場所を引くのを同時に（通信を待ってから閉じると、押してから間が空く）。
+        let onPick = self.onPick
+        MKLocalSearch(request: MKLocalSearch.Request(completion: results[indexPath.row])).start { response, _ in
+            guard let item = response?.mapItems.first else { return }
+            onPick?(item)
         }
+        dismiss(animated: true)
     }
 }

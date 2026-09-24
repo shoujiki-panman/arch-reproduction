@@ -430,7 +430,9 @@ final class NearbyNowViewController: UITableViewController {
         case .shelters:
             guard !shelters.isEmpty else { return }
             let item = shelters[indexPath.row].mapItem
-            dismiss(animated: true) { [onRoute] in onRoute?(item) }
+            // 経路の通信は、閉じるのと同時に始める。
+            onRoute?(item)
+            dismiss(animated: true)
         case .talk:
             let favorites = Favorites.all
             if indexPath.row == 0 {

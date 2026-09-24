@@ -1852,7 +1852,27 @@ final class MeetViewController: UIViewController {
     private func presentOnTop(_ controller: UIViewController) {
         var top: UIViewController = self
         while let next = top.presentedViewController, !next.isBeingDismissed { top = next }
+        // 閉じている途中の板があれば、閉じ終わった瞬間に出す（途中で出すと失敗する）。
+        // これで「閉じる」と「次の準備（経路の通信など）」を同時に進められる。
+        if let closing = top.presentedViewController, closing.isBeingDismissed,
+           let coordinator = closing.transitionCoordinator {
+            coordinator.animate(alongsideTransition: nil) { [weak self] _ in self?.presentOnTop(controller) }
+            return
+        }
         top.present(controller, animated: true)
+    }
+
+    /// いちばん手前に出ている画面（無ければ nil）。
+    private var topPresented: UIViewController? {
+        var top: UIViewController? = presentedViewController
+        while let next = top?.presentedViewController { top = next }
+        return top
+    }
+
+    /// 地図を押した・動かした。下の板をたたみ、地図と並べた板（場所・経路）は上だけの高さへ。
+    private func mapTouched() {
+        homeSheet.minimize()
+        MapSheets.lower(topPresented)
     }
 
     // MARK: - The name the other phone sees
@@ -2592,12 +2612,8 @@ final class MeetViewController: UIViewController {
             vc?.dismiss(animated: true)
             self?.startNavigation()
         }
-        if let sheet = vc.sheetPresentationController {
-            sheet.detents = [.medium(), .large()]
-            sheet.prefersGrabberVisible = true
-            // 地図は見えたまま・触れたままにする（線を見ながら一覧を読む）。
-            sheet.largestUndimmedDetentIdentifier = .medium
-        }
+        // 地図は見えたまま・触れたままにする（線を見ながら一覧を読む）。地図を触ると下がる。
+        MapSheets.configure(vc)
         presentOnTop(vc)
     }
 
@@ -2924,26 +2940,43 @@ final class MeetViewController: UIViewController {
     private func presentPlace(_ item: MKMapItem) {
         mapFloor?.showPlace(item)
         let canMeet = group != nil && theirFix != nil
-        let vc = PlaceCardViewController(item: item, from: locations.last, canMeet: canMeet)
-        vc.onRoute = { [weak self, weak vc] in
-            vc?.dismiss(animated: true) { self?.routeToPlace(item) }
+        // もう札が出ていれば、出し直さずに中身だけ入れ替える（Appleマップと同じ）。
+        // 重ねて出すと、後ろの札が縮んで奥に下がり、見づらくて遅い。
+        if let card = placeCard, card.presentingViewController != nil, !card.isBeingDismissed {
+            card.update(item: item, from: locations.last, canMeet: canMeet)
+            MapSheets.raise(card)
+            return
         }
-        vc.onMeet = { [weak self, weak vc] in
+        let vc = PlaceCardViewController(item: item, from: locations.last, canMeet: canMeet)
+        vc.onRoute = { [weak self, weak vc] item in
+            // 経路の通信は、札を閉じるのと同時に始める（閉じ終わるのを待たない）。
+            self?.routeToPlace(item)
+            vc?.dismiss(animated: true)
+        }
+        vc.onMeet = { [weak self, weak vc] item in
             vc?.dismiss(animated: true)
             self?.setMeetPin(name: item.name ?? "この場所", at: item.placemark.coordinate)
         }
         vc.onClose = { [weak self] in
             // 経路や案内に進まずに閉じたら、印も片づける。
-            guard let self, self.navRoute == nil, self.placeRoutePreview == nil else { return }
+            guard let self, self.navRoute == nil, self.placeRoutePreview == nil, !self.placeRouteLoading else { return }
             self.mapFloor?.showPlace(nil)
         }
-        if let sheet = vc.sheetPresentationController {
-            // 詳しいこと（標準の場所カード）が入るので、半分の高さから始めて引き上げられるように。
-            sheet.detents = [.medium(), .large()]
-            sheet.largestUndimmedDetentIdentifier = .medium
-            sheet.prefersGrabberVisible = true
-        }
+        // 詳しいこと（標準の場所カード）が入るので、半分の高さから。地図を触ると上だけの高さへ下がる。
+        MapSheets.configure(vc)
+        placeCard = vc
         presentOnTop(vc)
+    }
+
+    /// いま出ている場所の札（中身を入れ替えるため）。
+    private weak var placeCard: PlaceCardViewController?
+    /// 選んだ場所までの経路を取りにいっている最中（札を閉じても印を消さない）。
+    private var placeRouteLoading = false
+
+    /// 地図の店を押した直後は名前だけで札を出している。詳しいことが届いたら入れ替える。
+    private func placeLoaded(_ first: MKMapItem, _ full: MKMapItem) {
+        guard let card = placeCard, card.item === first, !card.isBeingDismissed else { return }
+        card.update(item: full, from: locations.last, canMeet: group != nil && theirFix != nil)
     }
 
     /// 経路の一覧を見ているあいだの、選んだ場所までの経路（閉じたら片づける）。
@@ -2956,9 +2989,11 @@ final class MeetViewController: UIViewController {
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: me.coordinate))
         request.destination = item
         request.transportType = .walking
+        placeRouteLoading = true
         MKDirections(request: request).calculate { [weak self] response, _ in
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.placeRouteLoading = false
                 guard let route = response?.routes.first else {
                     self.flash("道なりが見つかりませんでした")
                     return
@@ -2978,11 +3013,7 @@ final class MeetViewController: UIViewController {
                     self?.placeRoutePreview = nil
                     self?.startNavigation(route: route, place: item)
                 }
-                if let sheet = vc.sheetPresentationController {
-                    sheet.detents = [.medium(), .large()]
-                    sheet.prefersGrabberVisible = true
-                    sheet.largestUndimmedDetentIdentifier = .medium
-                }
+                MapSheets.configure(vc)
                 vc.onDismiss = { [weak self] in
                     guard let self, self.navRoute == nil else { return }
                     self.placeRoutePreview = nil
@@ -6100,6 +6131,8 @@ final class MeetViewController: UIViewController {
         vc.loadViewIfNeeded()
         installStandardMapControls(for: vc.mapView)
         vc.onSelectPlace = { [weak self] item in self?.presentPlace(item) }
+        vc.onPlaceLoaded = { [weak self] first, full in self?.placeLoaded(first, full) }
+        vc.onMapTouched = { [weak self] in self?.mapTouched() }
         vc.onNavPaused = { [weak self] in self?.navOverlay.setRecenterVisible(true) }
         mapFloor = vc
     }

@@ -19,17 +19,27 @@ enum SelfIdentity {
     private static let service = "jp.shutanuma.kokodayo.identity"
     private static let account = "self"
 
-    /// 公開鍵（相手に渡すほう）。
+    /// 公開鍵（相手に渡すほう）。変わらないので一度だけ作る（画面の更新のたびに呼ばれる）。
     static var publicKey: String {
-        key().publicKey.rawRepresentation.base64EncodedString()
+        if let cachedPublic { return cachedPublic }
+        let value = key().publicKey.rawRepresentation.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+        cachedPublic = value
+        return value
     }
+    private static var cachedPublic: String?
+    /// キーチェーンは読むのが遅い。一度読んだら覚えておく。
+    private static var cachedKey: Curve25519.Signing.PrivateKey?
 
     /// 署名にも使う秘密鍵。無ければその場で作って、以後ずっと同じものを使う。
     static func key() -> Curve25519.Signing.PrivateKey {
-        if let existing = load() { return existing }
+        if let cachedKey { return cachedKey }
+        if let existing = load() {
+            cachedKey = existing
+            return existing
+        }
         let key = Curve25519.Signing.PrivateKey()
         let item: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -40,6 +50,7 @@ enum SelfIdentity {
             kSecValueData as String: key.rawRepresentation,
         ]
         SecItemAdd(item as CFDictionary, nil)
+        cachedKey = key
         return key
     }
 
@@ -79,11 +90,19 @@ enum KnownFriends {
     }
 
     /// 覚えている相手。新しく会った順。
+    /// 画面の更新のたびに呼ばれるので、ファイルは最初の一度だけ読み、あとは覚えておく（書くときに入れ替える）。
     static func all() -> [KnownFriend] {
+        if let cache { return cache }
         guard let url, let data = try? Data(contentsOf: url),
-              let list = try? JSONDecoder().decode([KnownFriend].self, from: data) else { return [] }
-        return list.sorted { $0.lastMet > $1.lastMet }
+              let list = try? JSONDecoder().decode([KnownFriend].self, from: data) else {
+            cache = []
+            return []
+        }
+        let sorted = list.sorted { $0.lastMet > $1.lastMet }
+        cache = sorted
+        return sorted
     }
+    private static var cache: [KnownFriend]?
 
     /// つないだ相手を覚える。同じ相手なら名前と日付だけ新しくする。
     static func remember(key: String, name: String) {
@@ -98,6 +117,7 @@ enum KnownFriends {
     }
 
     private static func save(_ list: [KnownFriend]) {
+        cache = list.sorted { $0.lastMet > $1.lastMet }
         guard let url, let data = try? JSONEncoder().encode(list) else { return }
         try? data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
         var values = URLResourceValues()
@@ -111,11 +131,16 @@ enum KnownFriends {
     /// 元の鍵は外に出ない（中継業者に渡るのはこの計算結果だけ）。
     static func pairSecret(mine: String, theirs: String) -> String {
         let pair = [mine, theirs].sorted().joined(separator: "|")
+        // 画面の更新のたびに友だちの数だけ呼ばれる。同じ2人なら答えは同じなので覚えておく。
+        if let hit = pairMemo[pair] { return hit }
         let ikm = SymmetricKey(data: Data(pair.utf8))
         let out = HKDF<SHA256>.deriveKey(inputKeyMaterial: ikm,
                                          salt: Data("kokodayo.pair".utf8),
                                          info: Data("room".utf8),
                                          outputByteCount: 32)
-        return out.withUnsafeBytes { Data($0) }.base64EncodedString()
+        let value = out.withUnsafeBytes { Data($0) }.base64EncodedString()
+        pairMemo[pair] = value
+        return value
     }
+    private static var pairMemo: [String: String] = [:]
 }

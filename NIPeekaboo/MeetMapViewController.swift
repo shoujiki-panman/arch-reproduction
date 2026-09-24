@@ -102,7 +102,12 @@ final class MeetMapViewController: UIViewController {
     /// いちばん新しい徒歩の経路。曲がり角の一覧を出すために持っておく。
     private(set) var currentRoute: MKRoute?
     /// 地図の店や駅が押された（札を出すのは上の画面の仕事）。
+    /// 押した瞬間に名前と種類だけで一度呼び、詳しいこと（営業時間など）は届いたら onPlaceLoaded で。
     var onSelectPlace: ((MKMapItem) -> Void)?
+    /// 先に渡した仮の場所と、届いた詳しい場所。
+    var onPlaceLoaded: ((_ first: MKMapItem, _ full: MKMapItem) -> Void)?
+    /// 指で地図を押した・動かした（板を下げる合図）。
+    var onMapTouched: (() -> Void)?
     /// 選んだ場所の印と、そこまでの道なりの線。
     private var placePin: MKPointAnnotation?
     private var lastFeature: MKAnnotation?
@@ -139,6 +144,12 @@ final class MeetMapViewController: UIViewController {
         map.isRotateEnabled = true
         map.isPitchEnabled = true
         view.addSubview(map)
+        // 地図を押したら、上の画面に知らせる（板を下げるため）。地図の操作は邪魔しない：
+        // ほかのジェスチャと同時に通し、ダブルタップを待たない（待つと毎回0.3秒ほど遅れる）。
+        let tap = UITapGestureRecognizer(target: self, action: #selector(mapTapped))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        map.addGestureRecognizer(tap)
 
         // 下のカード。数字を主役に、そのすぐ下に「何で測っているか」を書く。
         card.translatesAutoresizingMaskIntoConstraints = false
@@ -323,7 +334,13 @@ final class MeetMapViewController: UIViewController {
         // 2つの点を結ぶ線。どちら側にいるかは、線の向きでひと目でわかる。
         if let me, let coordinate {
             updateRoute(me: me.coordinate, peer: coordinate)
-            if !lineIsRoute {
+            // 両端がほとんど動いていなければ引き直さない（位置が届くたびに消して足すと、地図が重くなる）。
+            let sameEnds = line.map { l in
+                l.pointCount == 2
+                    && MKMapPoint(me.coordinate).distance(to: l.points()[0]) < 1
+                    && MKMapPoint(coordinate).distance(to: l.points()[1]) < 1
+            } ?? false
+            if !lineIsRoute, !sameEnds {
                 if let line { map.removeOverlay(line) }
                 let pts = [me.coordinate, coordinate]
                 let l = MKPolyline(coordinates: pts, count: 2)
@@ -626,6 +643,7 @@ extension MeetMapViewController: MKMapViewDelegate {
             [.began, .changed, .ended].contains(recogniser.state)
         } ?? false
         guard touched else { return }
+        onMapTouched?()
         if navigating {
             if !navPaused {
                 navPaused = true
@@ -657,12 +675,14 @@ extension MeetMapViewController: MKMapViewDelegate {
         #if DEBUG
         print("PLACE selected: \(feature.title ?? "-")")
         #endif
-        let fallback = MKMapItem(placemark: MKPlacemark(coordinate: feature.coordinate))
-        fallback.name = feature.title ?? "この場所"
-        fallback.pointOfInterestCategory = feature.pointOfInterestCategory
+        let first = MKMapItem(placemark: MKPlacemark(coordinate: feature.coordinate))
+        first.name = feature.title ?? "この場所"
+        first.pointOfInterestCategory = feature.pointOfInterestCategory
+        // 通信を待たずに、すぐ札を出す（待つと押してから札が出るまで間が空いて、もっさりする）。
+        onSelectPlace?(first)
         MKMapItemRequest(mapFeatureAnnotation: feature).getMapItem { [weak self] item, _ in
             DispatchQueue.main.async {
-                self?.onSelectPlace?(item ?? fallback)
+                if let item { self?.onPlaceLoaded?(first, item) }
                 mapView.deselectAnnotation(feature, animated: true)
                 self?.lastFeature = nil
             }
@@ -723,4 +743,13 @@ private extension MKMapRect {
         self.init(x: min(a.x, b.x), y: min(a.y, b.y),
                   width: abs(a.x - b.x), height: abs(a.y - b.y))
     }
+}
+
+extension MeetMapViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+}
+
+extension MeetMapViewController {
+    @objc fileprivate func mapTapped() { onMapTouched?() }
 }
