@@ -92,6 +92,8 @@ final class MeetMapViewController: UIViewController {
     private(set) var userMoved = false
     /// 動かされたことを上の画面に知らせる（「2人が入るように戻す」を出すため）。
     var onUserMoved: (() -> Void)?
+    /// 最後に取り直した時刻。歩くたびに画面が飛ばないための間合い。
+    private var refitAt = Date.distantPast
     /// 経路を引き直した時刻と、そのときの相手の場所。呼びすぎないための覚え書き。
     private var routeAt = Date.distantPast
     private var routeFrom: CLLocationCoordinate2D?
@@ -311,6 +313,13 @@ final class MeetMapViewController: UIViewController {
             if !fitted {
                 fit(me: me.coordinate, peer: coordinate)
                 fitted = true
+                refitAt = Date()
+            } else if !userMoved, drifted(me: me.coordinate, peer: coordinate),
+                      Date().timeIntervalSince(refitAt) > 5 {
+                // 2人は歩くので、最初に決めた画面のままだと相手がすぐ外に出る。
+                // 指で動かされていないあいだは、こちらで取り直す。
+                fit(me: me.coordinate, peer: coordinate)
+                refitAt = Date()
             }
         }
     }
@@ -372,6 +381,17 @@ final class MeetMapViewController: UIViewController {
         }
     }
 
+    /// 2人（と目印）が画面に入っているか。端に寄った時点で外に出たとみなす。
+    private func drifted(me: CLLocationCoordinate2D, peer: CLLocationCoordinate2D) -> Bool {
+        let rect = map.visibleMapRect
+        guard rect.size.width > 0 else { return false }
+        let margin = rect.size.width * 0.12
+        let inner = rect.insetBy(dx: margin, dy: rect.size.height * 0.12)
+        var points = [MKMapPoint(me), MKMapPoint(peer)]
+        if let pin { points.append(MKMapPoint(pin.coordinate)) }
+        return points.contains { !inner.contains($0) }
+    }
+
     /// 2人の真ん中から、相手の方を向いて斜めに見る。
     /// 地図を真上から見ると「地図アプリ」になる。見たいのは相手なので、低い角度で相手側を向く。
     private func fit(me: CLLocationCoordinate2D, peer: CLLocationCoordinate2D) {
@@ -382,6 +402,23 @@ final class MeetMapViewController: UIViewController {
                                          longitude: me.longitude + (peer.longitude - me.longitude) * t)
         let metres = CLLocation(latitude: me.latitude, longitude: me.longitude)
             .distance(from: CLLocation(latitude: peer.latitude, longitude: peer.longitude))
+        // 遠いときに斜めのままだと、奥に立つ相手が画面の外へ出る。
+        // 300mを超えたら見栄えより「2人とも映っていること」を取る。
+        guard metres <= 300 else {
+            var rect = MKMapRect.null
+            for c in [me, peer] + (pin.map { [$0.coordinate] } ?? []) {
+                let point = MKMapPoint(c)
+                rect = rect.union(MKMapRect(x: point.x, y: point.y, width: 0, height: 0))
+            }
+            // 下半分はボタンが乗っているので、その分だけ広く空ける。
+            let padding = UIEdgeInsets(top: 150, left: 50, bottom: 300, right: 50)
+            let flat = MKMapCamera(lookingAtCenter: map.centerCoordinate,
+                                   fromDistance: map.camera.centerCoordinateDistance,
+                                   pitch: 0, heading: 0)
+            map.setCamera(flat, animated: false)
+            map.setVisibleMapRect(rect, edgePadding: padding, animated: true)
+            return
+        }
         let camera = MKMapCamera(lookingAtCenter: mid,
                                  fromDistance: max(300, metres * 2.0),
                                  pitch: 45,

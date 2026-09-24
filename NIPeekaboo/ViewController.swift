@@ -329,13 +329,22 @@ enum Badge {
 
 /// Names come from the other phone: control characters and newlines are dropped
 /// and the rest cut to twenty characters before it reaches the screen.
+/// 人が打った字・相手から届いた字の掃除。空は空のまま返す。
+/// 以前はここで空を「相手」に変えていた。そのせいで「消した」という便りが
+/// 「相手という名前に変えた」になり、待ち合わせの目印が〈相手〉という名前で
+/// 緯度0経度0の海に立ち、様子の欄にも〈相手〉と出ていた。
 func cleanName(_ raw: String) -> String {
     var kept = ""
     kept.unicodeScalars.append(contentsOf: raw.unicodeScalars.filter {
         !CharacterSet.controlCharacters.contains($0) && !CharacterSet.newlines.contains($0)
     })
-    let trimmed = kept.trimmingCharacters(in: .whitespaces)
-    return String((trimmed.isEmpty ? "相手" : trimmed).prefix(20))
+    return String(kept.trimmingCharacters(in: .whitespaces).prefix(20))
+}
+
+/// 人の名前として出すときだけ、空を「相手」で埋める。
+func personName(_ raw: String) -> String {
+    let clean = cleanName(raw)
+    return clean.isEmpty ? "相手" : clean
 }
 
 extension Data {
@@ -1687,7 +1696,7 @@ final class MeetViewController: UIViewController {
             return
         }
         guard group?.id != id else { return }
-        let hostName = cleanName(value("n") ?? "相手")
+        let hostName = personName(value("n") ?? "")
         let token = value("t")
         // No group on this phone: the tap on the link was the decision. iOS has
         // already asked once; the waiting screen says what the other side sees.
@@ -1874,6 +1883,15 @@ final class MeetViewController: UIViewController {
             }
             errand.subtitle = peerStore.map { "\(partnerName)は\($0.name)のそば" } ?? "店は見つかっていません"
             actions.append(errand)
+        }
+
+        if group?.isHost == true {
+            let invite = UIAction(title: "招待リンクを送る",
+                                  image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in
+                self?.callPartnerTapped()
+            }
+            invite.subtitle = "もう1人に渡すとき"
+            actions.append(invite)
         }
 
         actions.append(UIMenu(title: "設定", image: UIImage(systemName: "gearshape"),
@@ -2250,7 +2268,9 @@ final class MeetViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             self?.sendMood()
             self?.sendFace()
-            self?.sendMeetPin()
+            // 目印が無いときは何も送らない。空の便りは「消して」の意味なので、
+            // 相手が先に決めていた目印を、つないだ2秒後に消してしまう。
+            if self?.meetPin != nil { self?.sendMeetPin() }
         }
         channel.connect()
         remote = channel
@@ -3252,7 +3272,9 @@ final class MeetViewController: UIViewController {
         links.removeValue(forKey: peer)
         myChallenge.removeValue(forKey: peer)
         if groupPeers.contains(peer) {
-            if !isDemo { finderNotice = "\(name(of: peer))との接続が切れました。" }
+            // 電波（UWB）が切れても、中継で居場所は届き続ける。地図が生きている
+            // ときに「接続が切れました」と言うと、目の前の相手が消えたように読める。
+            if !isDemo, theirFix == nil { finderNotice = "\(name(of: peer))との接続が切れました。" }
             leaveGroup(peer)
         }
         if joinAlertPeer == peer { dismissJoinAlert() }
@@ -3404,7 +3426,7 @@ final class MeetViewController: UIViewController {
         case "join":
             guard let join = try? JSONDecoder().decode(JoinMessage.self, from: data), let group, group.isHost, active,
                   let member = peerMembers[peer], !group.rejected.contains(member) else { return }
-            if peerNames[peer] == nil { peerNames[peer] = cleanName(join.name) }
+            if peerNames[peer] == nil { peerNames[peer] = personName(join.name) }
             if isApproved(member) {
                 sendWelcome(to: [peer])
                 beginRanging(with: peer)
@@ -3499,7 +3521,7 @@ final class MeetViewController: UIViewController {
         case "name":
             guard let message = try? JSONDecoder().decode(NameMessage.self, from: data),
                   let member = peerMembers[peer], isApproved(member), group?.names[member] == nil else { return }
-            peerNames[peer] = cleanName(message.name)
+            peerNames[peer] = personName(message.name)
             refreshDials()
         case "meet":
             guard active, let request = try? JSONDecoder().decode(MeetRequest.self, from: data),
@@ -3812,7 +3834,10 @@ final class MeetViewController: UIViewController {
         UIApplication.shared.isIdleTimerDisabled = connected && latestDistance != nil
         connectStack.isHidden = true
         let hosting = group?.isHost == true
-        inviteButton.isHidden = connected || (!supportsUWB && !isDemo) || (group != nil && !hosting)
+        // 相手の居場所が届いているあいだは、リンクを送り直す用はない。
+        // 大きい青いボタンが「もう一度リンクを送る」だと、それが本題に見える。
+        inviteButton.isHidden = connected || mapOnly || (!supportsUWB && !isDemo)
+            || (group != nil && !hosting)
         let closed = hosting && (group?.refusals ?? 0) >= Self.maxRefusals
         inviteButton.configuration?.title = closed ? "新しいリンクを作る" : hosting ? "もう一度リンクを送る" : "招待リンクを送る"
         // The camera view draws the circle of possible positions on the floor. It
@@ -3850,7 +3875,7 @@ final class MeetViewController: UIViewController {
         // link dropping, the group ending — must reach the island too, or it
         // keeps showing the last number after the person is gone.
         syncLiveActivity()
-        if let finderNotice, !connected {
+        if let finderNotice, !connected, !mapOnly {
             finderStatus.text = finderNotice
         } else if closed, !connected {
             // From the saved group, so it is still explained after a relaunch.
