@@ -165,6 +165,31 @@ struct MeetPinMessage: Codable {
     var lon: Double
 }
 
+/// 名札の交換。つないでいるあいだに一度だけ流す。
+/// これを覚えておくと、次はリンク無しで同じ部屋を計算できる。
+struct IdentityMessage: Codable {
+    var type: String = "id"
+    var id: String
+    var name: String
+    /// まだ相手の名札を持っていない、という合図。持っている側は返さない。
+    /// これが無いと、先に部屋に居た側の名乗りが誰にも聞かれずに終わる。
+    var wants: Bool = false
+
+    init(id: String, name: String, wants: Bool) {
+        self.id = id
+        self.name = name
+        self.wants = wants
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decodeIfPresent(String.self, forKey: .type) ?? "id"
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        wants = try c.decodeIfPresent(Bool.self, forKey: .wants) ?? false
+    }
+}
+
 struct MessageKind: Decodable {
     let type: String
 }
@@ -1023,6 +1048,11 @@ final class MeetViewController: UIViewController {
     // おつかいと「近くにいるよ」。どちらも相手が遠いあいだの層に乗る。
     /// 相手のそばで見つかった店（近い順）。見つかっている間だけ「頼む」が出せる。
     /// 1つに決めないのは、選ぶのが人だから。頼む画面で押して変えられる。
+    /// 相手の名札。届いた時点で「次からリンク無し」がつながる。
+    private var peerIdentity: String?
+    private var sentIdentity = false
+    private var lastIdentityAt = Date.distantPast
+    private var identityReminders = 0
     private var peerStores: [NearbyStore.Found] = []
     private var peerStore: NearbyStore.Found? { peerStores.first }
     private var storeCheckedAt = Date.distantPast
@@ -2194,12 +2224,6 @@ final class MeetViewController: UIViewController {
     /// （部屋の名前は2人の鍵から計算するので、相手の端末でも同じ部屋になる）。
     private func refreshFriends() {
         friendsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        // 🚧 まだ出さない。いまの鍵はグループごとに作り直されるので、相手の鍵も毎回変わり、
-        // 「覚えた相手」と次に同じ部屋を計算できない。端末ごとに変わらない身元（長期の鍵）を
-        // 持ち、つないだときに交換する仕組みを入れてから出す。
-        // 押しても相手に届かないボタンを置くのが、いちばんまずい。
-        friendsStack.isHidden = true
-        if true { return }
         guard group == nil else { friendsStack.isHidden = true; return }
         let friends = KnownFriends.all().prefix(3)
         friendsStack.isHidden = friends.isEmpty
@@ -2207,7 +2231,7 @@ final class MeetViewController: UIViewController {
             let button = UIButton(type: .system)
             var conf = UIButton.Configuration.filled()
             conf.title = "\(friend.name) に つなぐ"
-            conf.subtitle = "リンクは要りません"
+            conf.subtitle = "リンクは要りません。相手も同じボタンを押します"
             conf.baseBackgroundColor = MeetPalette.surface
             conf.baseForegroundColor = MeetPalette.primary
             conf.cornerStyle = .capsule
@@ -2220,22 +2244,41 @@ final class MeetViewController: UIViewController {
         }
     }
 
-    /// 覚えた相手と、その場でつなぎ直す。
+    /// 覚えた相手と、その場でつなぎ直す。リンクは要らない。
+    ///
+    /// 2台が同じ部屋を計算できるのは、お互いの名札（長期の公開鍵）を持っている
+    /// から。部屋の名前は2つの名札から毎回その場で作るので、どこにも保存されず、
+    /// 中継業者にも元の名札は渡らない。
+    /// 名乗りの鍵もこの名札にする。そうすると相手の会員IDが最初から分かるので、
+    /// 2台とも同じ「誰がホストか」（名札の並び順で先のほう）に行き着く。
     private func connectToFriend(_ friend: KnownFriend) {
         guard group == nil else { return }
-        let key = GroupKey.create(groupID: friend.key, expires: shareExpiry())
-        let me = key.publicKey.rawRepresentation.base64URL
-        signingKey = key
+        let me = SelfIdentity.publicKey
+        guard me != friend.key else { return }
+        signingKey = SelfIdentity.key()
+        let host = min(me, friend.key)
         group = TodayGroup(id: KnownFriends.pairSecret(mine: me, theirs: friend.key),
-                           hostKey: me, hostName: Self.myDisplayName,
+                           hostKey: host,
+                           hostName: host == me ? Self.myDisplayName : friend.name,
                            expires: shareExpiry(), myMember: me,
                            approved: [me, friend.key],
                            names: [me: Self.myDisplayName, friend.key: friend.name])
-        finderNotice = "\(friend.name)とつなぎました。相手がアプリを開くと居場所が出ます"
+        finderNotice = nil
+        sentIdentity = false
+        peerIdentity = friend.key
         saveTodayGroup()
         resetSession()
         if supportsUWB { startup() }
         refreshDials()
+        flash("\(friend.name)とつなぎました")
+    }
+
+    /// いまのグループが「覚えた相手と、リンク無しで作ったもの」か。
+    /// 待っているあいだの言い方を変えるために見る。
+    private var isFriendRoom: Bool {
+        guard let id = group?.id else { return false }
+        let me = SelfIdentity.publicKey
+        return KnownFriends.all().contains { KnownFriends.pairSecret(mine: me, theirs: $0.key) == id }
     }
 
     /// 相手が遠いあいだの居場所のやりとりを始める。
@@ -2256,6 +2299,7 @@ final class MeetViewController: UIViewController {
         channel.onFix = { [weak self] fix in
             guard let self else { return }
             self.theirFix = fix
+            self.remindIdentityIfNeeded()
             self.checkPeerStore()
             self.updateNearbyAlert()
             self.refreshDials()
@@ -2265,12 +2309,12 @@ final class MeetViewController: UIViewController {
         channel.onNote = { [weak self] data in self?.handleNote(data) }
         NearbyAlert.ask()
         // つないだ直後に一度伝える（相手の地図に名前だけが並ばないように）。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.sendMood()
-            self?.sendFace()
-            // 目印が無いときは何も送らない。空の便りは「消して」の意味なので、
-            // 相手が先に決めていた目印を、つないだ2秒後に消してしまう。
-            if self?.meetPin != nil { self?.sendMeetPin() }
+        // 「いま自分はこうです」を渡すのは、部屋に入れたあと。2秒後に決め打ちで
+        // 送っていたときは、まだ入れていないことがあって黙って捨てられていた
+        // （名札が届かず、次にリンク無しでつなげなかった原因）。
+        channel.onState = { [weak self] joined in
+            guard joined else { return }
+            DispatchQueue.main.async { self?.sendMyState() }
         }
         channel.connect()
         remote = channel
@@ -2586,6 +2630,16 @@ final class MeetViewController: UIViewController {
             peerFace = Data(base64Encoded: face.jpeg).flatMap(UIImage.init(data:))
             pushToMap()
             refreshDials()
+        case "id":
+            guard group != nil, let card = try? JSONDecoder().decode(IdentityMessage.self, from: data) else { return }
+            let theirID = card.id
+            guard !theirID.isEmpty, theirID != SelfIdentity.publicKey else { return }
+            peerIdentity = theirID
+            // 覚えるのは名札と名前だけ。居場所も、会った場所も残さない。
+            KnownFriends.remember(key: theirID, name: personName(card.name))
+            refreshFriends()
+            // 「まだ持っていない」と言われた時だけ返す。これで往復は1回で終わる。
+            if card.wants { sendIdentity() }
         case "mood":
             guard group != nil, let mood = try? JSONDecoder().decode(MoodMessage.self, from: data) else { return }
             let text = cleanName(mood.text)
@@ -2838,6 +2892,36 @@ final class MeetViewController: UIViewController {
         refreshDials()
     }
 
+    /// 部屋に入れたときに渡すもの。名札・様子・印、決まっている目印。
+    private func sendMyState() {
+        sendIdentity()
+        sendMood()
+        sendFace()
+        // 目印が無いときは何も送らない。空の便りは「消して」の意味なので、
+        // 相手が先に決めていた目印を消してしまう。
+        if meetPin != nil { sendMeetPin() }
+    }
+
+    /// 相手の居場所が届いているのに名札がまだなら、もう一度名乗る。
+    /// 先に部屋に居た側の名乗りは、相手が入る前に流れていて誰も聞いていない。
+    private func remindIdentityIfNeeded() {
+        guard group != nil, peerIdentity == nil, identityReminders < 5 else { return }
+        guard Date().timeIntervalSince(lastIdentityAt) > 4 else { return }
+        identityReminders += 1
+        sendIdentity()
+    }
+
+    /// 名札を渡す。つないだ直後に一度だけ。
+    private func sendIdentity() {
+        guard group != nil else { return }
+        sentIdentity = true
+        lastIdentityAt = Date()
+        let card = IdentityMessage(id: SelfIdentity.publicKey, name: Self.myDisplayName,
+                                   wants: peerIdentity == nil)
+        guard let data = try? JSONEncoder().encode(card) else { return }
+        sendToPartner(data)
+    }
+
     private func sendFace() {
         guard group != nil else { return }
         let base64 = myFace?.jpegData(compressionQuality: 0.7)?.base64EncodedString() ?? ""
@@ -2868,6 +2952,10 @@ final class MeetViewController: UIViewController {
         myErrand = nil
         myErrandGot = []
         seenErrands.removeAll()
+        peerIdentity = nil
+        sentIdentity = false
+        identityReminders = 0
+        lastIdentityAt = .distantPast
         peerStores = []
         peerFace = nil
         peerMood = nil
@@ -3736,10 +3824,8 @@ final class MeetViewController: UIViewController {
             didAnnounceArrival = true
             if hapticsOn { arrivalGenerator.notificationOccurred(.success) }
         }
-        // つないだ相手は覚えておく。次からリンクは要らない（覚えるのは鍵と名前だけ）
-        if connected, let peer = activePeerID, let member = peerMembers[peer], member != group?.myMember {
-            KnownFriends.remember(key: member, name: peerNames[peer] ?? "相手")
-        }
+        // 覚えるのは名札が届いた時だけ（handleNote の "id"）。グループごとの鍵を
+        // 覚えても、次は別の鍵になるので同じ部屋を計算できない。
         let arrived = connected && latestDistance != nil && didAnnounceArrival && radioIsFresh()
         let focusName = activePeerID.map { name(of: $0) } ?? "相手"
 
@@ -3799,9 +3885,14 @@ final class MeetViewController: UIViewController {
                                : (current.spot.map { "\(current.hostName)は「\($0)」にいます" } ?? "\(current.hostName)がアプリを開くと\nつながります"),
                            symbol: awaitingApproval ? "hourglass" : "person.2", waiting: true)
         } else {
+            // 覚えている相手がいるなら、リンクは「はじめての人」のためのもの。
+            let remembered = KnownFriends.all().first?.name
             finderDial.set(distance: nil, direction: nil, colour: idleColour,
-                           value: "招待リンクで始めます", caption: "リンクを送った相手とだけ\n距離が見えます",
-                           symbol: "link")
+                           value: remembered != nil ? "つなぐ相手を選びます" : "招待リンクで始めます",
+                           caption: remembered != nil
+                               ? "覚えている相手はリンクが要りません\n（\(remembered ?? "")など）"
+                               : "リンクを送った相手とだけ\n距離が見えます",
+                           symbol: remembered != nil ? "person.2" : "link")
         }
 
         // 地図が床のときは輪を引っ込める。地図と輪が同じ場所で重なると、
@@ -3898,6 +3989,8 @@ final class MeetViewController: UIViewController {
             // 相手を待っているあいだ。画面は自分の地図のままにして、状態はここで言う。
             finderStatus.text = awaitingApproval
                 ? "ホストの許可を待っています。いまは自分の場所だけ見えています"
+                : isFriendRoom
+                ? "\(partnerName)が同じボタンを押すと、ここに出ます。いまは自分の場所だけ見えています"
                 : "リンクを開いた人が入ると、ここに出ます。いまは自分の場所だけ見えています"
         } else if mapOnly {
             let until = group.map { untilText($0.expires) } ?? "今日"

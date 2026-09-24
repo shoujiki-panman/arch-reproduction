@@ -9,6 +9,55 @@
 import Foundation
 import CryptoKit
 
+/// この端末の名札。グループごとの鍵と違って作り直さない。
+///
+/// これが無いと「次からリンク無し」が成り立たない。グループの鍵は毎回作り直す
+/// ので、覚えた相手と次に同じ部屋を計算できず、押しても届かないボタンになる。
+/// 名札は公開鍵なので、渡すのは「この端末だ」という事実だけ。居場所も履歴も
+/// 含まない。渡す相手は、一度つないだ人だけ。
+enum SelfIdentity {
+    private static let service = "jp.shutanuma.kokodayo.identity"
+    private static let account = "self"
+
+    /// 公開鍵（相手に渡すほう）。
+    static var publicKey: String {
+        key().publicKey.rawRepresentation.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    /// 署名にも使う秘密鍵。無ければその場で作って、以後ずっと同じものを使う。
+    static func key() -> Curve25519.Signing.PrivateKey {
+        if let existing = load() { return existing }
+        let key = Curve25519.Signing.PrivateKey()
+        let item: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecAttrSynchronizable as String: false,
+            kSecValueData as String: key.rawRepresentation,
+        ]
+        SecItemAdd(item as CFDictionary, nil)
+        return key
+    }
+
+    private static func load() -> Curve25519.Signing.PrivateKey? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return try? Curve25519.Signing.PrivateKey(rawRepresentation: data)
+    }
+}
+
 struct KnownFriend: Codable, Equatable {
     /// 相手の公開鍵（グループでの member ID と同じもの）
     let key: String
@@ -20,7 +69,9 @@ struct KnownFriend: Codable, Equatable {
 }
 
 enum KnownFriends {
-    private static let fileName = "friends.json"
+    // v1 は「グループごとの鍵」を覚えていた。次に同じ部屋を計算できない値なので、
+    // 置き場所ごと変える（押しても届かないボタンを出さないため）。
+    private static let fileName = "friends-v2.json"
     private static var url: URL? {
         try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                      appropriateFor: nil, create: true)

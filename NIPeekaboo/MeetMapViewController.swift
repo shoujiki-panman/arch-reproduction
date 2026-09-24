@@ -294,6 +294,14 @@ final class MeetMapViewController: UIViewController {
                 map.addAnnotation(p)
                 peer = p
             }
+        } else if let existing = peer {
+            // 相手がいなくなったら点も消す。終わったあとに札だけ残ると、
+            // まだそこに居るように見える。
+            map.removeAnnotation(existing)
+            peer = nil
+            if let line { map.removeOverlay(line) }
+            line = nil
+            lineIsRoute = false
         }
         lastStraight = metres
         lastAccuracy = accuracy
