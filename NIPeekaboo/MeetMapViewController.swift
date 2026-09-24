@@ -101,6 +101,12 @@ final class MeetMapViewController: UIViewController {
     private var routeMetres: Double?
     /// いちばん新しい徒歩の経路。曲がり角の一覧を出すために持っておく。
     private(set) var currentRoute: MKRoute?
+    /// 地図の店や駅が押された（札を出すのは上の画面の仕事）。
+    var onSelectPlace: ((MKMapItem) -> Void)?
+    /// 選んだ場所の印と、そこまでの道なりの線。
+    private var placePin: MKPointAnnotation?
+    private var lastFeature: MKAnnotation?
+    private var placeLine: MKPolyline?
 
     /// 画面の下地として埋め込むときは true。自前の帯と閉じるボタンを出さない
     /// （数字と操作は上に乗るホーム画面の側が持つ）。
@@ -122,13 +128,13 @@ final class MeetMapViewController: UIViewController {
         map.delegate = self
         map.showsUserLocation = true
         map.showsCompass = false
-        map.pointOfInterestFilter = .excludingAll
         map.overrideUserInterfaceStyle = .dark
-        // 地図は主役ではなく床。色を抑えて、人が目立つようにする
+        // 普通の地図として使う。店・駅・公園の印を出し、押せるようにする。
+        // 以前は「地図は床」として印を全部消していたが、つないでいないと周りも
+        // 見られない地図になっていた（本人 9/25「普通のマップや周辺見れるように」）。
         if #available(iOS 16.0, *) {
-            let config = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
-            config.pointOfInterestFilter = .excludingAll
-            map.preferredConfiguration = config
+            map.preferredConfiguration = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .default)
+            map.selectableMapFeatures = [.pointsOfInterest]
         }
         map.isRotateEnabled = true
         map.isPitchEnabled = true
@@ -407,6 +413,38 @@ final class MeetMapViewController: UIViewController {
         refit()
     }
 
+    /// 選んだ場所に印を立て、自分とその場所が入るように見せる。nil で消す。
+    func showPlace(_ item: MKMapItem?) {
+        if let placePin { map.removeAnnotation(placePin) }
+        placePin = nil
+        guard let item else { return }
+        let pin = MKPointAnnotation()
+        pin.coordinate = item.placemark.coordinate
+        pin.title = item.name
+        map.addAnnotation(pin)
+        placePin = pin
+        var rect = MKMapRect.null
+        for c in [item.placemark.coordinate] + (map.userLocation.location.map { [$0.coordinate] } ?? []) {
+            let p = MKMapPoint(c)
+            rect = rect.union(MKMapRect(x: p.x, y: p.y, width: 0, height: 0))
+        }
+        let flat = MKMapCamera(lookingAtCenter: map.centerCoordinate,
+                               fromDistance: map.camera.centerCoordinateDistance, pitch: 0, heading: 0)
+        map.setCamera(flat, animated: false)
+        map.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 140, left: 60, bottom: 380, right: 60),
+                              animated: true)
+        fitted = true
+        userMoved = true
+        onUserMoved?()
+    }
+
+    /// 選んだ場所までの道なりの線。nil で消す。
+    func showPlaceRoute(_ route: MKRoute?) {
+        if let placeLine { map.removeOverlay(placeLine) }
+        placeLine = route?.polyline
+        if let placeLine { map.addOverlay(placeLine) }
+    }
+
     /// 次の更新で経路を引き直す（まだ取れていないときに押された）。
     func refreshRouteSoon() { routeAt = .distantPast }
 
@@ -493,7 +531,43 @@ extension MeetMapViewController: MKMapViewDelegate {
         onUserMoved?()
     }
 
+    /// 地図の店や駅が押された。場所の情報を取り寄せて、上の画面に渡す。
+    func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+        if let annotation = view.annotation { selectedFeature(annotation, in: mapView) }
+    }
+
+    @available(iOS 16.0, *)
+    func mapView(_ mapView: MKMapView, didSelect annotation: MKAnnotation) {
+        selectedFeature(annotation, in: mapView)
+    }
+
+    private func selectedFeature(_ annotation: MKAnnotation, in mapView: MKMapView) {
+        guard #available(iOS 16.0, *), let feature = annotation as? MKMapFeatureAnnotation else { return }
+        // 同じ押下で2回呼ばれることがある（新旧2つの通知）。
+        guard feature !== lastFeature else { return }
+        lastFeature = feature
+        #if DEBUG
+        print("PLACE selected: \(feature.title ?? "-")")
+        #endif
+        let fallback = MKMapItem(placemark: MKPlacemark(coordinate: feature.coordinate))
+        fallback.name = feature.title ?? "この場所"
+        fallback.pointOfInterestCategory = feature.pointOfInterestCategory
+        MKMapItemRequest(mapFeatureAnnotation: feature).getMapItem { [weak self] item, _ in
+            DispatchQueue.main.async {
+                self?.onSelectPlace?(item ?? fallback)
+                mapView.deselectAnnotation(feature, animated: true)
+                self?.lastFeature = nil
+            }
+        }
+    }
+
     func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+        if let placeLine, overlay === placeLine {
+            let r = MKPolylineRenderer(overlay: overlay)
+            r.strokeColor = MeetPalette.arrival
+            r.lineWidth = 5
+            return r
+        }
         let r = MKPolylineRenderer(overlay: overlay)
         r.strokeColor = MeetPalette.action.withAlphaComponent(0.8)
         r.lineWidth = 3

@@ -1342,6 +1342,8 @@ final class MeetViewController: UIViewController {
     /// 案内中の帯。経路の「案内開始」から入り、「終了」か相手のすぐそばで終わる。
     private let navOverlay = NavigationOverlay()
     private var navRoute: MKRoute?
+    /// 選んだ場所へ案内しているとき、その場所。nil なら相手へ。
+    private var navPlace: MKMapItem?
     /// いま目指している曲がり角（route.steps の番号）。
     private var navStep = 0
     /// その曲がり角を、もう声で言ったか（遠くで一度・手前でもう一度）。
@@ -1474,11 +1476,8 @@ final class MeetViewController: UIViewController {
         refreshDials()
 
         // 自分の場所は、誰ともつないでいなくても画面を開いているあいだは取る。
-        // 最初の一回で地図と下の板が出る（それまでは古い輪の画面のまま）。
-        locations.onFix = { [weak self] _ in
-            guard let self, self.homeSheet.isHidden else { return }
-            self.refreshDials()
-        }
+        // 位置が届くたびに地図へ渡す（最初の一回で自分のまわりに寄る）。
+        locations.onFix = { [weak self] _ in self?.refreshMapFloor() }
         locations.startForeground()
 
         loadTodayGroup()
@@ -2351,6 +2350,7 @@ final class MeetViewController: UIViewController {
         locations.onFix = { [weak self] _ in
             self?.pushLocationIfFar()
             self?.pushToMap()
+            self?.refreshMapFloor()
             // 相手が止まっていても、自分が歩けば距離は縮む。こちらの動きでも見直す。
             self?.updateNearbyAlert()
             self?.stepNavigation()
@@ -2701,7 +2701,13 @@ final class MeetViewController: UIViewController {
     // MARK: - 案内（経路の「案内開始」から）
 
     private func startNavigation() {
-        guard let floor = mapFloor, let route = floor.currentRoute else { return }
+        guard let route = mapFloor?.currentRoute else { return }
+        startNavigation(route: route, place: nil)
+    }
+
+    private func startNavigation(route: MKRoute, place: MKMapItem?) {
+        guard let floor = mapFloor else { return }
+        navPlace = place
         navigationMode(true)
         adoptRoute(route)
         floor.startFollowing()
@@ -2713,12 +2719,19 @@ final class MeetViewController: UIViewController {
     private func endNavigation(arrived: Bool) {
         guard navRoute != nil else { return }
         navRoute = nil
+        let placeName = navPlace?.name
+        navPlace = nil
+        mapFloor?.showPlaceRoute(nil)
+        mapFloor?.showPlace(nil)
         speech.stopSpeaking(at: .immediate)
         navigationMode(false)
         mapFloor?.stopFollowing()
         locations.setPrecise(false)
         refreshDials()
-        if arrived {
+        if arrived, let placeName {
+            flash("\(placeName)に着きました")
+            if hapticsOn { arrivalGenerator.notificationOccurred(.success) }
+        } else if arrived {
             flash("\(partnerName)のすぐそばです。最後は「探す」で")
             if hapticsOn { arrivalGenerator.notificationOccurred(.success) }
         }
@@ -2756,11 +2769,13 @@ final class MeetViewController: UIViewController {
     /// 位置が届くたびに、次の曲がり角までの距離を見て、帯と声を進める。
     private func stepNavigation() {
         guard navRoute != nil, let me = locations.last else { return }
-        // 相手が動くと経路が引き直される。新しい経路に乗り換える。
-        if let fresh = mapFloor?.currentRoute, fresh !== navRoute { adoptRoute(fresh) }
+        // 相手へ向かうときだけ、相手が動いて引き直された経路に乗り換える。
+        if navPlace == nil, let fresh = mapFloor?.currentRoute, fresh !== navRoute { adoptRoute(fresh) }
         guard let route = navRoute else { return }
-        // 相手のすぐそばまで来たら案内は終わり。最後の数mは「探す」の仕事。
-        if let metres = currentMetres(), metres < 25 {
+        let goal = navPlace.flatMap { $0.placemark.location }
+        let remainingToGoal = goal.map { $0.distance(from: me) } ?? currentMetres()
+        // 目的地のすぐそばまで来たら案内は終わり（相手なら最後の数mは「探す」の仕事）。
+        if let left = remainingToGoal, left < (goal == nil ? 25 : 20) {
             endNavigation(arrived: true)
             return
         }
@@ -2774,7 +2789,7 @@ final class MeetViewController: UIViewController {
         }
         let step = steps[navStep]
         let toTurn = Self.stepStart(step).distance(from: me)
-        let instruction = step.instructions.isEmpty ? "\(partnerName)のいる場所へ" : step.instructions
+        let instruction = step.instructions.isEmpty ? "\(navPlace?.name ?? partnerName)へ" : step.instructions
         // 声は2回だけ。見えたとき（遠ければ）と、30m手前。
         if !navSpokenFar {
             navSpokenFar = true
@@ -2783,10 +2798,13 @@ final class MeetViewController: UIViewController {
             navSpokenNear = true
             say("まもなく、\(instruction)")
         }
-        let remaining = currentMetres() ?? route.distance
+        let remaining = remainingToGoal ?? route.distance
+        let goalName = navPlace?.name ?? partnerName
         navOverlay.update(turn: instruction, distance: NearbyAlert.text(toTurn) + "先",
                           remaining: NearbyAlert.walkText(remaining).replacingOccurrences(of: "歩いて", with: "あと"),
-                          detail: "\(partnerName)まで \(NearbyAlert.text(remaining))・相手が動くと道も変わります")
+                          detail: navPlace == nil
+                              ? "\(goalName)まで \(NearbyAlert.text(remaining))・相手が動くと道も変わります"
+                              : "\(goalName)まで \(NearbyAlert.text(remaining))")
     }
 
     private func say(_ text: String) {
@@ -2801,6 +2819,84 @@ final class MeetViewController: UIViewController {
         if metres >= 1000 { return String(format: "%.1fキロ", metres / 1000) }
         let rounded = metres >= 100 ? (metres / 50).rounded() * 50 : (metres / 10).rounded() * 10
         return "\(Int(rounded))メートル"
+    }
+
+    // MARK: - 場所（地図の店や駅・検索）
+
+    /// 場所の札を出す。地図に印を立て、札から経路・待ち合わせへ。
+    private func presentPlace(_ item: MKMapItem) {
+        mapFloor?.showPlace(item)
+        let canMeet = group != nil && theirFix != nil
+        let vc = PlaceCardViewController(item: item, from: locations.last, canMeet: canMeet)
+        vc.onRoute = { [weak self, weak vc] in
+            vc?.dismiss(animated: true) { self?.routeToPlace(item) }
+        }
+        vc.onMeet = { [weak self, weak vc] in
+            vc?.dismiss(animated: true)
+            self?.setMeetPin(name: item.name ?? "この場所", at: item.placemark.coordinate)
+        }
+        vc.onClose = { [weak self] in
+            // 経路や案内に進まずに閉じたら、印も片づける。
+            guard let self, self.navRoute == nil, self.placeRoutePreview == nil else { return }
+            self.mapFloor?.showPlace(nil)
+        }
+        if let sheet = vc.sheetPresentationController {
+            if #available(iOS 16.0, *) {
+                sheet.detents = [.custom(identifier: .init("place")) { _ in 190 }, .medium()]
+                sheet.largestUndimmedDetentIdentifier = .init("place")
+            } else {
+                sheet.detents = [.medium()]
+            }
+            sheet.prefersGrabberVisible = true
+        }
+        presentOnTop(vc)
+    }
+
+    /// 経路の一覧を見ているあいだの、選んだ場所までの経路（閉じたら片づける）。
+    private var placeRoutePreview: MKRoute?
+
+    /// 選んだ場所までの徒歩の経路を出し、一覧から「案内開始」できるようにする。
+    private func routeToPlace(_ item: MKMapItem) {
+        guard let me = locations.last else { return }
+        let request = MKDirections.Request()
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: me.coordinate))
+        request.destination = item
+        request.transportType = .walking
+        MKDirections(request: request).calculate { [weak self] response, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard let route = response?.routes.first else {
+                    self.flash("道なりが見つかりませんでした")
+                    return
+                }
+                self.placeRoutePreview = route
+                self.mapFloor?.showPlaceRoute(route)
+                let vc = RouteSheetViewController(route: route, name: item.name ?? "目的地", movingGoal: false)
+                vc.onStart = { [weak self, weak vc] in
+                    vc?.dismiss(animated: true)
+                    self?.placeRoutePreview = nil
+                    self?.startNavigation(route: route, place: item)
+                }
+                if let sheet = vc.sheetPresentationController {
+                    sheet.detents = [.medium(), .large()]
+                    sheet.prefersGrabberVisible = true
+                    sheet.largestUndimmedDetentIdentifier = .medium
+                }
+                vc.onDismiss = { [weak self] in
+                    guard let self, self.navRoute == nil else { return }
+                    self.placeRoutePreview = nil
+                    self.mapFloor?.showPlaceRoute(nil)
+                    self.mapFloor?.showPlace(nil)
+                }
+                self.presentOnTop(vc)
+            }
+        }
+    }
+
+    private func openSearch() {
+        let vc = SearchPlacesViewController(near: locations.last)
+        vc.onPick = { [weak self] item in self?.presentPlace(item) }
+        presentOnTop(vc)
     }
 
     /// 下の板の中身を、いまの状態から組む。
@@ -4234,7 +4330,8 @@ final class MeetViewController: UIViewController {
         // どちらも読めなくなる（近づいて電波が届いたら、輪がまた前に出る）。
         // 相手が来る前から地図を出す。待っているあいだ砂時計しか出ないと、
         // 1人でも使えるもの（自分の場所・まわりを見る）まで使えなくなる。
-        let floorUp = locations.last != nil
+        // 地図は位置が届く前から出す。届くまで古い輪の画面が出ていた（開き直した直後など）。
+        let floorUp = true
         // まだ誰とも始めていないときは、輪の中の説明だけが頼りなので残す。
         let ringHidden = floorUp && !radioIsFresh() && !showRadar && group != nil
         finderDial.isHidden = showRadar || ringHidden
@@ -4331,7 +4428,7 @@ final class MeetViewController: UIViewController {
 
         // 地図が出ているあいだは、下の板に一本化する（位置共有アプリの定番の形）。
         // 上の大きな見出し、縦に積んだボタン、下の状態の行は出さない。
-        let sheetUp = locations.last != nil
+        let sheetUp = true
         homeSheet.isHidden = !sheetUp
         if navRoute != nil { stepNavigation() }
         if sheetUp {
@@ -5404,6 +5501,9 @@ final class MeetViewController: UIViewController {
         title.setContentCompressionResistancePriority(.required, for: .vertical)
         demoButton.setContentCompressionResistancePriority(.required, for: .vertical)
         title.textColor = MeetPalette.primary
+        // 地図アプリにならってタイトルは出さない（本人 9/25「左上のここだよっていらない」）。
+        // 並びの基準としては残すので、見えなくするだけ。
+        title.alpha = 0
 
         var more = UIButton.Configuration.plain()
         more.image = UIImage(systemName: "ellipsis.circle",
@@ -5471,6 +5571,8 @@ final class MeetViewController: UIViewController {
         homeSheet.onMood = { [weak self] in self?.askMood() }
         homeSheet.onInvite = { [weak self] in self?.callPartnerTapped() }
         homeSheet.onEnd = { [weak self] in self?.finishMeet() }
+        homeSheet.onSearch = { [weak self] in self?.openSearch() }
+        homeSheet.onExplore = { [weak self] in self?.exploreTapped() }
         homeSheet.onConnect = { [weak self] index in
             let friends = KnownFriends.all()
             guard friends.indices.contains(index) else { return }
@@ -5535,13 +5637,14 @@ final class MeetViewController: UIViewController {
         vc.view.isHidden = true
         // 指で動かされたら「戻す」を出す（こちらからは向きを直さない）。
         vc.onUserMoved = { [weak self] in self?.refreshDials() }
+        vc.onSelectPlace = { [weak self] item in self?.presentPlace(item) }
         mapFloor = vc
     }
 
     /// 床の出し入れ。相手の居場所が無い間は、これまでどおりの紺一色。
     private func refreshMapFloor() {
         guard let floor = mapFloor else { return }
-        let show = locations.last != nil
+        let show = true
         if show, floor.view.isHidden { floor.refit() }   // 出た瞬間に2人が入る向きへ
         floor.view.isHidden = !show
         topScrim.isHidden = !show

@@ -101,6 +101,8 @@ final class HomeSheetView: UIView {
     var onInvite: (() -> Void)?
     var onEnd: (() -> Void)?
     var onConnect: ((Int) -> Void)?
+    var onSearch: (() -> Void)?
+    var onExplore: (() -> Void)?
 
     private let stack = UIStackView()
     private let grabber = UIView()
@@ -156,6 +158,8 @@ final class HomeSheetView: UIView {
         self.mode = mode
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         more.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        // いちばん上は検索（Appleマップ・Googleマップと同じ）。つないでいなくても使える。
+        stack.addArrangedSubview(searchRow())
         switch mode {
         case let .peer(peer, canInvite):
             stack.addArrangedSubview(peerRow(peer))
@@ -164,14 +168,17 @@ final class HomeSheetView: UIView {
                 stack.addArrangedSubview(statusLine(line))
             }
             stack.addArrangedSubview(tiles(peer))
+            more.addArrangedSubview(moreRow("まわりを見る", symbol: "binoculars", action: onExplore))
             more.addArrangedSubview(moreRow("いまの様子を伝える", symbol: "text.bubble", action: onMood))
             if canInvite {
                 more.addArrangedSubview(moreRow("人を追加（リンク）", symbol: "plus.circle", action: onInvite))
             }
             more.addArrangedSubview(moreRow("共有をやめる", symbol: "xmark.circle", action: onEnd, danger: true))
         case let .friends(friends, waitingLine, canInvite, canEnd):
+            stack.addArrangedSubview(moreRow("まわりを見る（カフェ・ごはん・公園）", symbol: "binoculars",
+                                             action: onExplore))
             stack.addArrangedSubview(sectionTitle(!friends.isEmpty ? "友だち"
-                                                  : waitingLine != nil ? "待っています" : "はじめる"))
+                                                  : waitingLine != nil ? "待っています" : "人と会う"))
             if let waitingLine { stack.addArrangedSubview(statusLine(waitingLine)) }
             for (index, friend) in friends.enumerated() {
                 stack.addArrangedSubview(friendRow(friend, index: index))
@@ -285,6 +292,27 @@ final class HomeSheetView: UIView {
             row.addArrangedSubview(button)
         }
         return row
+    }
+
+    private func searchRow() -> UIView {
+        var conf = UIButton.Configuration.filled()
+        conf.title = "場所を検索"
+        conf.image = UIImage(systemName: "magnifyingglass")
+        conf.imagePadding = 8
+        conf.baseBackgroundColor = MeetPalette.raised
+        conf.baseForegroundColor = MeetPalette.secondary
+        conf.cornerStyle = .large
+        conf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
+        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = Type.font(16, .regular, .body)
+            return a
+        }
+        let button = UIButton(type: .system)
+        button.configuration = conf
+        button.contentHorizontalAlignment = .leading
+        button.addAction(UIAction { [weak self] _ in self?.onSearch?() }, for: .touchUpInside)
+        return button
     }
 
     private func statusLine(_ text: String) -> UIView {
@@ -490,12 +518,22 @@ final class RouteSheetViewController: UIViewController {
 
     private let route: MKRoute
     private let name: String
+    /// 行き先が人（動く）か、場所（動かない）か。
+    private let movingGoal: Bool
     /// 「案内開始」が押された。
     var onStart: (() -> Void)?
+    /// 閉じられた（案内を始めずに）。
+    var onDismiss: (() -> Void)?
 
-    init(route: MKRoute, name: String) {
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        onDismiss?()
+    }
+
+    init(route: MKRoute, name: String, movingGoal: Bool = true) {
         self.route = route
         self.name = name
+        self.movingGoal = movingGoal
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -508,11 +546,12 @@ final class RouteSheetViewController: UIViewController {
         let title = UILabel()
         title.font = Type.headline
         title.textColor = MeetPalette.primary
+        title.numberOfLines = 2
         title.text = "\(name)まで 徒歩\(minutes)分"
         let sub = UILabel()
         sub.font = Type.caption
         sub.textColor = MeetPalette.secondary
-        sub.text = "\(NearbyAlert.text(route.distance))・道なり・相手が動くと変わります"
+        sub.text = "\(NearbyAlert.text(route.distance))・道なり" + (movingGoal ? "・相手が動くと変わります" : "")
 
         let steps = UIStackView()
         steps.axis = .vertical
@@ -1076,6 +1115,199 @@ final class GroundMap {
             UIColor(white: 1, alpha: 0.7).setStroke()
             g.setLineWidth(8)
             g.strokeEllipse(in: rect.insetBy(dx: 4, dy: 4))
+        }
+    }
+}
+
+// MARK: - 場所の札（地図の店や駅を押したとき）
+
+/// 選んだ場所の札。名前・種類・歩いて何分、下に「経路」と「ここで待ち合わせ」。
+/// Appleマップ・Googleマップの場所の札と同じ並び。
+final class PlaceCardViewController: UIViewController {
+    private let item: MKMapItem
+    private let from: CLLocation?
+    private let canMeet: Bool
+    var onRoute: (() -> Void)?
+    var onMeet: (() -> Void)?
+    var onClose: (() -> Void)?
+
+    init(item: MKMapItem, from: CLLocation?, canMeet: Bool) {
+        self.item = item
+        self.from = from
+        self.canMeet = canMeet
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = MeetPalette.background
+        let title = UILabel()
+        title.font = Type.font(22, .bold, .title2)
+        title.textColor = MeetPalette.primary
+        title.numberOfLines = 2
+        title.text = item.name ?? "この場所"
+        let sub = UILabel()
+        sub.font = Type.caption
+        sub.textColor = MeetPalette.secondary
+        sub.numberOfLines = 2
+        var parts: [String] = []
+        if let kind = Self.kind(item.pointOfInterestCategory) { parts.append(kind) }
+        if let from, let loc = item.placemark.location {
+            let d = from.distance(from: loc)
+            parts.append("\(NearbyAlert.text(d))・\(NearbyAlert.walkText(d))")
+        }
+        sub.text = parts.joined(separator: "・")
+
+        let buttons = UIStackView()
+        buttons.axis = .horizontal
+        buttons.spacing = 10
+        buttons.distribution = .fillEqually
+        buttons.addArrangedSubview(button("経路", symbol: "figure.walk", primary: true) { [weak self] in
+            self?.onRoute?()
+        })
+        if canMeet {
+            buttons.addArrangedSubview(button("ここで待ち合わせ", symbol: "flag.fill", primary: false) { [weak self] in
+                self?.onMeet?()
+            })
+        }
+        let column = UIStackView(arrangedSubviews: [title, sub, buttons])
+        column.axis = .vertical
+        column.spacing = 4
+        column.setCustomSpacing(16, after: sub)
+        view.addSubview(column)
+        column.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            column.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 22),
+            column.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 22),
+            column.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -22),
+        ])
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        onClose?()
+    }
+
+    private func button(_ title: String, symbol: String, primary: Bool, action: @escaping () -> Void) -> UIButton {
+        var conf = UIButton.Configuration.filled()
+        conf.title = title
+        conf.image = UIImage(systemName: symbol)
+        conf.imagePadding = 6
+        conf.baseBackgroundColor = primary ? MeetPalette.action : MeetPalette.raised
+        conf.baseForegroundColor = primary ? MeetPalette.background : MeetPalette.primary
+        conf.cornerStyle = .capsule
+        conf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 10, bottom: 12, trailing: 10)
+        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = Type.font(15, .bold, .body)
+            return a
+        }
+        let b = UIButton(type: .system)
+        b.configuration = conf
+        b.titleLabel?.adjustsFontSizeToFitWidth = true
+        b.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        return b
+    }
+
+    static func kind(_ c: MKPointOfInterestCategory?) -> String? {
+        guard let c else { return nil }
+        let names: [MKPointOfInterestCategory: String] = [
+            .cafe: "カフェ", .restaurant: "ごはん", .bakery: "パン", .foodMarket: "食料品店",
+            .store: "お店", .pharmacy: "薬局", .park: "公園", .publicTransport: "駅・のりば",
+            .museum: "美術館・博物館", .library: "図書館", .hotel: "ホテル", .parking: "駐車場",
+            .restroom: "トイレ", .atm: "ATM", .bank: "銀行", .hospital: "病院", .school: "学校",
+            .movieTheater: "映画館", .nightlife: "夜のお店", .fitnessCenter: "ジム",
+        ]
+        return names[c]
+    }
+}
+
+// MARK: - 場所を検索
+
+/// 場所の検索。打つそばから候補を出す（MKLocalSearchCompleter、Appleマップと同じ仕組み）。
+final class SearchPlacesViewController: UIViewController, UISearchBarDelegate, UITableViewDataSource,
+                                        UITableViewDelegate, MKLocalSearchCompleterDelegate {
+    private let searchBar = UISearchBar()
+    private let table = UITableView()
+    private let completer = MKLocalSearchCompleter()
+    private var results: [MKLocalSearchCompletion] = []
+    private let near: CLLocation?
+    var onPick: ((MKMapItem) -> Void)?
+
+    init(near: CLLocation?) {
+        self.near = near
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = MeetPalette.background
+        overrideUserInterfaceStyle = .dark
+        searchBar.placeholder = "場所・お店・駅を検索"
+        searchBar.searchBarStyle = .minimal
+        searchBar.delegate = self
+        table.backgroundColor = .clear
+        table.dataSource = self
+        table.delegate = self
+        table.keyboardDismissMode = .onDrag
+        completer.delegate = self
+        completer.resultTypes = [.pointOfInterest, .address]
+        if let near {
+            completer.region = MKCoordinateRegion(center: near.coordinate,
+                                                  latitudinalMeters: 5000, longitudinalMeters: 5000)
+        }
+        for v in [searchBar, table] as [UIView] {
+            view.addSubview(v)
+            v.translatesAutoresizingMaskIntoConstraints = false
+        }
+        NSLayoutConstraint.activate([
+            searchBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            searchBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
+            searchBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            table.topAnchor.constraint(equalTo: searchBar.bottomAnchor, constant: 4),
+            table.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            table.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            table.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        searchBar.becomeFirstResponder()
+    }
+
+    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+        completer.queryFragment = searchText
+        if searchText.isEmpty { results = []; table.reloadData() }
+    }
+
+    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        results = completer.results
+        table.reloadData()
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { results.count }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
+        let r = results[indexPath.row]
+        cell.backgroundColor = .clear
+        cell.textLabel?.text = r.title
+        cell.textLabel?.textColor = MeetPalette.primary
+        cell.detailTextLabel?.text = r.subtitle
+        cell.detailTextLabel?.textColor = MeetPalette.secondary
+        cell.imageView?.image = UIImage(systemName: "mappin.circle.fill")
+        cell.imageView?.tintColor = MeetPalette.action
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        MKLocalSearch(request: MKLocalSearch.Request(completion: results[indexPath.row])).start { [weak self] response, _ in
+            guard let self, let item = response?.mapItems.first else { return }
+            self.dismiss(animated: true) { self.onPick?(item) }
         }
     }
 }
