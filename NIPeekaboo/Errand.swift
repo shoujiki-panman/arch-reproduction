@@ -106,12 +106,16 @@ final class ErrandComposeViewController: UIViewController {
     /// 選んでいる店の名前。決めていなければ空。
     private var place: String { places.indices.contains(placeIndex) ? places[placeIndex].name : "" }
 
-    init(partner: String, places: [NearbyStore.Found], onSend: @escaping (String, [String]) -> Void) {
+    init(partner: String, places: [NearbyStore.Found], preset: [String] = [],
+         onSend: @escaping (String, [String]) -> Void) {
         self.partner = partner
         self.places = places
         self.placeIndex = places.isEmpty ? -1 : 0
         self.onSend = onSend
         super.init(nibName: nil, bundle: nil)
+        // AIに頼むの「直す」から来たとき、読み取った品物を選んだ状態で開く。
+        chosen = preset
+        extras = preset.filter { !Self.presets.contains($0) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 

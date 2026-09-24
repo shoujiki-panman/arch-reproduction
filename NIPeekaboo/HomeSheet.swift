@@ -103,6 +103,7 @@ final class HomeSheetView: UIView {
     var onConnect: ((Int) -> Void)?
     var onSearch: (() -> Void)?
     var onExplore: (() -> Void)?
+    var onAsk: (() -> Void)?
 
     private let stack = UIStackView()
     private let grabber = UIView()
@@ -294,23 +295,48 @@ final class HomeSheetView: UIView {
         return row
     }
 
+    /// いちばん上の行。一文で頼む（AI）と、場所だけを探す虫めがね。
     private func searchRow() -> UIView {
+        var askConf = UIButton.Configuration.filled()
+        askConf.title = "AIに頼む・探す"
+        askConf.image = UIImage(systemName: "sparkles")
+        askConf.imagePadding = 8
+        askConf.baseBackgroundColor = MeetPalette.raised
+        askConf.baseForegroundColor = MeetPalette.primary
+        askConf.cornerStyle = .large
+        askConf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
+        askConf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = Type.font(16, .regular, .body)
+            return a
+        }
+        let ask = UIButton(type: .system)
+        ask.configuration = askConf
+        ask.contentHorizontalAlignment = .leading
+        ask.addAction(UIAction { [weak self] _ in self?.onAsk?() }, for: .touchUpInside)
+        ask.layer.borderWidth = 1
+        ask.layer.borderColor = UIColor(red: 0.43, green: 0.36, blue: 1, alpha: 0.7).cgColor
+        ask.layer.cornerRadius = 12
+
+        let search = searchButton()
+        search.setContentHuggingPriority(.required, for: .horizontal)
+        let row = UIStackView(arrangedSubviews: [ask, search])
+        row.axis = .horizontal
+        row.spacing = 8
+        return row
+    }
+
+    private func searchButton() -> UIView {
         var conf = UIButton.Configuration.filled()
-        conf.title = "場所を検索"
         conf.image = UIImage(systemName: "magnifyingglass")
         conf.imagePadding = 8
         conf.baseBackgroundColor = MeetPalette.raised
         conf.baseForegroundColor = MeetPalette.secondary
         conf.cornerStyle = .large
         conf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
-        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
-            var a = attrs
-            a.font = Type.font(16, .regular, .body)
-            return a
-        }
         let button = UIButton(type: .system)
         button.configuration = conf
-        button.contentHorizontalAlignment = .leading
+        button.accessibilityLabel = "場所を検索"
         button.addAction(UIAction { [weak self] _ in self?.onSearch?() }, for: .touchUpInside)
         return button
     }

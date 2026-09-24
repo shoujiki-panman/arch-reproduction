@@ -1,0 +1,495 @@
+// 「AIに頼む」— 一文で言うと、アプリの中の操作を順に進める手伝い役。
+//
+// 形は Claude Code と Meta の Muse から借りた（2026-09-25 本人の依頼）。
+//  - 言われたことを読み、手順を見せながら進める（何をしているかが見える）
+//  - 相手に何かを送る前・決める前は、必ず人に確認する（提案するのはAI、決めるのは人）
+//
+// 読むのはiPhoneの中のAI（Apple の Foundation Models。サーバーも鍵も要らず、
+// 位置も文も外に出ない）。使えない端末では、かんたんな読み方（言葉の拾い上げ）に
+// 切り替える。どちらで読んだかは画面に出す。
+// AIにやらせるのは「一文を、操作1つと中身に分ける」ことだけ。探す・並べる・送るは
+// コードがやる（小さいモデルに判断を任せない。Jevで測った教訓）。
+import Foundation
+import UIKit
+import MapKit
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+// MARK: - 何をしたいか
+
+struct AskIntent: Sendable {
+    enum Kind: String, Sendable { case meet, errand, mood, route, place }
+    var kind: Kind
+    /// 待ち合わせ・探す場所の種類（カフェ・駅など）。
+    var placeKind: String = ""
+    var items: [String] = []
+    var mood: String = ""
+    var query: String = ""
+}
+
+enum AskParser {
+
+    /// 一文を読む。AIが使えれば AI、使えなければ言葉の拾い上げ。2つ目は AI で読んだか。
+    static func parse(_ text: String, partner: String) async -> (AskIntent, Bool) {
+        // 「伝えて」「言っといて」「行き方」ははっきりした合図なので、言葉で決める。
+        // Macで同じAIに6文かけたら、「ちょっと遅れるって言っといて」「改札の前で
+        // 待ってると伝えて」を「会う」と取り違えた（2/6）。小さいモデルに迷わせない。
+        let rule = keywordParse(text)
+        if (rule.kind == .mood || rule.kind == .route), hasStrongSignal(text) { return (rule, false) }
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, *), SystemLanguageModel.default.isAvailable {
+            let result = await withTimeout(seconds: 10) { try await aiParse(text, partner: partner) }
+            if let result { return (result, true) }
+        }
+        #endif
+        return (keywordParse(text), false)
+    }
+
+    private static func hasStrongSignal(_ text: String) -> Bool {
+        ["伝えて", "言っといて", "と言って", "って言って", "と伝え", "って伝え", "行き方", "どう行け", "どう行く", "道順"]
+            .contains { text.contains($0) }
+    }
+
+    /// iPhoneの中のAIが使えるか（画面に「AIで読みます／かんたんに読みます」を出すため）。
+    static var aiAvailable: Bool {
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, *) { return SystemLanguageModel.default.isAvailable }
+        #endif
+        return false
+    }
+
+    private static func withTimeout<T: Sendable>(seconds: Double,
+                                                 _ work: @escaping @Sendable () async throws -> T) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask { try? await work() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    #if canImport(FoundationModels)
+    @available(iOS 26.0, *)
+    private static func aiParse(_ text: String, partner: String) async throws -> AskIntent {
+        let session = LanguageModelSession(instructions: """
+        あなたは待ち合わせアプリ「ここだよ」の中の手伝い役です。
+        ユーザーの一文を読み、アプリでできる操作を1つだけ選び、中身を取り出します。
+        相手の名前は「\(partner)」です。
+        - meet: 相手と会う・待ち合わせ場所を決める
+        - errand: 相手に買い物を頼む（items に品物の名前だけを入れる）
+        - mood: 相手に自分の様子を一言で伝える（mood に伝える一言）
+        - route: 相手のいるところへの行き方を知りたい
+        - place: それ以外で、場所やお店を探す（query に探す言葉）
+        文に無いことは作らないでください。関係ない欄は空にしてください。
+        例:
+        「遅れるって伝えて」→ mood（mood: 遅れる）
+        「駅で会おう」→ meet（placeKind: 駅）
+        「帰りにパンとお茶買ってきて」→ errand（items: パン, お茶）
+        「近くでそば食べたい」→ place（query: そば）
+        """)
+        let response = try await session.respond(to: text, generating: AskPlanAI.self)
+        let p = response.content
+        return AskIntent(kind: AskIntent.Kind(rawValue: p.kind) ?? .place,
+                         placeKind: p.placeKind.trimmingCharacters(in: .whitespaces),
+                         items: p.items.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
+                         mood: String(p.mood.prefix(20)),
+                         query: p.query)
+    }
+    #endif
+
+    // MARK: かんたんな読み方（AIが使えないとき）
+
+    static func keywordParse(_ raw: String) -> AskIntent {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        func has(_ words: [String]) -> Bool { words.contains { text.contains($0) } }
+
+        if has(["伝えて", "様子", "って言って", "と言って", "言っといて", "と伝え", "って伝え"]) {
+            return AskIntent(kind: .mood, mood: quoted(text) ?? String(before(text, ["って伝え", "と伝え", "って言っ", "と言っ"]).prefix(20)))
+        }
+        if has(["行き方", "どう行", "向かう", "案内して", "のところへ", "道順"]) {
+            return AskIntent(kind: .route)
+        }
+        if has(["買って", "おつかい", "お使い", "買い物", "頼んで"]) {
+            return AskIntent(kind: .errand, items: items(in: text))
+        }
+        if has(["会い", "会う", "待ち合わせ", "中間", "合流"]) {
+            return AskIntent(kind: .meet, placeKind: placeWord(in: text) ?? "")
+        }
+        return AskIntent(kind: .place, placeKind: placeWord(in: text) ?? "", query: text)
+    }
+
+    private static let placeWords = ["カフェ", "喫茶", "ごはん", "ランチ", "食事", "レストラン", "駅", "公園", "コンビニ"]
+
+    private static func placeWord(in text: String) -> String? {
+        placeWords.first { text.contains($0) }
+    }
+
+    /// 「」の中身。
+    private static func quoted(_ text: String) -> String? {
+        guard let open = text.firstIndex(of: "「"), let close = text[open...].firstIndex(of: "」") else { return nil }
+        let inner = text[text.index(after: open)..<close]
+        return inner.isEmpty ? nil : String(inner.prefix(20))
+    }
+
+    private static func before(_ text: String, _ marks: [String]) -> String {
+        for mark in marks {
+            if let r = text.range(of: mark) { return String(text[..<r.lowerBound]) }
+        }
+        return text
+    }
+
+    /// 「帰りに牛乳と卵を買ってきて」→ [牛乳, 卵]
+    private static func items(in text: String) -> [String] {
+        var body = before(text, ["を買って", "買ってきて", "を頼", "買って", "を買い"])
+        for lead in ["帰りに", "ついでに", "あとで", "今日", "いま", "おつかい", "お使い", "で", "に"] where body.hasPrefix(lead) {
+            body.removeFirst(lead.count)
+        }
+        if let r = body.range(of: "に", options: .backwards), body.distance(from: body.startIndex, to: r.lowerBound) <= 4 {
+            body = String(body[r.upperBound...])   // 「はなに牛乳と卵」→「牛乳と卵」
+        }
+        let parts = body.components(separatedBy: CharacterSet(charactersIn: "、,と・&＆ "))
+        return parts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && $0.count <= 12 }
+    }
+
+    /// 場所の種類の言葉を、地図の分類にする。
+    static func categories(for word: String) -> [MKPointOfInterestCategory]? {
+        switch word {
+        case let w where w.contains("カフェ") || w.contains("喫茶"): return [.cafe]
+        case let w where w.contains("ごはん") || w.contains("ランチ") || w.contains("食事") || w.contains("レストラン"):
+            return [.restaurant]
+        case let w where w.contains("駅"): return [.publicTransport]
+        case let w where w.contains("公園"): return [.park]
+        default: return nil
+        }
+    }
+}
+
+#if canImport(FoundationModels)
+@available(iOS 26.0, *)
+@Generable
+struct AskPlanAI {
+    @Guide(description: "操作の種類", .anyOf(["meet", "errand", "mood", "route", "place"]))
+    var kind: String
+    @Guide(description: "待ち合わせや探す場所の種類。例: カフェ、駅、公園、ごはん。文に無ければ空文字")
+    var placeKind: String
+    @Guide(description: "errand のときの品物の名前だけ。例: 牛乳、卵。それ以外は空の配列")
+    var items: [String]
+    @Guide(description: "mood のときに相手に伝える一言（20文字以内）。それ以外は空文字")
+    var mood: String
+    @Guide(description: "place のときに探す言葉。例: 近くのカフェ、東京駅。それ以外は空文字")
+    var query: String
+}
+#endif
+
+// MARK: - 考えている玉
+
+/// 考えているあいだ回って脈打つ玉（libraries.dev の Thinking orb の見せ方にならう）。
+final class OrbView: UIView {
+    private let gradient = CAGradientLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        gradient.type = .conic
+        gradient.colors = [UIColor(red: 0.43, green: 0.36, blue: 1, alpha: 1).cgColor,
+                           UIColor(red: 0.66, green: 0.79, blue: 1, alpha: 1).cgColor,
+                           UIColor(red: 0.78, green: 0.71, blue: 1, alpha: 1).cgColor,
+                           UIColor(red: 0.43, green: 0.36, blue: 1, alpha: 1).cgColor]
+        gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
+        gradient.endPoint = CGPoint(x: 0.5, y: 0)
+        layer.addSublayer(gradient)
+        clipsToBounds = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        gradient.frame = bounds
+        layer.cornerRadius = bounds.width / 2
+    }
+
+    func setThinking(_ on: Bool) {
+        if on {
+            guard gradient.animation(forKey: "spin") == nil else { return }
+            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+            spin.fromValue = 0
+            spin.toValue = Double.pi * 2
+            spin.duration = 1.6
+            spin.repeatCount = .infinity
+            gradient.add(spin, forKey: "spin")
+            let pulse = CABasicAnimation(keyPath: "transform.scale")
+            pulse.fromValue = 0.9
+            pulse.toValue = 1.06
+            pulse.duration = 0.8
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            layer.add(pulse, forKey: "pulse")
+        } else {
+            gradient.removeAnimation(forKey: "spin")
+            layer.removeAnimation(forKey: "pulse")
+        }
+    }
+}
+
+// MARK: - 頼む画面
+
+/// 一文を打つ（声でもいい。キーボードのマイク）→ 手順が1行ずつ進む → 送る前に確認の札。
+final class AskViewController: UIViewController, UITextFieldDelegate {
+
+    var onSubmit: ((String) -> Void)?
+    private let suggestions: [String]
+
+    private let orb = OrbView()
+    private let field = UITextField()
+    private let chips = WrappingRow()
+    private let modeLabel = UILabel()
+    private let titleLabel = UILabel()
+    private let steps = UIStackView()
+    private let card = UIStackView()
+    private var stepRows: [(icon: UIImageView, label: UILabel)] = []
+
+    init(suggestions: [String]) {
+        self.suggestions = suggestions
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = MeetPalette.background
+
+        field.placeholder = "例: はなと中間で会いたい、カフェで"
+        field.attributedPlaceholder = NSAttributedString(string: field.placeholder ?? "",
+                                                         attributes: [.foregroundColor: MeetPalette.secondary])
+        field.textColor = MeetPalette.primary
+        field.font = Type.font(17, .regular, .body)
+        field.backgroundColor = MeetPalette.raised
+        field.layer.cornerRadius = 14
+        field.returnKeyType = .go
+        field.delegate = self
+        field.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 1))
+        field.leftViewMode = .always
+        field.clearButtonMode = .whileEditing
+        field.heightAnchor.constraint(equalToConstant: 48).isActive = true
+
+        orb.translatesAutoresizingMaskIntoConstraints = false
+        orb.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        orb.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        let inputRow = UIStackView(arrangedSubviews: [orb, field])
+        inputRow.axis = .horizontal
+        inputRow.alignment = .center
+        inputRow.spacing = 10
+
+        modeLabel.font = Type.caption
+        modeLabel.textColor = MeetPalette.secondary
+        modeLabel.numberOfLines = 2
+        modeLabel.text = AskParser.aiAvailable
+            ? "iPhoneの中のAIで読みます。送る前には必ず確かめます"
+            : "かんたんな読み方で読みます（この端末ではAIが使えません）。送る前には必ず確かめます"
+
+        chips.spacing = 8
+        chips.lineSpacing = 8
+        for text in suggestions {
+            var conf = UIButton.Configuration.filled()
+            conf.title = text
+            conf.baseBackgroundColor = MeetPalette.surface
+            conf.baseForegroundColor = MeetPalette.primary
+            conf.cornerStyle = .capsule
+            conf.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14)
+            conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                var a = attrs
+                a.font = Type.font(14, .regular, .body)
+                return a
+            }
+            let button = CapsuleButton(type: .system)
+            button.configuration = conf
+            button.addAction(UIAction { [weak self] _ in
+                self?.field.text = text
+                self?.submit()
+            }, for: .touchUpInside)
+            chips.addSubview(button)
+        }
+
+        titleLabel.font = Type.font(17, .bold, .headline)
+        titleLabel.textColor = MeetPalette.primary
+        titleLabel.numberOfLines = 2
+        titleLabel.isHidden = true
+        steps.axis = .vertical
+        steps.spacing = 8
+        card.axis = .vertical
+        card.spacing = 8
+        card.isLayoutMarginsRelativeArrangement = true
+        card.layoutMargins = UIEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        card.backgroundColor = MeetPalette.surface
+        card.layer.cornerRadius = 16
+        card.layer.borderWidth = 1
+        card.layer.borderColor = UIColor(red: 0.43, green: 0.36, blue: 1, alpha: 0.9).cgColor
+        card.isHidden = true
+
+        let column = UIStackView(arrangedSubviews: [inputRow, modeLabel, chips, titleLabel, steps, card])
+        column.axis = .vertical
+        column.spacing = 12
+        column.setCustomSpacing(6, after: inputRow)
+        column.setCustomSpacing(16, after: chips)
+        let scroll = UIScrollView()
+        scroll.keyboardDismissMode = .interactive
+        scroll.addSubview(column)
+        view.addSubview(scroll)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        column.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 18),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            column.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            column.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -24),
+            column.leadingAnchor.constraint(equalTo: scroll.frameLayoutGuide.leadingAnchor, constant: 20),
+            column.trailingAnchor.constraint(equalTo: scroll.frameLayoutGuide.trailingAnchor, constant: -20),
+        ])
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if titleLabel.isHidden { field.becomeFirstResponder() }
+    }
+
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        submit()
+        return true
+    }
+
+    private func submit() {
+        let text = (field.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        field.resignFirstResponder()
+        onSubmit?(text)
+    }
+
+    // MARK: 進み具合
+
+    /// 新しく頼まれた。前の手順を消して、考え始める。
+    func begin(_ text: String) {
+        chips.isHidden = true
+        titleLabel.isHidden = false
+        titleLabel.text = text
+        steps.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        stepRows = []
+        hideCard()
+        orb.setThinking(true)
+        if let sheet = sheetPresentationController {
+            sheet.animateChanges { sheet.selectedDetentIdentifier = .medium }
+        }
+    }
+
+    /// 手順を1行足す（くるくる回る印つき）。番号を返す。
+    @discardableResult
+    func addStep(_ text: String) -> Int {
+        let icon = UIImageView(image: UIImage(systemName: "circle.dotted"))
+        icon.tintColor = MeetPalette.action
+        icon.contentMode = .scaleAspectFit
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+        spin.toValue = Double.pi * 2
+        spin.duration = 1.2
+        spin.repeatCount = .infinity
+        icon.layer.add(spin, forKey: "spin")
+        let label = UILabel()
+        label.font = Type.font(15, .regular, .body)
+        label.textColor = MeetPalette.secondary
+        label.numberOfLines = 0
+        label.text = text
+        let row = UIStackView(arrangedSubviews: [icon, label])
+        row.axis = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 10
+        row.alpha = 0
+        steps.addArrangedSubview(row)
+        UIView.animate(withDuration: 0.25) { row.alpha = 1 }
+        stepRows.append((icon, label))
+        return stepRows.count - 1
+    }
+
+    /// 手順を済みにする。note があれば言い直す（「3件見つけました」など）。
+    func finishStep(_ index: Int, note: String? = nil, failed: Bool = false) {
+        guard stepRows.indices.contains(index) else { return }
+        let (icon, label) = stepRows[index]
+        icon.layer.removeAnimation(forKey: "spin")
+        icon.image = UIImage(systemName: failed ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+        icon.tintColor = failed ? .systemOrange : UIColor(red: 0.36, green: 0.79, blue: 0.65, alpha: 1)
+        label.textColor = MeetPalette.primary
+        if let note { label.text = note }
+    }
+
+    /// 確かめる札。primary を押すまで何も送らない。
+    func ask(title: String, detail: String?, primary: String, secondary: String?,
+             onPrimary: @escaping () -> Void, onSecondary: (() -> Void)?) {
+        orb.setThinking(false)
+        card.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let t = UILabel()
+        t.font = Type.font(17, .bold, .headline)
+        t.textColor = MeetPalette.primary
+        t.numberOfLines = 0
+        t.text = title
+        card.addArrangedSubview(t)
+        if let detail {
+            let d = UILabel()
+            d.font = Type.caption
+            d.textColor = MeetPalette.secondary
+            d.numberOfLines = 0
+            d.text = detail
+            card.addArrangedSubview(d)
+        }
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 10
+        row.distribution = .fillEqually
+        row.addArrangedSubview(pill(primary, primary: true, action: onPrimary))
+        if let secondary, let onSecondary {
+            row.addArrangedSubview(pill(secondary, primary: false, action: onSecondary))
+        }
+        card.setCustomSpacing(12, after: card.arrangedSubviews.last!)
+        card.addArrangedSubview(row)
+        card.alpha = 0
+        card.isHidden = false
+        UIView.animate(withDuration: 0.25) { self.card.alpha = 1 }
+    }
+
+    /// 終わった（または進めなかった）ことを一言で。
+    func finish(_ text: String, ok: Bool = true) {
+        orb.setThinking(false)
+        hideCard()
+        let i = addStep(text)
+        finishStep(i, failed: !ok)
+        chips.isHidden = false
+    }
+
+    private func hideCard() {
+        card.isHidden = true
+        card.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    }
+
+    private func pill(_ title: String, primary: Bool, action: @escaping () -> Void) -> UIButton {
+        var conf = UIButton.Configuration.filled()
+        conf.title = title
+        conf.baseBackgroundColor = primary ? MeetPalette.action : MeetPalette.raised
+        conf.baseForegroundColor = primary ? MeetPalette.background : MeetPalette.primary
+        conf.cornerStyle = .capsule
+        conf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = Type.font(15, .bold, .body)
+            return a
+        }
+        let b = UIButton(type: .system)
+        b.configuration = conf
+        b.titleLabel?.adjustsFontSizeToFitWidth = true
+        b.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        return b
+    }
+}

@@ -2893,6 +2893,194 @@ final class MeetViewController: UIViewController {
         }
     }
 
+    // MARK: - AIに頼む
+
+    private func openAsk() {
+        let partner = partnerName
+        let connected = group != nil && theirFix != nil
+        let suggestions = connected
+            ? ["\(partner)と中間で会う、カフェで", "帰りに牛乳と卵を買ってきて", "「もうすぐ着く」と伝えて",
+               "\(partner)のところへの行き方", "近くのカフェ"]
+            : ["近くのカフェ", "近くのコンビニ", "近くの公園", "いちばん近い駅"]
+        let vc = AskViewController(suggestions: suggestions)
+        vc.onSubmit = { [weak self, weak vc] text in
+            guard let self, let vc else { return }
+            self.runAsk(text, in: vc)
+        }
+        if let sheet = vc.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.selectedDetentIdentifier = .large
+            sheet.prefersGrabberVisible = true
+        }
+        presentOnTop(vc)
+    }
+
+    /// 頼まれた一文を読み、手順を見せながら進める。相手に送る前は必ず確かめる。
+    private func runAsk(_ text: String, in ui: AskViewController) {
+        ui.begin(text)
+        let reading = ui.addStep("言いたいことを読んでいます")
+        let partner = partnerName
+        Task { @MainActor [weak self] in
+            let (intent, usedAI) = await AskParser.parse(text, partner: partner)
+            guard let self else { return }
+            ui.finishStep(reading, note: (usedAI ? "iPhoneのAIで読みました：" : "読みました：") + Self.describe(intent, partner: partner))
+            let connected = self.group != nil && self.theirFix != nil
+            // 相手が要る頼みごとは、つないでいるときだけ。
+            // （`case a, b, c where x` の where は最後の c にしか掛からないので、switch の外で見る）
+            if [.meet, .errand, .route].contains(intent.kind), !connected {
+                ui.finish("いまは\(partner)とつないでいないので、これはできません。つなぐと使えます", ok: false)
+                return
+            }
+            switch intent.kind {
+            case .meet: self.askMeet(intent, ui: ui)
+            case .errand: self.askErrand(intent, ui: ui)
+            case .mood: self.askMoodAgent(intent, text: text, ui: ui)
+            case .route:
+                ui.finish("\(partner)までの経路を開きます")
+                ui.dismiss(animated: true) { self.openRoute() }
+            case .place: self.askPlace(intent, text: text, ui: ui)
+            }
+        }
+    }
+
+    private static func describe(_ intent: AskIntent, partner: String) -> String {
+        switch intent.kind {
+        case .meet: return "\(partner)と会う" + (intent.placeKind.isEmpty ? "" : "（\(intent.placeKind)）")
+        case .errand: return "\(partner)に買い物を頼む" + (intent.items.isEmpty ? "" : "（\(intent.items.joined(separator: "・"))）")
+        case .mood: return "様子を伝える"
+        case .route: return "\(partner)のところへの行き方"
+        case .place: return "場所を探す"
+        }
+    }
+
+    /// 待ち合わせ: 真ん中を出す → 種類で探す → どちらにも近い順 → 1件ずつ確かめる。
+    private func askMeet(_ intent: AskIntent, ui: AskViewController) {
+        guard let me = locations.last?.coordinate, let fix = theirFix else { return }
+        let partner = partnerName
+        let middle = ui.addStep("2人の真ん中を出しています")
+        ui.finishStep(middle, note: "2人の真ん中を出しました")
+        let kind = intent.placeKind.isEmpty ? "待ち合わせに向く場所" : intent.placeKind
+        let finding = ui.addStep("真ん中のまわりで\(kind)を探しています")
+        MidpointSpots.between(me, fix.coordinate, only: AskParser.categories(for: intent.placeKind)) { [weak self] spots in
+            guard let self else { return }
+            guard !spots.isEmpty else {
+                ui.finishStep(finding, note: "\(kind)が見つかりませんでした", failed: true)
+                ui.finish("種類を変えて頼んでみてください（例: 駅で）", ok: false)
+                return
+            }
+            ui.finishStep(finding, note: "\(kind)を\(spots.count)件見つけました")
+            let order = ui.addStep("どちらにも近い順に並べています")
+            ui.finishStep(order, note: "どちらかに寄らない順に並べました")
+            self.offerSpot(spots, at: 0, partner: partner, ui: ui)
+        }
+    }
+
+    private func offerSpot(_ spots: [MidpointSpots.Spot], at i: Int, partner: String, ui: AskViewController) {
+        let spot = spots[i]
+        let walk = { (m: Double) in max(1, Int((m / 80).rounded())) }
+        ui.ask(title: "「\(spot.name)」を \(partner)に送りますか？",
+               detail: "\(spot.label)・あなた歩いて\(walk(spot.fromMe))分・\(partner)歩いて\(walk(spot.fromPeer))分",
+               primary: "送る",
+               secondary: i + 1 < spots.count ? "ほかの候補（\(i + 2)/\(spots.count)）" : nil,
+               onPrimary: { [weak self] in
+                   self?.setMeetPin(name: spot.name, at: spot.coordinate)
+                   ui.finish("\(partner)に送りました。2人の地図に旗が立っています")
+               },
+               onSecondary: i + 1 < spots.count ? { [weak self] in
+                   self?.offerSpot(spots, at: i + 1, partner: partner, ui: ui)
+               } : nil)
+    }
+
+    /// おつかい: 品物を読む → 相手のそばの店を見る → 頼む前に確かめる。
+    private func askErrand(_ intent: AskIntent, ui: AskViewController) {
+        let partner = partnerName
+        guard !intent.items.isEmpty else {
+            ui.finish("何を頼むのか読み取れませんでした（例: 牛乳と卵を買ってきて）", ok: false)
+            return
+        }
+        let list = ui.addStep("リストを作っています")
+        ui.finishStep(list, note: "リスト：\(intent.items.joined(separator: "・"))")
+        let store = ui.addStep("\(partner)のそばのお店を見ています")
+        let place = peerStore?.name ?? ""
+        ui.finishStep(store, note: place.isEmpty ? "そばにお店は見つかりませんでした（店は決めずに頼みます）"
+                                                 : "\(partner)は「\(place)」のそばにいます")
+        ui.ask(title: "\(partner)に \(intent.items.joined(separator: "・")) を頼みますか？",
+               detail: place.isEmpty ? nil : "\(place)のそば",
+               primary: "頼む", secondary: "直す",
+               onPrimary: { [weak self] in
+                   self?.sendErrand(place: place, items: intent.items)
+                   ui.finish("頼みました。買えたら下の板に出ます")
+               },
+               onSecondary: { [weak self] in
+                   ui.dismiss(animated: true) { self?.openErrandCompose(preset: intent.items) }
+               })
+    }
+
+    private func openErrandCompose(preset: [String]) {
+        let vc = ErrandComposeViewController(partner: partnerName, places: peerStores, preset: preset) { [weak self] place, items in
+            self?.sendErrand(place: place, items: items)
+        }
+        if let sheet = vc.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+        }
+        presentOnTop(vc)
+    }
+
+    /// 様子: 一言を読む → 伝える前に確かめる。
+    private func askMoodAgent(_ intent: AskIntent, text: String, ui: AskViewController) {
+        guard group != nil else {
+            ui.finish("いまは誰ともつないでいないので、伝える相手がいません", ok: false)
+            return
+        }
+        let line = cleanName(intent.mood.isEmpty ? text : intent.mood)
+        ui.ask(title: "「\(line)」と伝えますか？", detail: "\(partnerName)の地図で、あなたの名前の下に出ます",
+               primary: "伝える", secondary: nil,
+               onPrimary: { [weak self] in
+                   self?.setMood(line)
+                   ui.finish("伝えました")
+               }, onSecondary: nil)
+    }
+
+    /// 場所: 自分のまわりで探す → いちばん近いものを見せる。
+    private func askPlace(_ intent: AskIntent, text: String, ui: AskViewController) {
+        guard let me = locations.last else {
+            ui.finish("いまいる場所がまだ分かりません", ok: false)
+            return
+        }
+        let query = [intent.query, intent.placeKind, text].first { !$0.isEmpty } ?? text
+        let finding = ui.addStep("近くで「\(query)」を探しています")
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = query.replacingOccurrences(of: "近くの", with: "")
+            .replacingOccurrences(of: "いちばん近い", with: "")
+        request.region = MKCoordinateRegion(center: me.coordinate, latitudinalMeters: 3000, longitudinalMeters: 3000)
+        MKLocalSearch(request: request).start { [weak self] response, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let items = (response?.mapItems ?? []).sorted {
+                    ($0.placemark.location?.distance(from: me) ?? .greatestFiniteMagnitude)
+                        < ($1.placemark.location?.distance(from: me) ?? .greatestFiniteMagnitude)
+                }
+                guard let best = items.first, let loc = best.placemark.location else {
+                    ui.finishStep(finding, note: "見つかりませんでした", failed: true)
+                    ui.finish("言い方を変えてみてください", ok: false)
+                    return
+                }
+                ui.finishStep(finding, note: "\(items.count)件見つけました。いちばん近いのは「\(best.name ?? "")」")
+                let d = me.distance(from: loc)
+                ui.ask(title: best.name ?? "この場所",
+                       detail: "\(NearbyAlert.text(d))・\(NearbyAlert.walkText(d))",
+                       primary: "経路", secondary: "地図で見る",
+                       onPrimary: { [weak self] in
+                           ui.dismiss(animated: true) { self?.routeToPlace(best) }
+                       },
+                       onSecondary: { [weak self] in
+                           ui.dismiss(animated: true) { self?.presentPlace(best) }
+                       })
+            }
+        }
+    }
+
     private func openSearch() {
         let vc = SearchPlacesViewController(near: locations.last)
         vc.onPick = { [weak self] item in self?.presentPlace(item) }
@@ -5572,6 +5760,7 @@ final class MeetViewController: UIViewController {
         homeSheet.onInvite = { [weak self] in self?.callPartnerTapped() }
         homeSheet.onEnd = { [weak self] in self?.finishMeet() }
         homeSheet.onSearch = { [weak self] in self?.openSearch() }
+        homeSheet.onAsk = { [weak self] in self?.openAsk() }
         homeSheet.onExplore = { [weak self] in self?.exploreTapped() }
         homeSheet.onConnect = { [weak self] index in
             let friends = KnownFriends.all()

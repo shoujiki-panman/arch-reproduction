@@ -242,6 +242,7 @@ enum MidpointSpots {
 
     /// 2点の真ん中を出して、そのまわりを見る。
     static func between(_ me: CLLocationCoordinate2D, _ peer: CLLocationCoordinate2D,
+                        only: [MKPointOfInterestCategory]? = nil,
                         completion: @escaping ([Spot]) -> Void) {
         let centre = CLLocationCoordinate2D(latitude: (me.latitude + peer.latitude) / 2,
                                             longitude: (me.longitude + peer.longitude) / 2)
@@ -251,20 +252,22 @@ enum MidpointSpots {
         // 真ん中が公園や川の上だと、狭い輪では何も出ない（皇居の中で実際に0件だった）。
         // 見つからなければ3倍に広げて取り直す。
         let radius = min(4_000, max(600, apart / 3))
-        search(centre: centre, radius: radius, me: me, peer: peer) { first in
+        search(centre: centre, radius: radius, me: me, peer: peer, only: only) { first in
             guard first.isEmpty else {
                 completion(first)
                 return
             }
-            search(centre: centre, radius: min(20_000, radius * 3), me: me, peer: peer, completion: completion)
+            search(centre: centre, radius: min(20_000, radius * 3), me: me, peer: peer, only: only,
+                   completion: completion)
         }
     }
 
     private static func search(centre: CLLocationCoordinate2D, radius: Double,
                                me: CLLocationCoordinate2D, peer: CLLocationCoordinate2D,
+                               only: [MKPointOfInterestCategory]? = nil,
                                completion: @escaping ([Spot]) -> Void) {
         let request = MKLocalPointsOfInterestRequest(center: centre, radius: radius)
-        request.pointOfInterestFilter = MKPointOfInterestFilter(including: categories)
+        request.pointOfInterestFilter = MKPointOfInterestFilter(including: only ?? categories)
         let mine = CLLocation(latitude: me.latitude, longitude: me.longitude)
         let theirs = CLLocation(latitude: peer.latitude, longitude: peer.longitude)
         MKLocalSearch(request: request).start { response, _ in
