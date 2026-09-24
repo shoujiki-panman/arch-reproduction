@@ -2169,25 +2169,18 @@ final class MeetViewController: UIViewController {
         askToResumeIfNeeded()
     }
 
-    /// A group restored after a relaunch does not start by itself.
+    /// 開き直したときは、決めた期限まで黙って共有を続ける。
+    /// 以前は毎回「再開しますか？」と聞いていたが、「探す」もLife360もGoogleマップの
+    /// 共有も聞かない。期限（朝4時など）がすでに歯止めになっている。
+    /// 黙って続けるぶん、続けていることは一言で必ず伝える。やめるのは下の板から。
     private func askToResumeIfNeeded() {
-        guard resumePending, let current = group, presentedViewController == nil else { return }
+        guard resumePending, let current = group else { return }
         resumePending = false
         let others = current.approved.filter { $0 != current.myMember }.compactMap { current.names[$0] }
-        let whose = current.isHost ? "あなたのグループ" : "\(current.hostName)のグループ"
-        let alert = UIAlertController(title: "\(whose)を再開しますか？",
-                                      message: (others.isEmpty ? "" : "許可済み: \(others.joined(separator: "、"))\n")
-                                        + "再開すると、許可済みの人に距離が\(untilText(current.expires))見えます。",
-                                      preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "終了", style: .destructive) { [weak self] _ in
-            self?.finishMeet()
-        })
-        alert.addAction(UIAlertAction(title: "再開", style: .default) { [weak self] _ in
-            guard let self, self.supportsUWB else { return }
-            self.startup()
-            self.refreshDials()
-        })
-        present(alert, animated: true)
+        let who = others.isEmpty ? "共有" : "\(others.joined(separator: "、"))との共有"
+        if supportsUWB { startup() }
+        refreshDials()
+        flash("\(who)を続けています（\(untilText(current.expires))）")
     }
 
     /// Four in the morning, so a late night still counts as today.
@@ -2436,7 +2429,9 @@ final class MeetViewController: UIViewController {
             let before = self.peerStore?.name
             self.peerStores = found
             // 店が変わった時だけ一言。同じ店で何度も言わない。
-            if let first = found.first, first.name != before, self.sentErrand == nil, self.myErrand == nil {
+            // 開いた直後の最初の1軒は言わない（「共有を続けています」を上書きしてしまう）。
+            if let first = found.first, let before, first.name != before,
+               self.sentErrand == nil, self.myErrand == nil {
                 self.flash("\(self.partnerName)は\(first.name)のそばにいます")
             }
             self.refreshDials()
@@ -2520,12 +2515,12 @@ final class MeetViewController: UIViewController {
         if radioIsFresh(), let d = latestDistance {
             let trend = trendClosing.map { $0 ? "近づいています" : "離れています" } ?? "電波で測っています"
             findScreen.update(name: name, distance: formatMeters(d), detail: trend,
-                              angle: nil, cameraAvailable: supportsUWB)
+                              angle: nil, cameraAvailable: true)
             return
         }
         guard let me = locations.last, let fix = theirFix else {
             findScreen.update(name: name, distance: "—", detail: "\(name)の居場所がまだ届いていません",
-                              angle: nil, cameraAvailable: false)
+                              angle: nil, cameraAvailable: true)
             return
         }
         let metres = CLLocation(latitude: fix.lat, longitude: fix.lon).distance(from: me)
@@ -2536,7 +2531,7 @@ final class MeetViewController: UIViewController {
                           detail: heading >= 0
                               ? "\(name)はこの向き・\(NearbyAlert.walkText(metres))"
                               : "北を上にしたときの向き（この端末では方角が取れません）",
-                          angle: CGFloat(angle * .pi / 180), cameraAvailable: false)
+                          angle: CGFloat(angle * .pi / 180), cameraAvailable: true)
     }
 
     /// 経路はアプリの中で出す。Appleマップへ切り替えると、戻ってくるまで相手が
@@ -4950,11 +4945,14 @@ final class MeetViewController: UIViewController {
 
     /// Distance, then who. The number carries the screen, so it is tracked the
     /// way display type is and coloured by how close the pair has got.
-    private func setReadout(distance: Float?) {
-        let text = distance.map { $0 < arrivalThreshold ? "見つけた" : formatMeters($0) } ?? "—"
+    private func setReadout(distance: Float?, fallback: String? = nil) {
+        let text = distance.map { $0 < arrivalThreshold ? "見つけた" : formatMeters($0) } ?? fallback ?? "—"
         arDistanceValue.attributedText = Type.tracked(text, font: Type.display)
         arDistanceValue.textColor = distance.map { band(for: $0).colour } ?? .white
-        arPeerName.text = activePeerID.map { name(of: $0) } ?? (isDemo ? "デモ" : "相手")
+        // 電波の距離か、地図の距離か。見出しで区別する。
+        arDistanceCaption.text = distance == nil && fallback != nil ? "距離（地図）" : "距離"
+        // 電波の相手がまだいなくても、共有している相手の名前は分かっている。
+        arPeerName.text = activePeerID.map { name(of: $0) } ?? (isDemo ? "デモ" : partnerName)
     }
 
     private func setARGuidesHidden(_ hidden: Bool) {
@@ -4967,14 +4965,26 @@ final class MeetViewController: UIViewController {
         guard phase == .guiding else { return }
         updateProximityFeedback(distance: latestDistance)
 
-        let focusName = activePeerID.map { name(of: $0) } ?? "相手"
-        guard let distance = latestDistance else {
-            // The floor view never runs camera assistance, so the convergence
-            // sweep copy is wrong there: say what the home line says.
-            arHint.text = floorRingsOnly ? guidance(for: focusName).headline
-                                         : (sweepHint ?? "iPhoneをゆっくり動かしてください")
+        let focusName = activePeerID.map { name(of: $0) } ?? partnerName
+        // 新しい電波の値だけを使う。古い値をそのまま使っていたので、以前近づいた
+        // ときの「0.5m」が残り、開いた瞬間に「見つけた」と出ていた。
+        guard let distance = radioIsFresh() ? latestDistance : nil else {
+            // 電波の相手がいて、まだ最初の値が来ていないときだけ「動かして」が意味を持つ
+            // （カメラで方向を合わせている最中）。それ以外は電波がそもそも無い。
+            let converging = activePeerID != nil && latestDistance == nil
+            if !converging {
+                // 電波がまだ無い。ゆっくり動かしても何も起きないので、そうは言わない。
+                let far = mapDistance().map { "いまは地図で\(NearbyAlert.text($0.meters))" } ?? "いまは電波が届いていません"
+                arHint.text = "電波が届くと、\(focusName)のまわりに輪が出ます（\(far)）"
+                setReadout(distance: nil, fallback: mapDistance().map { NearbyAlert.text($0.meters) })
+            } else {
+                // The floor view never runs camera assistance, so the convergence
+                // sweep copy is wrong there: say what the home line says.
+                arHint.text = floorRingsOnly ? guidance(for: focusName).headline
+                                             : (sweepHint ?? "iPhoneをゆっくり動かしてください")
+                setReadout(distance: nil)
+            }
             arHint.isHidden = false
-            setReadout(distance: nil)
             setARGuidesHidden(true)
             // No reading, no circle. The trail stays.
             possibleRing.isHidden = true
