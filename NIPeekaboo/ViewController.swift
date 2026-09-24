@@ -156,6 +156,15 @@ struct FaceMessage: Codable {
     var jpeg: String
 }
 
+/// 待ち合わせの目印。2人の地図の同じ場所に立つ。
+struct MeetPinMessage: Codable {
+    var type: String = "pin"
+    /// 空なら「目印を消した」。
+    var name: String
+    var lat: Double
+    var lon: Double
+}
+
 struct MessageKind: Decodable {
     let type: String
 }
@@ -1024,6 +1033,8 @@ final class MeetViewController: UIViewController {
     private var peerMood: String?
     private static let moodKey = "kokodayo.mood"
     private static let faceKey = "kokodayo.face"
+    /// 待ち合わせの目印（名前と場所）。どちらが立てても2人に出る。
+    private var meetPin: (name: String, coordinate: CLLocationCoordinate2D)?
     /// 相手の印。グループの間だけ覚えておく（保存しない）。
     private var peerFace: UIImage?
     /// 自分の印。次の待ち合わせでも使うので残す。
@@ -2226,6 +2237,7 @@ final class MeetViewController: UIViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             self?.sendMood()
             self?.sendFace()
+            self?.sendMeetPin()
         }
         channel.connect()
         remote = channel
@@ -2285,7 +2297,8 @@ final class MeetViewController: UIViewController {
                   peerMood: peerMood,
                   myMood: myMood,
                   peerFace: peerFace,
-                  myFace: myFace)
+                  myFace: myFace,
+                  pin: meetPin)
     }
 
     /// 電波が無いときの、地図での距離。
@@ -2455,6 +2468,21 @@ final class MeetViewController: UIViewController {
             // 中継から来た合図。部屋の鍵を持っている人しか入れないので、名乗りは要らない。
             guard group != nil else { return }
             receivePing(from: partnerName)
+        case "pin":
+            guard group != nil, let pin = try? JSONDecoder().decode(MeetPinMessage.self, from: data) else { return }
+            let name = cleanName(pin.name)
+            if name.isEmpty {
+                meetPin = nil
+                flash("\(partnerName)が待ち合わせの目印を消しました")
+            } else {
+                meetPin = (name, CLLocationCoordinate2D(latitude: pin.lat, longitude: pin.lon))
+                flash("\(partnerName)が「\(name)」で待ち合わせにしました")
+                if hapticsOn { arrivalGenerator.notificationOccurred(.success) }
+                NearbyAlert.notify(title: "待ち合わせは「\(name)」",
+                                   body: "\(partnerName)が決めました。地図に目印が立っています。")
+            }
+            pushToMap()
+            refreshDials()
         case "face":
             guard group != nil, let face = try? JSONDecoder().decode(FaceMessage.self, from: data) else { return }
             // 大きすぎるものは受け取らない（中継に何を流されても、こちらで線を引く）。
@@ -2633,6 +2661,51 @@ final class MeetViewController: UIViewController {
         presentOnTop(sheet)
     }
 
+    // MARK: - 中間で待ち合わせ
+
+    /// 2人の真ん中の候補を出す。押した場所が、両方の地図の目印になる。
+    @objc private func midpointTapped() {
+        guard let mine = locations.last?.coordinate, let fix = theirFix else {
+            flash("相手の居場所がまだ届いていません")
+            return
+        }
+        impactGenerator.impactOccurred()
+        let vc = MidpointViewController(partner: partnerName, me: mine, peer: fix.coordinate,
+                                        hasPin: meetPin != nil,
+                                        onPick: { [weak self] spot in
+            self?.setMeetPin(name: spot.name, at: spot.coordinate)
+        }, onClear: { [weak self] in
+            self?.setMeetPin(name: "", at: nil)
+        })
+        if let sheet = vc.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+        }
+        presentOnTop(vc)
+    }
+
+    private func setMeetPin(name: String, at coordinate: CLLocationCoordinate2D?) {
+        if let coordinate, !name.isEmpty {
+            meetPin = (name, coordinate)
+            flash("「\(name)」で待ち合わせにしました")
+        } else {
+            meetPin = nil
+            flash("待ち合わせの目印を消しました")
+        }
+        sendMeetPin()
+        pushToMap()
+        refreshDials()
+    }
+
+    private func sendMeetPin() {
+        guard group != nil else { return }
+        let message = MeetPinMessage(name: meetPin?.name ?? "",
+                                     lat: meetPin?.coordinate.latitude ?? 0,
+                                     lon: meetPin?.coordinate.longitude ?? 0)
+        guard let data = try? JSONEncoder().encode(message) else { return }
+        sendToPartner(data)
+    }
+
     // MARK: - 地図に出る自分の印
 
     /// 写真を選ぶ。写真そのものは送らず、128px角に縮めたものだけを送る。
@@ -2702,6 +2775,7 @@ final class MeetViewController: UIViewController {
         peerStore = nil
         peerFace = nil
         peerMood = nil
+        meetPin = nil
         storeCheckedFrom = nil
         storeCheckedAt = .distantPast
         approach.reset()
@@ -2817,6 +2891,15 @@ final class MeetViewController: UIViewController {
         guard let group, group.isHost, !peers.isEmpty,
               let data = try? JSONEncoder().encode(SpotMessage(text: group.spot ?? "")) else { return }
         mpc?.sendData(data: data, peers: peers, mode: .reliable)
+    }
+
+    /// 大きいボタン。近ければ合図、遠ければ待ち合わせを決める。
+    @objc private func primaryTapped() {
+        if radioIsFresh() || theirFix == nil {
+            pingTapped()
+        } else {
+            midpointTapped()
+        }
     }
 
     @objc private func pingTapped() {
@@ -3371,7 +3454,7 @@ final class MeetViewController: UIViewController {
         case "ping":
             guard let member = peerMembers[peer], isApproved(member), amApproved else { return }
             receivePing(from: name(of: peer))
-        case "errand", "errandStatus", "mood", "face":
+        case "errand", "errandStatus", "mood", "face", "pin":
             // 近くにいるときはMPCでも届く。中身の扱いは中継から来たときと同じ。
             guard let member = peerMembers[peer], isApproved(member), amApproved else { return }
             handleNote(data)
@@ -3651,6 +3734,12 @@ final class MeetViewController: UIViewController {
         // needs no camera assistance from NearbyInteraction, so it does not wait
         // on -5883; it only needs a distance to draw.
         cameraButton.isHidden = !connected && !mapOnly
+        // 遠いあいだは「中間で待ち合わせ」。近づいたら「合図する」に戻る。
+        let farApart = !radioIsFresh() && theirFix != nil
+        cameraButton.configuration?.title = farApart
+            ? (meetPin.map { "待ち合わせ: \($0.name)" } ?? "中間で待ち合わせ")
+            : "ここだよ！ 合図する"
+        cameraButton.configuration?.image = UIImage(systemName: farApart ? "mappin.and.ellipse" : "hand.wave.fill")
         cameraButton.isEnabled = true
         cameraButton.alpha = 1
         refreshErrandButton()
@@ -4817,7 +4906,7 @@ final class MeetViewController: UIViewController {
         floor.update(peerAt: theirFix?.coordinate, meAt: locations.last,
                      metres: radio ?? map?.meters, accuracy: map?.accuracy,
                      byRadio: radio != nil, peerMood: peerMood, myMood: myMood,
-                     peerFace: peerFace, myFace: myFace)
+                     peerFace: peerFace, myFace: myFace, pin: meetPin)
     }
 
     // MARK: - Waiting side
@@ -4977,13 +5066,14 @@ final class MeetViewController: UIViewController {
         finderChips.addArrangedSubview(finderMarkerChip)
         finderChips.addArrangedSubview(UIView())
 
-        // 「ここだよ！」 is the one thing to do once you are connected and the
-        // number alone is not enough: the other phone buzzes and says look up.
+        // 大きいボタンの役目は距離で変わる。遠いあいだは「どこで会う」を決めるのが
+        // いちばん効く（「どこにする？」の電話がいちばん多い）。合図は最後の数mの
+        // 道具なので、電波が届いてから出す。
         cameraButton.configuration = primaryConfig(title: "ここだよ！ 合図する",
                                                    image: "hand.wave.fill",
                                                    background: actionColour,
                                                    foreground: .black)
-        cameraButton.addTarget(self, action: #selector(pingTapped), for: .touchUpInside)
+        cameraButton.addTarget(self, action: #selector(primaryTapped), for: .touchUpInside)
         respondOnPress(cameraButton)
         cameraButton.isEnabled = false
         cameraButton.alpha = 0.4

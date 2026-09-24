@@ -19,6 +19,16 @@ final class MeetMapViewController: UIViewController {
         }
     }
 
+    /// 待ち合わせの目印。人ではないので、丸ではなく旗で描く。
+    final class PinPoint: NSObject, MKAnnotation {
+        dynamic var coordinate: CLLocationCoordinate2D
+        var title: String?
+        init(coordinate: CLLocationCoordinate2D, title: String?) {
+            self.coordinate = coordinate
+            self.title = title
+        }
+    }
+
     /// 名前と一言の札。参考にしたのは旅人が並ぶ地図の見せ方
     /// （名前を太く、様子を下に小さく、白い札で地図から浮かせる）。
     static func nameCard(_ name: String, mood: String?) -> UIView {
@@ -71,6 +81,8 @@ final class MeetMapViewController: UIViewController {
     private var myMood: String?
     private var peerFace: UIImage?
     private var myFace: UIImage?
+    /// 待ち合わせの目印。2人の地図の同じ場所に立つ。
+    private var pin: PinPoint?
     private var peer: PeerPoint?
     private var line: MKPolyline?          // 道なりの経路（取れないときは2点を結ぶ直線）
     private var lineIsRoute = false
@@ -240,7 +252,22 @@ final class MeetMapViewController: UIViewController {
     func update(peerAt coordinate: CLLocationCoordinate2D?, meAt me: CLLocation?,
                 metres: Double?, accuracy: Double?, byRadio: Bool,
                 peerMood: String? = nil, myMood: String? = nil,
-                peerFace: UIImage? = nil, myFace: UIImage? = nil) {
+                peerFace: UIImage? = nil, myFace: UIImage? = nil,
+                pin: (name: String, coordinate: CLLocationCoordinate2D)? = nil) {
+        // 待ち合わせの目印。決まっていなければ何も立てない。
+        if let pin {
+            if let existing = self.pin, existing.title == pin.name {
+                existing.coordinate = pin.coordinate
+            } else {
+                if let existing = self.pin { map.removeAnnotation(existing) }
+                let point = PinPoint(coordinate: pin.coordinate, title: pin.name)
+                map.addAnnotation(point)
+                self.pin = point
+            }
+        } else if let existing = self.pin {
+            map.removeAnnotation(existing)
+            self.pin = nil
+        }
         let moodChanged = peerMood != self.peerMood || myMood != self.myMood
         let faceChanged = peerFace !== self.peerFace || myFace !== self.myFace
         self.peerMood = peerMood
@@ -395,6 +422,33 @@ extension MeetMapViewController: MKMapViewDelegate {
             view.addSubview(dot)
             applyFace(myFace, to: view, fallback: "figure.stand")
             attachCard(to: view, name: myName, mood: myMood)
+            return view
+        }
+        if let flag = annotation as? PinPoint {
+            let id = "pin"
+            let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
+                ?? MKAnnotationView(annotation: annotation, reuseIdentifier: id)
+            view.annotation = annotation
+            view.canShowCallout = false
+            view.subviews.forEach { $0.removeFromSuperview() }
+            let size: CGFloat = 46
+            view.frame = CGRect(x: 0, y: 0, width: size, height: size)
+            view.centerOffset = CGPoint(x: 0, y: -size / 2)
+            let disc = UIView(frame: view.bounds)
+            disc.backgroundColor = MeetPalette.ink
+            disc.layer.cornerRadius = size / 2
+            disc.layer.borderWidth = 3
+            disc.layer.borderColor = UIColor.white.cgColor
+            let symbol = UIImageView(image: UIImage(systemName: "flag.fill"))
+            symbol.tintColor = .black
+            symbol.contentMode = .scaleAspectFit
+            symbol.frame = disc.bounds.insetBy(dx: 12, dy: 12)
+            disc.addSubview(symbol)
+            view.addSubview(disc)
+            let card = Self.nameCard(flag.title ?? "待ち合わせ", mood: nil)
+            card.frame.origin = CGPoint(x: (size - card.frame.width) / 2, y: -card.frame.height - 6)
+            view.addSubview(card)
+            view.clipsToBounds = false
             return view
         }
         guard let point = annotation as? PeerPoint else { return nil }
