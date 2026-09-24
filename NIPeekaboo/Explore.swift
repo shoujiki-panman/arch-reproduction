@@ -75,6 +75,8 @@ final class ExploreViewController: UIViewController {
     private let centre: CLLocationCoordinate2D?
     private let rows = UIStackView()
     private let status = UILabel()
+    /// 行が押された。アプリの中の場所の札へ渡す（Appleマップには飛ばさない）。
+    var onPick: ((MKMapItem) -> Void)?
 
     init(centre: CLLocationCoordinate2D?) {
         self.centre = centre
@@ -206,8 +208,13 @@ final class ExploreViewController: UIViewController {
         }
         button.configuration = conf
         button.contentHorizontalAlignment = .leading
-        button.addAction(UIAction { _ in
-            spot.item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking])
+        // 以前はAppleマップを開いていた。アプリから出ると相手が見えなくなるので、
+        // 中の場所の札（経路・案内開始・ここで待ち合わせ）へ渡す（本人 9/25）。
+        button.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            if let onPick = self.onPick {
+                self.dismiss(animated: true) { onPick(spot.item) }
+            }
         }, for: .touchUpInside)
         return button
     }

@@ -2498,6 +2498,7 @@ final class MeetViewController: UIViewController {
     @objc private func exploreTapped() {
         impactGenerator.impactOccurred()
         let vc = ExploreViewController(centre: locations.last?.coordinate)
+        vc.onPick = { [weak self] item in self?.presentPlace(item) }
         if let sheet = vc.sheetPresentationController {
             sheet.detents = [.medium(), .large()]
             sheet.prefersGrabberVisible = true
