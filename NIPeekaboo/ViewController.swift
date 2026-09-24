@@ -980,6 +980,19 @@ final class MeetViewController: UIViewController {
     private var theirFix: RemoteFix?
     private var remotePush: Timer?
     private weak var mapScreen: MeetMapViewController?
+    /// ホーム画面の下に敷く地図（画面を増やさず、同じ地図を埋めて使う）。
+    private weak var mapFloor: MeetMapViewController?
+    private let topScrim = GradientView(colors: [MeetPalette.background.withAlphaComponent(0.92),
+                                                 MeetPalette.background.withAlphaComponent(0.55),
+                                                 .clear],
+                                        locations: [0, 0.5, 1])
+    /// 輪が前に出るときに地図を落とす幕。地図と輪が同時に主役になると
+    /// どちらも読めない（実測で確かめた）。
+    private let floorDim = UIView()
+    private let bottomScrim = GradientView(colors: [UIColor.clear,
+                                                    MeetPalette.background.withAlphaComponent(0.6),
+                                                    MeetPalette.background.withAlphaComponent(0.96)],
+                                           locations: [0, 0.45, 1])
 
     // おつかいと「近くにいるよ」。どちらも相手が遠いあいだの層に乗る。
     /// 相手のそばで見つかった店。見つかっている間だけ「頼む」が出せる。
@@ -1253,6 +1266,10 @@ final class MeetViewController: UIViewController {
     private let errandButton = UIButton(type: .system)
     /// 輪の中がいま「まわりを見る」かどうか。
     private var dialExplores = false
+    /// 地図の上に浮かぶ小さい丸。左が「まわりを見る」、右が地図⇄カメラ。
+    private let exploreButton = UIButton(type: .system)
+    private let switchButton = UIButton(type: .system)
+    private let floatingButtons = UIStackView()
     private let endButton = UIButton(type: .system)
     private let motionActivity = CMMotionActivityManager()
     private var motionStarted = false
@@ -2327,6 +2344,12 @@ final class MeetViewController: UIViewController {
             sheet.prefersGrabberVisible = true
         }
         presentOnTop(vc)
+    }
+
+    /// 地図⇄カメラ。同じ場所のボタンを押すだけで行き来する。
+    @objc private func switchTapped() {
+        impactGenerator.impactOccurred()
+        startGuidance()
     }
 
     @objc private func errandTapped() {
@@ -3517,6 +3540,22 @@ final class MeetViewController: UIViewController {
                            symbol: "link")
         }
 
+        // 地図が床のときは輪を引っ込める。地図と輪が同じ場所で重なると、
+        // どちらも読めなくなる（近づいて電波が届いたら、輪がまた前に出る）。
+        let floorUp = group != nil && theirFix != nil
+        let ringHidden = floorUp && !radioIsFresh() && !showRadar
+        finderDial.isHidden = showRadar || ringHidden
+        // 輪が前に出ている間は地図を落とす。地図だけのときは落とさない。
+        let dim = floorUp && !ringHidden
+        if floorDim.isHidden != !dim {
+            Trans.run(Trans.smoothOut(Trans.fast)) { self.floorDim.alpha = dim ? 1 : 0 }
+            floorDim.isHidden = !dim
+            floorDim.alpha = dim ? 1 : 0
+        }
+        floatingButtons.isHidden = !floorUp
+        exploreButton.isHidden = !dialExplores && !ringHidden
+        switchButton.isHidden = !(activePeerID != nil && latestDistance != nil && supportsUWB)
+
         // Measuring stops when the phone locks, and finding someone in a crowd is
         // exactly when nobody taps the screen. Only while a distance is arriving.
         UIApplication.shared.isIdleTimerDisabled = connected && latestDistance != nil
@@ -3532,6 +3571,7 @@ final class MeetViewController: UIViewController {
         cameraButton.isEnabled = true
         cameraButton.alpha = 1
         refreshErrandButton()
+        refreshMapFloor()
         endButton.isHidden = group == nil && !connected
         endButton.configuration?.title = connected ? "終了" : "やめる"
         // At arrival the dial already says it in mint; the headline would only
@@ -4554,6 +4594,7 @@ final class MeetViewController: UIViewController {
     private func buildHome() {
         homeScreen.backgroundColor = bgColour
         view.addSubview(homeScreen)
+        buildMapFloor()
         homeScreen.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             homeScreen.topAnchor.constraint(equalTo: view.topAnchor),
@@ -4562,6 +4603,37 @@ final class MeetViewController: UIViewController {
             homeScreen.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
         let safe = homeScreen.safeAreaLayoutGuide
+
+        // 輪が前に出たときに、地図を一段落とす幕。
+        floorDim.backgroundColor = MeetPalette.background.withAlphaComponent(0.86)
+        floorDim.isUserInteractionEnabled = false
+        floorDim.isHidden = true
+        homeScreen.addSubview(floorDim)
+        floorDim.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            floorDim.topAnchor.constraint(equalTo: homeScreen.topAnchor),
+            floorDim.bottomAnchor.constraint(equalTo: homeScreen.bottomAnchor),
+            floorDim.leadingAnchor.constraint(equalTo: homeScreen.leadingAnchor),
+            floorDim.trailingAnchor.constraint(equalTo: homeScreen.trailingAnchor),
+        ])
+
+        // 地図は画面の床。上に乗る文字が読めるよう、上下に暗がりを置く。
+        for (scrim, top) in [(topScrim, true), (bottomScrim, false)] {
+            homeScreen.addSubview(scrim)
+            scrim.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                scrim.leadingAnchor.constraint(equalTo: homeScreen.leadingAnchor),
+                scrim.trailingAnchor.constraint(equalTo: homeScreen.trailingAnchor),
+                scrim.heightAnchor.constraint(equalTo: homeScreen.heightAnchor, multiplier: top ? 0.30 : 0.42),
+            ])
+            if top {
+                scrim.topAnchor.constraint(equalTo: homeScreen.topAnchor).isActive = true
+            } else {
+                scrim.bottomAnchor.constraint(equalTo: homeScreen.bottomAnchor).isActive = true
+            }
+            scrim.isUserInteractionEnabled = false
+            scrim.isHidden = true
+        }
 
         let title = UILabel()
         title.font = Type.appName
@@ -4625,6 +4697,43 @@ final class MeetViewController: UIViewController {
             roleSwitch.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -20),
             roleSwitch.heightAnchor.constraint(equalToConstant: 40),
         ])
+    }
+
+    /// 地図の床。相手の居場所が届いている間だけ敷く。
+    /// 画面をもう1枚作らず、いまある地図の画面をそのまま下に埋める。
+    private func buildMapFloor() {
+        guard mapFloor == nil else { return }
+        let vc = MeetMapViewController(peerName: partnerName, myName: Self.myDisplayName, compact: true)
+        addChild(vc)
+        homeScreen.addSubview(vc.view)
+        vc.view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            vc.view.topAnchor.constraint(equalTo: homeScreen.topAnchor),
+            vc.view.bottomAnchor.constraint(equalTo: homeScreen.bottomAnchor),
+            vc.view.leadingAnchor.constraint(equalTo: homeScreen.leadingAnchor),
+            vc.view.trailingAnchor.constraint(equalTo: homeScreen.trailingAnchor),
+        ])
+        vc.didMove(toParent: self)
+        vc.view.isHidden = true
+        mapFloor = vc
+    }
+
+    /// 床の出し入れ。相手の居場所が無い間は、これまでどおりの紺一色。
+    private func refreshMapFloor() {
+        guard let floor = mapFloor else { return }
+        let show = group != nil && theirFix != nil
+        if show, floor.view.isHidden { floor.refit() }   // 出た瞬間に2人が入る向きへ
+        floor.view.isHidden = !show
+        topScrim.isHidden = !show
+        bottomScrim.isHidden = !show
+        homeScreen.backgroundColor = show ? .clear : bgColour
+        guard show else { return }
+        floor.rename(peer: partnerName)
+        let radio = radioIsFresh() ? latestDistance.map { Double($0) } : nil
+        let map = mapDistance()
+        floor.update(peerAt: theirFix?.coordinate, meAt: locations.last,
+                     metres: radio ?? map?.meters, accuracy: map?.accuracy,
+                     byRadio: radio != nil, peerMood: peerMood, myMood: myMood)
     }
 
     // MARK: - Waiting side
@@ -4857,10 +4966,35 @@ final class MeetViewController: UIViewController {
             actionStack.addArrangedSubview(v)
         }
 
-        for v in [finderChips, finderHeadline, finderDial, actionStack, finderTip, finderStatus, toast] as [UIView] {
+        for v in [finderChips, finderHeadline, finderDial, actionStack, finderTip, finderStatus, toast,
+                  floatingButtons] as [UIView] {
             finderPanel.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
+
+        // 地図の上に置く小さい丸2つ。地図が床のときだけ出る。
+        for (button, symbol, action) in [(exploreButton, "binoculars", #selector(dialTapped)),
+                                         (switchButton, "camera.viewfinder", #selector(switchTapped))] {
+            var conf = UIButton.Configuration.filled()
+            conf.image = UIImage(systemName: symbol,
+                                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .semibold))
+            conf.baseBackgroundColor = MeetPalette.surface
+            conf.baseForegroundColor = MeetPalette.primary
+            conf.cornerStyle = .capsule
+            conf.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14)
+            button.configuration = conf
+            button.addTarget(self, action: action, for: .touchUpInside)
+            respondOnPress(button)
+            button.layer.shadowColor = UIColor.black.cgColor
+            button.layer.shadowOpacity = 0.35
+            button.layer.shadowRadius = 10
+            button.layer.shadowOffset = CGSize(width: 0, height: 4)
+        }
+        floatingButtons.axis = .vertical
+        floatingButtons.spacing = 10
+        floatingButtons.addArrangedSubview(exploreButton)
+        floatingButtons.addArrangedSubview(switchButton)
+        floatingButtons.isHidden = true
 
         // 輪の中が「まわりを見る」のときだけ、輪そのものが押せる。
         finderDial.isUserInteractionEnabled = true
@@ -4922,6 +5056,9 @@ final class MeetViewController: UIViewController {
             finderStatus.leadingAnchor.constraint(equalTo: finderPanel.leadingAnchor, constant: 24),
             finderStatus.trailingAnchor.constraint(equalTo: finderPanel.trailingAnchor, constant: -24),
             finderStatus.bottomAnchor.constraint(equalTo: finderPanel.bottomAnchor, constant: -10),
+
+            floatingButtons.trailingAnchor.constraint(equalTo: finderPanel.trailingAnchor, constant: -20),
+            floatingButtons.bottomAnchor.constraint(equalTo: actionStack.topAnchor, constant: -16),
 
             // 知らせはボタンの上に浮かせる。下の1行（いま何を共有しているか）は消さない。
             toast.bottomAnchor.constraint(equalTo: actionStack.topAnchor, constant: -14),

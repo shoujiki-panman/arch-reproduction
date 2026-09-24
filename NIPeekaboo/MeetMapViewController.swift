@@ -65,7 +65,7 @@ final class MeetMapViewController: UIViewController {
     private let detail = UILabel()
     private let closeButton = CapsuleButton(type: .system)
 
-    private let peerName: String
+    private var peerName: String
     private let myName: String
     private var peerMood: String?
     private var myMood: String?
@@ -79,9 +79,14 @@ final class MeetMapViewController: UIViewController {
     private var routeMinutes: Int?
     private var routeMetres: Double?
 
-    init(peerName: String, myName: String) {
+    /// 画面の下地として埋め込むときは true。自前の帯と閉じるボタンを出さない
+    /// （数字と操作は上に乗るホーム画面の側が持つ）。
+    private let compact: Bool
+
+    init(peerName: String, myName: String, compact: Bool = false) {
         self.peerName = peerName
         self.myName = myName
+        self.compact = compact
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -151,6 +156,7 @@ final class MeetMapViewController: UIViewController {
         stack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(stack)
 
+        card.isHidden = compact
         NSLayoutConstraint.activate([
             map.topAnchor.constraint(equalTo: view.topAnchor),
             map.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -171,6 +177,16 @@ final class MeetMapViewController: UIViewController {
     }
 
     @objc private func close() { dismiss(animated: true) }
+
+    /// 2人が入るように取り直す。床として出すときは、出た瞬間に一度呼ぶ。
+    func refit() { fitted = false }
+
+    /// 埋め込んで使うとき、相手が変わったら名前を差し替える（札だけ作り直す）。
+    func rename(peer name: String) {
+        guard name != peerName else { return }
+        peerName = name
+        refreshCards()
+    }
 
     /// 名前と一言の札だけを作り直す。地図の点や向きはそのまま。
     private func refreshCards() {
