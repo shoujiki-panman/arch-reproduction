@@ -1413,8 +1413,17 @@ final class MeetViewController: UIViewController {
     private let arDistanceValue = UILabel()
     private let arPeerName = UILabel()
     private let arHint = PaddedLabel()
-    /// カメラ画面の右下の小さな地図（探す画面と同じもの）。
-    private let arMiniMap = MiniMapView()
+    /// カメラの映像の上の札（右上に相手、左下に次の曲がり角）と、進む向きの矢印。
+    /// Googleのライブビューと同じ置き方。
+    private let arPeerCard = CameraCard()
+    private let arTurnCard = CameraCard()
+    /// 下を向いたときに足もとに出る丸い地図（道なりの線・自分・相手）。
+    /// Android XR と同じく、前を向けば曲がり角の札、下を向けば地図。
+    private let arGroundMap = MiniMapView()
+    /// 地図を傾ける3D変形を、この入れ物の中に閉じ込める。直接画面に置くと、
+    /// ほかの部品（閉じる・札）と奥行きで前後が入れ替わり、カメラの面の後ろに隠れた。
+    private let arGroundHolder = UIView()
+    private let tiltMotion = CMMotionManager()
     private let arMarkerChip = PaddedLabel()
     /// Held so it can stand down while the arrival overlay owns the screen: its
     /// material is meant for camera video, and over an opaque colour it leaves
@@ -2332,7 +2341,10 @@ final class MeetViewController: UIViewController {
         }
         channel.connect()
         remote = channel
-        locations.onHeading = { [weak self] _ in self?.refreshFind() }
+        locations.onHeading = { [weak self] _ in
+            self?.refreshFind()
+            self?.updateCameraCards()
+        }
         locations.onFix = { [weak self] _ in
             self?.pushLocationIfFar()
             self?.pushToMap()
@@ -2568,6 +2580,83 @@ final class MeetViewController: UIViewController {
             sheet.largestUndimmedDetentIdentifier = .medium
         }
         presentOnTop(vc)
+    }
+
+    // MARK: - カメラの上の札と矢印
+
+    /// 右上に相手、左下に次の曲がり角、真ん中に進む向き。
+    /// 向きはコンパスから出すので、方角が取れない端末では矢印を出さない（嘘の向きを見せない）。
+    private func updateCameraCards() {
+        guard phase == .guiding else { return }
+        let name = partnerName
+        let radio = radioIsFresh() ? latestDistance : nil
+        var detail = radio.map { "電波で\(formatMeters($0))" }
+            ?? currentMetres().map { "\(NearbyAlert.text($0))・\(NearbyAlert.walkText($0))" }
+            ?? "居場所がまだ届いていません"
+        if let mood = peerMood, !mood.isEmpty { detail += "\n「\(mood)」" }
+        arPeerCard.showPerson(name: name, image: peerFace, detail: detail)
+        // 電波の大きな数字は近いときだけ。遠いときは右上の札が距離を言う。
+        arReadout.isHidden = radio == nil
+
+        let turn = nextManeuver()
+        if let turn, let me = locations.last {
+            arTurnCard.isHidden = false
+            arTurnCard.showTurn(symbol: RouteSheetViewController.symbol(for: turn.text), text: turn.text,
+                                detail: NearbyAlert.text(turn.at.distance(from: me)) + "先")
+        } else if theirFix != nil {
+            arTurnCard.isHidden = false
+            arTurnCard.showTurn(symbol: "figure.walk", text: "\(name)の方へ", detail: detail)
+        } else {
+            arTurnCard.isHidden = true
+        }
+        arGroundMap.update(route: (navRoute ?? mapFloor?.currentRoute)?.polyline,
+                           peer: theirFix?.coordinate, name: name)
+    }
+
+    /// スマホの傾きで、前を見ているか足もとを見ているかを決める。
+    /// 縦に立てていれば曲がり角の札、手前に倒して地面を映せば足もとの地図。
+    private func startTiltWatch() {
+        guard tiltMotion.isDeviceMotionAvailable else {
+            // 傾きが取れない（シミュレータなど）ときは両方出しておく。
+            setGroundLook(0.6)
+            return
+        }
+        tiltMotion.deviceMotionUpdateInterval = 1.0 / 20
+        tiltMotion.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
+            guard let self, let motion else { return }
+            // 縦に持つと約90°、画面を上に寝かせると0°。60°から35°にかけて地図へ移る。
+            let pitch = motion.attitude.pitch * 180 / .pi
+            let look = max(0, min(1, (60 - pitch) / 25))
+            self.setGroundLook(look)
+        }
+    }
+
+    private func stopTiltWatch() {
+        tiltMotion.stopDeviceMotionUpdates()
+    }
+
+    /// 0 = 前を見ている、1 = 足もとを見ている。
+    private func setGroundLook(_ look: Double) {
+        arGroundHolder.alpha = CGFloat(look)
+        arTurnCard.alpha = CGFloat(1 - look * 0.85)
+        arHint.alpha = CGFloat(1 - look)
+    }
+
+    /// いちばん近い、まだ過ぎていない曲がり角。案内中はその時点の曲がり角をそのまま使う。
+    private func nextManeuver() -> (text: String, at: CLLocation)? {
+        guard let me = locations.last, let route = navRoute ?? mapFloor?.currentRoute else { return nil }
+        let steps = route.steps
+        if navRoute != nil, steps.indices.contains(navStep) {
+            let step = steps[navStep]
+            return (step.instructions.isEmpty ? "\(partnerName)のいる場所へ" : step.instructions, Self.stepStart(step))
+        }
+        let candidates = steps.indices.dropFirst().filter { !steps[$0].instructions.isEmpty }
+        guard var k = candidates.min(by: {
+            Self.stepStart(steps[$0]).distance(from: me) < Self.stepStart(steps[$1]).distance(from: me)
+        }) else { return nil }
+        while k < steps.count - 1, Self.stepStart(steps[k]).distance(from: me) < 15 { k += 1 }
+        return (steps[k].instructions.isEmpty ? "\(partnerName)のいる場所へ" : steps[k].instructions,
+                Self.stepStart(steps[k]))
     }
 
     // MARK: - 案内（経路の「案内開始」から）
@@ -4118,8 +4207,8 @@ final class MeetViewController: UIViewController {
         recenterButton.isHidden = !(floorUp && mapFloor?.userMoved == true)
         // 「まわりを見る」は自分の場所だけで動く。相手を待つあいだこそ使う。
         exploreButton.isHidden = !(floorUp || dialExplores || ringHidden)
-        // カメラは「探す」の中から開く。地図の上には置かない。
-        switchButton.isHidden = true
+        // カメラ（実際の道の上に曲がり角と相手を重ねる見え方）へは、右上から一押しで。
+        switchButton.isHidden = theirFix == nil || group == nil
 
         // Measuring stops when the phone locks, and finding someone in a crowd is
         // exactly when nobody taps the screen. Only while a distance is arriving.
@@ -4578,7 +4667,9 @@ final class MeetViewController: UIViewController {
     }
 
     @objc private func startGuidance() {
-        arMiniMap.start()
+        locations.startHeading()
+        arGroundMap.start()
+        startTiltWatch()
         startARIfNeeded()
         if let id = activePeerID, let link = links[id] { runConfig(for: link, cameraAssist: true) }
         phase = .guiding
@@ -4596,7 +4687,9 @@ final class MeetViewController: UIViewController {
     }
 
     @objc private func closeAR() {
-        arMiniMap.stop()
+        if !finding { locations.stopHeading() }
+        arGroundMap.stop()
+        stopTiltWatch()
         stopProximityFeedback()
         floorRingsOnly = false
         clearPossibleRings()
@@ -4971,8 +5064,7 @@ final class MeetViewController: UIViewController {
 
     private func updateGuidance() {
         guard phase == .guiding else { return }
-        arMiniMap.update(route: mapFloor?.currentRoute?.polyline,
-                         peer: theirFix?.coordinate, name: partnerName)
+        updateCameraCards()
         updateProximityFeedback(distance: latestDistance)
 
         let focusName = activePeerID.map { name(of: $0) } ?? partnerName
@@ -4984,8 +5076,7 @@ final class MeetViewController: UIViewController {
             let converging = activePeerID != nil && latestDistance == nil
             if !converging {
                 // 電波がまだ無い。ゆっくり動かしても何も起きないので、そうは言わない。
-                let far = mapDistance().map { "いまは地図で\(NearbyAlert.text($0.meters))" } ?? "いまは電波が届いていません"
-                arHint.text = "電波が届くと、\(focusName)のまわりに輪が出ます（\(far)）"
+                arHint.text = "近づいて電波が届くと、\(focusName)のまわりに輪が出ます"
                 setReadout(distance: nil, fallback: mapDistance().map { NearbyAlert.text($0.meters) })
             } else {
                 // The floor view never runs camera assistance, so the convergence
@@ -5761,7 +5852,12 @@ final class MeetViewController: UIViewController {
             floatingButtons.topAnchor.constraint(equalTo: finderPanel.topAnchor, constant: 4),
 
             // 知らせはボタンの上に浮かせる。下の1行（いま何を共有しているか）は消さない。
-            toast.centerXAnchor.constraint(equalTo: finderPanel.centerXAnchor),
+            {
+                // 右下の小さな地図にかぶらないよう、中央寄せは譲れるようにしておく。
+                let c = toast.centerXAnchor.constraint(equalTo: finderPanel.centerXAnchor)
+                c.priority = .defaultLow
+                return c
+            }(),
             toast.leadingAnchor.constraint(greaterThanOrEqualTo: finderPanel.leadingAnchor, constant: 20),
             toast.trailingAnchor.constraint(lessThanOrEqualTo: finderPanel.trailingAnchor, constant: -20),
         ])
@@ -5848,7 +5944,22 @@ final class MeetViewController: UIViewController {
         arReadout.setCustomSpacing(10, after: arReadout.arrangedSubviews.last!)
         arReadout.addArrangedSubview(arPeerName)
 
-        for v in [arScrim, close, arMarkerChip, arReadout, arHint, arMiniMap] {
+        arGroundMap.round = true
+        arGroundHolder.alpha = 0
+        arGroundHolder.isUserInteractionEnabled = false
+        arGroundHolder.addSubview(arGroundMap)
+        arGroundMap.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            arGroundMap.topAnchor.constraint(equalTo: arGroundHolder.topAnchor),
+            arGroundMap.bottomAnchor.constraint(equalTo: arGroundHolder.bottomAnchor),
+            arGroundMap.leadingAnchor.constraint(equalTo: arGroundHolder.leadingAnchor),
+            arGroundMap.trailingAnchor.constraint(equalTo: arGroundHolder.trailingAnchor),
+        ])
+        // 地面に寝かせて見えるよう、手前に倒す（奥が細く見える）。
+        var lay = CATransform3DIdentity
+        lay.m34 = -1 / 700
+        arGroundMap.layer.transform = CATransform3DRotate(lay, 50 * .pi / 180, 1, 0, 0)
+        for v in [arScrim, close, arMarkerChip, arReadout, arHint, arGroundHolder, arPeerCard, arTurnCard] {
             arScreen.addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -5878,10 +5989,18 @@ final class MeetViewController: UIViewController {
             arHint.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 24),
             arHint.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -24),
             arHint.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -28),
-            arMiniMap.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -16),
-            arMiniMap.bottomAnchor.constraint(equalTo: arHint.topAnchor, constant: -14),
-            arMiniMap.widthAnchor.constraint(equalToConstant: 150),
-            arMiniMap.heightAnchor.constraint(equalToConstant: 150),
+            arPeerCard.topAnchor.constraint(equalTo: close.bottomAnchor, constant: 16),
+            arPeerCard.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -16),
+            arPeerCard.leadingAnchor.constraint(greaterThanOrEqualTo: safe.leadingAnchor, constant: 90),
+            // 曲がり角の札は、前を見たときの視線の少し下の真ん中（Android XRと同じ位置）。
+            arTurnCard.centerXAnchor.constraint(equalTo: arScreen.centerXAnchor),
+            arTurnCard.leadingAnchor.constraint(greaterThanOrEqualTo: safe.leadingAnchor, constant: 24),
+            arTurnCard.topAnchor.constraint(equalTo: arScreen.centerYAnchor, constant: 60),
+            // 足もとの地図は画面の下のほう。
+            arGroundHolder.centerXAnchor.constraint(equalTo: arScreen.centerXAnchor),
+            arGroundHolder.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -20),
+            arGroundHolder.widthAnchor.constraint(equalToConstant: 300),
+            arGroundHolder.heightAnchor.constraint(equalToConstant: 300),
         ])
 
         // Camera video is behind these, which is the one place on this app where

@@ -736,6 +736,18 @@ final class MiniMapView: UIView, MKMapViewDelegate {
     private var line: MKPolyline?
     private let peer = MKPointAnnotation()
     private var peerShown = false
+    /// 足もとに寝かせる丸い地図にする（Android XRの、下を向くと出る地図）。
+    var round = false {
+        didSet {
+            layer.borderWidth = round ? 0 : 2
+            setNeedsLayout()
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if round { layer.cornerRadius = bounds.width / 2 }
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -814,5 +826,74 @@ final class MiniMapView: UIView, MKMapViewDelegate {
         view.glyphText = (annotation.title ?? nil).flatMap { $0.first.map(String.init) }
         view.titleVisibility = .hidden
         return view
+    }
+}
+
+// MARK: - カメラの上に乗せる札
+
+/// カメラの映像の上に重ねる札。Googleのライブビュー（Android XRの説明画像）と同じく、
+/// 暗い半透明の地に白い縁、左に印、右に2行。映像を隠しすぎないよう小さく保つ。
+final class CameraCard: UIView {
+    private let face = FaceView()
+    private let icon = UIImageView()
+    private let title = UILabel()
+    private let subtitle = UILabel()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = UIColor(white: 0.06, alpha: 0.72)
+        layer.cornerRadius = 22
+        layer.cornerCurve = .continuous
+        layer.borderWidth = 1.5
+        layer.borderColor = UIColor(white: 1, alpha: 0.8).cgColor
+
+        icon.tintColor = .white
+        icon.contentMode = .scaleAspectFit
+        title.font = Type.font(18, .bold, .headline)
+        title.textColor = .white
+        title.numberOfLines = 2
+        subtitle.font = Type.font(15, .regular, .subheadline)
+        subtitle.textColor = UIColor(white: 1, alpha: 0.85)
+        subtitle.numberOfLines = 2
+
+        let texts = UIStackView(arrangedSubviews: [title, subtitle])
+        texts.axis = .vertical
+        texts.spacing = 2
+        let row = UIStackView(arrangedSubviews: [face, icon, texts])
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 12
+        addSubview(row)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        for v in [face, icon] { v.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            face.widthAnchor.constraint(equalToConstant: 40),
+            face.heightAnchor.constraint(equalToConstant: 40),
+            icon.widthAnchor.constraint(equalToConstant: 34),
+            icon.heightAnchor.constraint(equalToConstant: 34),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 人の札（顔・名前・距離）。
+    func showPerson(name: String, image: UIImage?, detail: String) {
+        face.isHidden = false
+        icon.isHidden = true
+        face.set(name: name, face: image)
+        title.text = name
+        subtitle.text = detail
+    }
+
+    /// 曲がり角の札（向きの矢印・案内・あと何m）。
+    func showTurn(symbol: String, text: String, detail: String) {
+        face.isHidden = true
+        icon.isHidden = false
+        icon.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .bold))
+        title.text = text
+        subtitle.text = detail
     }
 }
