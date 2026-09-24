@@ -87,6 +87,11 @@ final class MeetMapViewController: UIViewController {
     private var line: MKPolyline?          // 道なりの経路（取れないときは2点を結ぶ直線）
     private var lineIsRoute = false
     private var fitted = false
+    /// 人が指で地図を動かしたか。動かしたあとは、こちらから向きを戻さない
+    /// （見たい所を見ている最中に引き戻されるのがいちばん腹が立つ）。
+    private(set) var userMoved = false
+    /// 動かされたことを上の画面に知らせる（「2人が入るように戻す」を出すため）。
+    var onUserMoved: (() -> Void)?
     /// 経路を引き直した時刻と、そのときの相手の場所。呼びすぎないための覚え書き。
     private var routeAt = Date.distantPast
     private var routeFrom: CLLocationCoordinate2D?
@@ -193,7 +198,10 @@ final class MeetMapViewController: UIViewController {
     @objc private func close() { dismiss(animated: true) }
 
     /// 2人が入るように取り直す。床として出すときは、出た瞬間に一度呼ぶ。
-    func refit() { fitted = false }
+    func refit() {
+        fitted = false
+        userMoved = false
+    }
 
     /// 埋め込んで使うとき、相手が変わったら名前を差し替える（札だけ作り直す）。
     func rename(peer name: String) {
@@ -391,6 +399,18 @@ final class MeetMapViewController: UIViewController {
 }
 
 extension MeetMapViewController: MKMapViewDelegate {
+    /// 指で動かされたのか、こちらが setCamera で動かしたのかは、地図が持っている
+    /// ジェスチャの状態で分かる（アプリが動かしたときは、どれも動いていない）。
+    func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
+        let touched = mapView.subviews.first?.gestureRecognizers?.contains { recogniser in
+            [.began, .changed, .ended].contains(recogniser.state)
+        } ?? false
+        guard touched, !userMoved else { return }
+        userMoved = true
+        fitted = true          // 以後、こちらからは向きを戻さない
+        onUserMoved?()
+    }
+
     func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
         let r = MKPolylineRenderer(overlay: overlay)
         r.strokeColor = MeetPalette.action.withAlphaComponent(0.8)

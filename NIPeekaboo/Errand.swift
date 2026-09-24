@@ -54,9 +54,11 @@ enum NearbyStore {
     /// 服屋や美容室まで同じ扱いにすると、街なかでは常に何かが当たってしまう。
     private static let mainCategories: [MKPointOfInterestCategory] = [.foodMarket, .bakery, .pharmacy]
 
-    /// 相手の居場所から半径200mを見て、いちばん近い店を返す。
+    /// 相手の居場所から半径200mを見て、近い順に店を返す。
     /// 主な店は150mまで、それ以外の店は60mまで（道の反対側までが限度）。
-    static func around(_ centre: CLLocationCoordinate2D, completion: @escaping (Found?) -> Void) {
+    /// ここで1つに決めないのは、どの店で買うかを決めるのは人だから
+    /// （いちばん近いのが薬局で、頼みたいのは隣のスーパー、ということがある）。
+    static func around(_ centre: CLLocationCoordinate2D, completion: @escaping ([Found]) -> Void) {
         let request = MKLocalPointsOfInterestRequest(center: centre, radius: 200)
         request.pointOfInterestFilter = MKPointOfInterestFilter(including: mainCategories + [.store])
         let here = CLLocation(latitude: centre.latitude, longitude: centre.longitude)
@@ -66,9 +68,15 @@ enum NearbyStore {
                 let main = item.pointOfInterestCategory.map(mainCategories.contains) ?? false
                 return (Found(name: name, metres: here.distance(from: location)), main)
             }
-            let found = all.filter { $0.1 && $0.0.metres <= 150 }.min { $0.0.metres < $1.0.metres }?.0
-                ?? all.filter { $0.0.metres <= 60 }.min { $0.0.metres < $1.0.metres }?.0
-            DispatchQueue.main.async { completion(found) }
+            // 食べ物・薬の店を先に、それ以外はその後ろ。新宿のような街では
+            // 60m以内に質屋も時計屋も入ってくるので、順番で押しのける。
+            let kept = all.filter { ($0.1 && $0.0.metres <= 150) || $0.0.metres <= 60 }
+                .sorted { ($0.1 ? 0 : 1, $0.0.metres) < ($1.1 ? 0 : 1, $1.0.metres) }
+                .map { $0.0 }
+            // 同じ名前の店が複数の区分で返ることがある。名前で一度だけ。
+            var seen = Set<String>()
+            let unique = kept.filter { seen.insert($0.name).inserted }
+            DispatchQueue.main.async { completion(Array(unique.prefix(4))) }
         }
     }
 }
@@ -82,16 +90,26 @@ final class ErrandComposeViewController: UIViewController {
     private static let presets = ["牛乳", "卵", "パン", "お米", "飲みもの", "お菓子", "ティッシュ", "洗剤"]
 
     private let partner: String
-    private let place: String
+    /// 相手のそばにあった店（近い順）。いちばん近い店を最初に選んでおくが、
+    /// 決めるのは人。押して変えられる。
+    private let places: [NearbyStore.Found]
+    /// いま選んでいる店。-1 は「店を決めない」。
+    private var placeIndex: Int
     private var chosen: [String] = []
     private var extras: [String] = []
+    private let placeChips = WrappingRow()
+    private let where_ = UILabel()
     private let chips = WrappingRow()
     private let sendButton = CapsuleButton(type: .system)
-    private let onSend: ([String]) -> Void
+    private let onSend: (String, [String]) -> Void
 
-    init(partner: String, place: String, onSend: @escaping ([String]) -> Void) {
+    /// 選んでいる店の名前。決めていなければ空。
+    private var place: String { places.indices.contains(placeIndex) ? places[placeIndex].name : "" }
+
+    init(partner: String, places: [NearbyStore.Found], onSend: @escaping (String, [String]) -> Void) {
         self.partner = partner
-        self.place = place
+        self.places = places
+        self.placeIndex = places.isEmpty ? -1 : 0
         self.onSend = onSend
         super.init(nibName: nil, bundle: nil)
     }
@@ -107,11 +125,18 @@ final class ErrandComposeViewController: UIViewController {
         title.numberOfLines = 2
         title.text = "\(partner)に買ってきてもらう"
 
-        let where_ = UILabel()
         where_.font = Type.caption
         where_.textColor = MeetPalette.secondary
         where_.numberOfLines = 2
-        where_.text = place.isEmpty ? "相手のいる場所の近くのお店" : "\(partner)は「\(place)」のそばにいます"
+
+        placeChips.spacing = 8
+        placeChips.lineSpacing = 8
+        rebuildPlaces()
+
+        let itemsTitle = UILabel()
+        itemsTitle.font = Type.caption
+        itemsTitle.textColor = MeetPalette.secondary
+        itemsTitle.text = "頼む物"
 
         chips.spacing = 8
         chips.lineSpacing = 8
@@ -138,10 +163,14 @@ final class ErrandComposeViewController: UIViewController {
         cancelButton.configuration = cancel
         cancelButton.addTarget(self, action: #selector(close), for: .touchUpInside)
 
-        let stack = UIStackView(arrangedSubviews: [title, where_, chips, otherButton, sendButton, cancelButton])
+        let stack = UIStackView(arrangedSubviews: [title, where_, placeChips, itemsTitle, chips,
+                                                   otherButton, sendButton, cancelButton])
         stack.axis = .vertical
         stack.spacing = 12
         stack.setCustomSpacing(4, after: title)
+        stack.setCustomSpacing(8, after: where_)
+        stack.setCustomSpacing(18, after: placeChips)
+        stack.setCustomSpacing(6, after: itemsTitle)
         stack.setCustomSpacing(18, after: chips)
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
@@ -150,6 +179,61 @@ final class ErrandComposeViewController: UIViewController {
             stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
         ])
+    }
+
+    /// お店の札。近い順に並べ、いちばん近い店を最初に選んでおく。
+    /// 最後の「決めない」は、地図が拾った店がどれも違うときの逃げ道。
+    private func rebuildPlaces() {
+        placeChips.subviews.forEach { $0.removeFromSuperview() }
+        placeChips.isHidden = places.isEmpty
+        for (index, found) in places.enumerated() {
+            placeChips.addSubview(placeChip(title: found.name,
+                                            detail: "\(Int(found.metres.rounded()))m",
+                                            selected: index == placeIndex,
+                                            action: { [weak self] in self?.choosePlace(index) }))
+        }
+        if !places.isEmpty {
+            placeChips.addSubview(placeChip(title: "決めない", detail: nil, selected: placeIndex < 0,
+                                            action: { [weak self] in self?.choosePlace(-1) }))
+        }
+        placeChips.setNeedsLayout()
+        refreshWhere()
+    }
+
+    private func placeChip(title: String, detail: String?, selected: Bool,
+                           action: @escaping () -> Void) -> UIButton {
+        let button = CapsuleButton(type: .system)
+        var conf = UIButton.Configuration.filled()
+        conf.title = detail.map { "\(title)・\($0)" } ?? title
+        conf.image = selected ? UIImage(systemName: "checkmark") : nil
+        conf.imagePadding = 6
+        conf.baseBackgroundColor = selected ? MeetPalette.primary : MeetPalette.raised
+        conf.baseForegroundColor = selected ? MeetPalette.background : MeetPalette.primary
+        conf.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16)
+        conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+            var a = attrs
+            a.font = Type.chip
+            return a
+        }
+        button.configuration = conf
+        button.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        return button
+    }
+
+    private func choosePlace(_ index: Int) {
+        placeIndex = index
+        UISelectionFeedbackGenerator().selectionChanged()
+        rebuildPlaces()
+    }
+
+    private func refreshWhere() {
+        if places.isEmpty {
+            where_.text = "相手のいる場所の近くのお店"
+        } else if place.isEmpty {
+            where_.text = "お店は決めません"
+        } else {
+            where_.text = "\(partner)は「\(place)」のそば。違うお店なら押して変えられます"
+        }
     }
 
     private func rebuildChips() {
@@ -219,7 +303,7 @@ final class ErrandComposeViewController: UIViewController {
 
     @objc private func send() {
         guard !chosen.isEmpty else { return }
-        onSend(chosen)
+        onSend(place, chosen)
         dismiss(animated: true)
     }
 

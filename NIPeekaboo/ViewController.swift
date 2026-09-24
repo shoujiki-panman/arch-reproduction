@@ -1012,8 +1012,10 @@ final class MeetViewController: UIViewController {
                                            locations: [0, 0.45, 1])
 
     // おつかいと「近くにいるよ」。どちらも相手が遠いあいだの層に乗る。
-    /// 相手のそばで見つかった店。見つかっている間だけ「頼む」が出せる。
-    private var peerStore: NearbyStore.Found?
+    /// 相手のそばで見つかった店（近い順）。見つかっている間だけ「頼む」が出せる。
+    /// 1つに決めないのは、選ぶのが人だから。頼む画面で押して変えられる。
+    private var peerStores: [NearbyStore.Found] = []
+    private var peerStore: NearbyStore.Found? { peerStores.first }
     private var storeCheckedAt = Date.distantPast
     private var storeCheckedFrom: CLLocationCoordinate2D?
     /// 自分が頼んだリストと、相手が買えたと言っている物。
@@ -1218,7 +1220,7 @@ final class MeetViewController: UIViewController {
     private let roleSwitch = UISegmentedControl(items: ["待つ", "迎えに行く"])
     private let demoButton = UIButton(type: .system)
 
-    private let waiterPanel = UIView()
+    private let waiterPanel = TouchThroughView()
     private let waiterSelection = UIStackView()
     private var waiterSelectionCollapse: NSLayoutConstraint?
     private let waiterDial = MeetDial()
@@ -1253,7 +1255,7 @@ final class MeetViewController: UIViewController {
         MeetRequest.Kind(rawValue: UserDefaults.standard.string(forKey: "kokodayo.kind") ?? "") ?? .here
     private var selectedMarker: MeetRequest.MarkerHint = .wave
 
-    private let finderPanel = UIView()
+    private let finderPanel = TouchThroughView()
     private let finderChips = UIStackView()
     private let finderKindChip = PaddedLabel()
     private let finderMarkerChip = PaddedLabel()
@@ -1282,7 +1284,7 @@ final class MeetViewController: UIViewController {
     private var lastSameRoleHere = false
     /// The actions under the ring: connect to someone, invite, look with the
     /// camera, or end. Only the ones that apply are on screen.
-    private let actionStack = UIStackView()
+    private let actionStack = TouchThroughStack()
     private let connectStack = UIStackView()
     /// 覚えた相手を並べる場所（リンクを送らずに、押すだけで再開する）
     private let friendsStack = UIStackView()
@@ -1296,7 +1298,9 @@ final class MeetViewController: UIViewController {
     /// 地図の上に浮かぶ小さい丸。左が「まわりを見る」、右が地図⇄カメラ。
     private let exploreButton = UIButton(type: .system)
     private let switchButton = UIButton(type: .system)
-    private let floatingButtons = UIStackView()
+    /// 地図を指で動かしたあと、2人が入る向きへ戻すボタン。動かしたときだけ出る。
+    private let recenterButton = UIButton(type: .system)
+    private let floatingButtons = TouchThroughStack()
     private let endButton = UIButton(type: .system)
     private let motionActivity = CMMotionActivityManager()
     private var motionStarted = false
@@ -1982,15 +1986,16 @@ final class MeetViewController: UIViewController {
         let tryErrand = UIAction(title: "おつかいを試す（試験）",
                                  image: UIImage(systemName: "cart.badge.plus")) { [weak self] _ in
             guard let self else { return }
-            if self.peerStore == nil {
-                self.peerStore = NearbyStore.Found(name: "ライフ 西新宿店", metres: 40)
+            if self.peerStores.isEmpty {
+                self.peerStores = [NearbyStore.Found(name: "ライフ 西新宿店", metres: 40),
+                                   NearbyStore.Found(name: "田中薬局", metres: 55)]
                 self.refreshDials()
             }
             let vc = ErrandComposeViewController(partner: self.partnerName,
-                                                 place: self.peerStore?.name ?? "") { [weak self] chosen in
+                                                 places: self.peerStores) { [weak self] place, chosen in
                 guard let self else { return }
                 let errand = ErrandMessage(id: UUID().uuidString, from: self.partnerName,
-                                           place: self.peerStore?.name ?? "", items: chosen)
+                                           place: place, items: chosen)
                 guard let data = try? JSONEncoder().encode(errand),
                       let back = try? JSONDecoder().decode(ErrandMessage.self, from: data) else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.receive(errand: back) }
@@ -2336,10 +2341,10 @@ final class MeetViewController: UIViewController {
         NearbyStore.around(fix.coordinate) { [weak self] found in
             guard let self else { return }
             let before = self.peerStore?.name
-            self.peerStore = found
+            self.peerStores = found
             // 店が変わった時だけ一言。同じ店で何度も言わない。
-            if let found, found.name != before, self.sentErrand == nil, self.myErrand == nil {
-                self.flash("\(self.partnerName)は\(found.name)のそばにいます")
+            if let first = found.first, first.name != before, self.sentErrand == nil, self.myErrand == nil {
+                self.flash("\(self.partnerName)は\(first.name)のそばにいます")
             }
             self.refreshDials()
         }
@@ -2364,7 +2369,8 @@ final class MeetViewController: UIViewController {
             image = "cart"
         } else if let store = peerStore, group != nil {
             title = "おつかいを頼む"
-            subtitle = store.name
+            // 店は勝手に決めない。ほかにもあることを、押す前に見せておく。
+            subtitle = peerStores.count > 1 ? "\(store.name) ほか\(peerStores.count - 1)件" : store.name
             image = "cart.fill"
         } else {
             title = nil
@@ -2389,6 +2395,14 @@ final class MeetViewController: UIViewController {
         presentOnTop(vc)
     }
 
+    /// 地図を動かしたあと、2人が入る向きへ戻す。
+    @objc private func recenterTapped() {
+        impactGenerator.impactOccurred()
+        mapFloor?.refit()
+        refreshMapFloor()
+        refreshDials()
+    }
+
     /// 地図⇄カメラ。同じ場所のボタンを押すだけで行き来する。
     @objc private func switchTapped() {
         impactGenerator.impactOccurred()
@@ -2411,8 +2425,8 @@ final class MeetViewController: UIViewController {
     private func askErrand() {
         guard group != nil else { return }
         let vc = ErrandComposeViewController(partner: partnerName,
-                                             place: peerStore?.name ?? "") { [weak self] items in
-            self?.sendErrand(items: items)
+                                             places: peerStores) { [weak self] place, items in
+            self?.sendErrand(place: place, items: items)
         }
         if let sheet = vc.sheetPresentationController {
             sheet.detents = [.medium(), .large()]
@@ -2421,11 +2435,11 @@ final class MeetViewController: UIViewController {
         presentOnTop(vc)
     }
 
-    private func sendErrand(items: [String]) {
+    private func sendErrand(place: String, items: [String]) {
         guard !items.isEmpty else { return }
         let errand = ErrandMessage(id: UUID().uuidString,
                                    from: Self.myDisplayName,
-                                   place: peerStore?.name ?? "",
+                                   place: place,
                                    items: items)
         sentErrand = errand
         sentErrandGot = []
@@ -2772,7 +2786,7 @@ final class MeetViewController: UIViewController {
         myErrand = nil
         myErrandGot = []
         seenErrands.removeAll()
-        peerStore = nil
+        peerStores = []
         peerFace = nil
         peerMood = nil
         meetPin = nil
@@ -3719,6 +3733,9 @@ final class MeetViewController: UIViewController {
             floorDim.alpha = dim ? 1 : 0
         }
         floatingButtons.isHidden = !floorUp
+        // 地図を指で動かしたあとだけ「戻す」を出す。動かしていないのに出すと、
+        // 押しても何も変わらないボタンになる。
+        recenterButton.isHidden = !(floorUp && mapFloor?.userMoved == true)
         exploreButton.isHidden = !dialExplores && !ringHidden
         switchButton.isHidden = !(activePeerID != nil && latestDistance != nil && supportsUWB)
 
@@ -4887,6 +4904,8 @@ final class MeetViewController: UIViewController {
         ])
         vc.didMove(toParent: self)
         vc.view.isHidden = true
+        // 指で動かされたら「戻す」を出す（こちらからは向きを直さない）。
+        vc.onUserMoved = { [weak self] in self?.refreshDials() }
         mapFloor = vc
     }
 
@@ -5147,7 +5166,8 @@ final class MeetViewController: UIViewController {
         }
 
         // 地図の上に置く小さい丸2つ。地図が床のときだけ出る。
-        for (button, symbol, action) in [(exploreButton, "binoculars", #selector(dialTapped)),
+        for (button, symbol, action) in [(recenterButton, "person.2.fill", #selector(recenterTapped)),
+                                         (exploreButton, "binoculars", #selector(dialTapped)),
                                          (switchButton, "camera.viewfinder", #selector(switchTapped))] {
             var conf = UIButton.Configuration.filled()
             conf.image = UIImage(systemName: symbol,
@@ -5166,9 +5186,12 @@ final class MeetViewController: UIViewController {
         }
         floatingButtons.axis = .vertical
         floatingButtons.spacing = 10
+        floatingButtons.addArrangedSubview(recenterButton)
         floatingButtons.addArrangedSubview(exploreButton)
         floatingButtons.addArrangedSubview(switchButton)
         floatingButtons.isHidden = true
+        recenterButton.accessibilityLabel = "2人が入るように戻す"
+        recenterButton.isHidden = true
 
         // 輪の中が「まわりを見る」のときだけ、輪そのものが押せる。
         finderDial.isUserInteractionEnabled = true
@@ -6308,6 +6331,24 @@ extension MeetViewController: NISessionDelegate {
 
 /// A one-way scrim. Text over camera video needs a ground that does not become
 /// a plate: a gradient keeps the scene visible where it matters.
+/// 地図の上にかぶせる板。ボタンも札も無いところを押されたら、触れなかったことに
+/// して下（地図）へ渡す。これが無いと、画面いっぱいの透明な板が指を全部吸って、
+/// 地図が動かせなかった。
+final class TouchThroughView: UIView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self ? nil : hit
+    }
+}
+
+/// 同じことを縦並びの隙間にも。ボタンとボタンのあいだは地図に渡す。
+final class TouchThroughStack: UIStackView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        return hit === self ? nil : hit
+    }
+}
+
 final class GradientView: UIView {
     override class var layerClass: AnyClass { CAGradientLayer.self }
 
