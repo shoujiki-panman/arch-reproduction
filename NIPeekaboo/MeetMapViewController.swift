@@ -69,6 +69,8 @@ final class MeetMapViewController: UIViewController {
     private let myName: String
     private var peerMood: String?
     private var myMood: String?
+    private var peerFace: UIImage?
+    private var myFace: UIImage?
     private var peer: PeerPoint?
     private var line: MKPolyline?          // 道なりの経路（取れないときは2点を結ぶ直線）
     private var lineIsRoute = false
@@ -188,6 +190,33 @@ final class MeetMapViewController: UIViewController {
         refreshCards()
     }
 
+    /// 印（写真）を貼り替える。地図の点や向きはそのまま。
+    private func refreshFaces() {
+        if let peer, let view = map.view(for: peer) { applyFace(peerFace, to: view, fallback: "figure.walk") }
+        if let view = map.view(for: map.userLocation) { applyFace(myFace, to: view, fallback: "figure.stand") }
+    }
+
+    /// 丸の中身を写真にする。写真が無ければこれまでの人の形。
+    private func applyFace(_ image: UIImage?, to view: MKAnnotationView, fallback symbol: String) {
+        guard let dot = view.subviews.first(where: { $0.tag == Self.dotTag }) else { return }
+        dot.subviews.forEach { $0.removeFromSuperview() }
+        let inner = UIImageView(frame: dot.bounds)
+        if let image {
+            inner.image = image
+            inner.contentMode = .scaleAspectFill
+            inner.layer.cornerRadius = dot.bounds.width / 2
+            inner.clipsToBounds = true
+        } else {
+            inner.image = UIImage(systemName: symbol)
+            inner.tintColor = MeetPalette.background
+            inner.contentMode = .scaleAspectFit
+            inner.frame = dot.bounds.insetBy(dx: dot.bounds.width * 0.23, dy: dot.bounds.width * 0.23)
+        }
+        dot.addSubview(inner)
+    }
+
+    private static let dotTag = 8802
+
     /// 名前と一言の札だけを作り直す。地図の点や向きはそのまま。
     private func refreshCards() {
         if let peer, let view = map.view(for: peer) { attachCard(to: view, name: peerName, mood: peerMood) }
@@ -210,11 +239,16 @@ final class MeetMapViewController: UIViewController {
     /// 呼んだ側から呼ばれる。相手の居場所と、いまの見立てを渡す。
     func update(peerAt coordinate: CLLocationCoordinate2D?, meAt me: CLLocation?,
                 metres: Double?, accuracy: Double?, byRadio: Bool,
-                peerMood: String? = nil, myMood: String? = nil) {
+                peerMood: String? = nil, myMood: String? = nil,
+                peerFace: UIImage? = nil, myFace: UIImage? = nil) {
         let moodChanged = peerMood != self.peerMood || myMood != self.myMood
+        let faceChanged = peerFace !== self.peerFace || myFace !== self.myFace
         self.peerMood = peerMood
         self.myMood = myMood
-        if moodChanged { refreshCards() }
+        self.peerFace = peerFace
+        self.myFace = myFace
+        if moodChanged || faceChanged { refreshCards() }
+        if faceChanged { refreshFaces() }
         if let coordinate {
             if let peer {
                 peer.coordinate = coordinate
@@ -352,16 +386,14 @@ extension MeetMapViewController: MKMapViewDelegate {
             view.frame = CGRect(x: 0, y: 0, width: size, height: size)
             view.centerOffset = CGPoint(x: 0, y: -size / 2)
             let dot = UIView(frame: view.bounds)
+            dot.tag = Self.dotTag
             dot.backgroundColor = MeetPalette.primary
             dot.layer.cornerRadius = size / 2
             dot.layer.borderWidth = 3
             dot.layer.borderColor = UIColor.white.cgColor
-            let figure = UIImageView(image: UIImage(systemName: "figure.stand"))
-            figure.tintColor = MeetPalette.background
-            figure.contentMode = .scaleAspectFit
-            figure.frame = dot.bounds.insetBy(dx: 15, dy: 15)
-            dot.addSubview(figure)
+            dot.clipsToBounds = true
             view.addSubview(dot)
+            applyFace(myFace, to: view, fallback: "figure.stand")
             attachCard(to: view, name: myName, mood: myMood)
             return view
         }
@@ -378,21 +410,19 @@ extension MeetMapViewController: MKMapViewDelegate {
         view.centerOffset = CGPoint(x: 0, y: -(size / 2 + 8))
 
         let avatar = UIView(frame: CGRect(x: 0, y: 0, width: size, height: size))
+        avatar.tag = Self.dotTag
         avatar.backgroundColor = MeetPalette.action
         avatar.layer.cornerRadius = size / 2
         avatar.layer.borderWidth = 3
         avatar.layer.borderColor = UIColor.white.cgColor
-        avatar.layer.shadowColor = UIColor.black.cgColor
-        avatar.layer.shadowOpacity = 0.4
-        avatar.layer.shadowRadius = 6
-        avatar.layer.shadowOffset = CGSize(width: 0, height: 3)
-
-        let figure = UIImageView(image: UIImage(systemName: "figure.walk"))
-        figure.tintColor = .black
-        figure.contentMode = .scaleAspectFit
-        figure.frame = avatar.bounds.insetBy(dx: 16, dy: 16)
-        avatar.addSubview(figure)
+        avatar.clipsToBounds = true
         view.addSubview(avatar)
+        // 影は切り抜きに消されるので、丸の外側（台）に付ける。
+        view.layer.shadowColor = UIColor.black.cgColor
+        view.layer.shadowOpacity = 0.4
+        view.layer.shadowRadius = 6
+        view.layer.shadowOffset = CGSize(width: 0, height: 3)
+        applyFace(peerFace, to: view, fallback: "figure.walk")
 
         attachCard(to: view, name: peerName, mood: peerMood)
         return view

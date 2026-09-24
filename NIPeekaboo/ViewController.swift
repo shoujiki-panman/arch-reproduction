@@ -17,6 +17,7 @@ import simd
 import ActivityKit
 import CoreMotion
 import AppIntents
+import PhotosUI
 import CryptoKit
 import Security
 
@@ -146,6 +147,13 @@ struct NameMessage: Codable {
 struct MoodMessage: Codable {
     var type: String = "mood"
     var text: String
+}
+
+/// 地図に出る自分の印。写真を小さくしてから送る（中継に大きいものを流さない）。
+struct FaceMessage: Codable {
+    var type: String = "face"
+    /// 128px角のJPEGをbase64にしたもの。空なら「印を消した」。
+    var jpeg: String
 }
 
 struct MessageKind: Decodable {
@@ -1015,6 +1023,14 @@ final class MeetViewController: UIViewController {
     /// 相手のいまの様子（一言）。
     private var peerMood: String?
     private static let moodKey = "kokodayo.mood"
+    private static let faceKey = "kokodayo.face"
+    /// 相手の印。グループの間だけ覚えておく（保存しない）。
+    private var peerFace: UIImage?
+    /// 自分の印。次の待ち合わせでも使うので残す。
+    private var myFace: UIImage? {
+        get { UserDefaults.standard.data(forKey: Self.faceKey).flatMap(UIImage.init(data:)) }
+        set { UserDefaults.standard.set(newValue?.jpegData(compressionQuality: 0.75), forKey: Self.faceKey) }
+    }
     /// 自分のいまの様子。次の待ち合わせでもそのまま使えるよう覚えておく。
     private var myMood: String? {
         get { UserDefaults.standard.string(forKey: Self.moodKey) }
@@ -1895,7 +1911,16 @@ final class MeetViewController: UIViewController {
                                image: UIImage(systemName: "clock"),
                                children: limits)
 
-        var items: [UIMenuElement] = [rename, haptics, nearMenu, limitMenu]
+        let face = UIAction(title: myFace == nil ? "地図に出る印を選ぶ" : "地図に出る印を変える",
+                            image: UIImage(systemName: "person.crop.square")) { [weak self] _ in
+            self?.pickFace()
+        }
+        face.subtitle = myFace == nil ? "写真1枚。小さくして相手に送ります" : "いまは写真にしています"
+        var items: [UIMenuElement] = [rename, face, haptics, nearMenu, limitMenu]
+        if myFace != nil {
+            items.insert(UIAction(title: "印を写真から戻す", image: UIImage(systemName: "arrow.uturn.backward"),
+                                  attributes: .destructive) { [weak self] _ in self?.setFace(nil) }, at: 2)
+        }
 
         // ホストだけができる、相手への伝え方2つ。頻度が低いのでここに置く。
         if let current = group, current.isHost {
@@ -2198,7 +2223,10 @@ final class MeetViewController: UIViewController {
         channel.onNote = { [weak self] data in self?.handleNote(data) }
         NearbyAlert.ask()
         // つないだ直後に一度伝える（相手の地図に名前だけが並ばないように）。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.sendMood() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.sendMood()
+            self?.sendFace()
+        }
         channel.connect()
         remote = channel
         locations.onFix = { [weak self] _ in
@@ -2255,7 +2283,9 @@ final class MeetViewController: UIViewController {
                   accuracy: map?.accuracy,
                   byRadio: radio != nil,
                   peerMood: peerMood,
-                  myMood: myMood)
+                  myMood: myMood,
+                  peerFace: peerFace,
+                  myFace: myFace)
     }
 
     /// 電波が無いときの、地図での距離。
@@ -2425,6 +2455,13 @@ final class MeetViewController: UIViewController {
             // 中継から来た合図。部屋の鍵を持っている人しか入れないので、名乗りは要らない。
             guard group != nil else { return }
             receivePing(from: partnerName)
+        case "face":
+            guard group != nil, let face = try? JSONDecoder().decode(FaceMessage.self, from: data) else { return }
+            // 大きすぎるものは受け取らない（中継に何を流されても、こちらで線を引く）。
+            guard face.jpeg.count < 40_000 else { return }
+            peerFace = Data(base64Encoded: face.jpeg).flatMap(UIImage.init(data:))
+            pushToMap()
+            refreshDials()
         case "mood":
             guard group != nil, let mood = try? JSONDecoder().decode(MoodMessage.self, from: data) else { return }
             let text = cleanName(mood.text)
@@ -2596,6 +2633,49 @@ final class MeetViewController: UIViewController {
         presentOnTop(sheet)
     }
 
+    // MARK: - 地図に出る自分の印
+
+    /// 写真を選ぶ。写真そのものは送らず、128px角に縮めたものだけを送る。
+    private func pickFace() {
+        var config = PHPickerConfiguration()
+        config.filter = .images
+        config.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = self
+        presentOnTop(picker)
+    }
+
+    /// 正方形に切って小さくする。地図の丸に入る以上の大きさは要らない。
+    private func shrink(_ image: UIImage, to side: CGFloat = 128) -> UIImage {
+        let source = min(image.size.width, image.size.height)
+        let crop = CGRect(x: (image.size.width - source) / 2, y: (image.size.height - source) / 2,
+                          width: source, height: source)
+        let square = image.cgImage?.cropping(to: CGRect(x: crop.minX * image.scale, y: crop.minY * image.scale,
+                                                        width: crop.width * image.scale,
+                                                        height: crop.height * image.scale))
+        let base = square.map { UIImage(cgImage: $0, scale: 1, orientation: image.imageOrientation) } ?? image
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
+            base.draw(in: CGRect(x: 0, y: 0, width: side, height: side))
+        }
+    }
+
+    private func setFace(_ image: UIImage?) {
+        myFace = image.map { shrink($0) }
+        sendFace()
+        pushToMap()
+        flash(image == nil ? "印を消しました" : "地図に出る印を変えました")
+        refreshDials()
+    }
+
+    private func sendFace() {
+        guard group != nil else { return }
+        let base64 = myFace?.jpegData(compressionQuality: 0.7)?.base64EncodedString() ?? ""
+        guard let data = try? JSONEncoder().encode(FaceMessage(jpeg: base64)) else { return }
+        sendToPartner(data)
+    }
+
     private func setMood(_ text: String) {
         let clean = cleanName(text)
         myMood = clean.isEmpty ? nil : clean
@@ -2620,6 +2700,8 @@ final class MeetViewController: UIViewController {
         myErrandGot = []
         seenErrands.removeAll()
         peerStore = nil
+        peerFace = nil
+        peerMood = nil
         storeCheckedFrom = nil
         storeCheckedAt = .distantPast
         approach.reset()
@@ -3279,6 +3361,7 @@ final class MeetViewController: UIViewController {
             applyIncomingRequest(request)
             sendMotion()
             sendMood()
+            sendFace()
         case "motion":
             // From anyone connected, not only the focused friend: a member's state
             // can arrive before the host's list puts them in the group.
@@ -3288,7 +3371,7 @@ final class MeetViewController: UIViewController {
         case "ping":
             guard let member = peerMembers[peer], isApproved(member), amApproved else { return }
             receivePing(from: name(of: peer))
-        case "errand", "errandStatus", "mood":
+        case "errand", "errandStatus", "mood", "face":
             // 近くにいるときはMPCでも届く。中身の扱いは中継から来たときと同じ。
             guard let member = peerMembers[peer], isApproved(member), amApproved else { return }
             handleNote(data)
@@ -4733,7 +4816,8 @@ final class MeetViewController: UIViewController {
         let map = mapDistance()
         floor.update(peerAt: theirFix?.coordinate, meAt: locations.last,
                      metres: radio ?? map?.meters, accuracy: map?.accuracy,
-                     byRadio: radio != nil, peerMood: peerMood, myMood: myMood)
+                     byRadio: radio != nil, peerMood: peerMood, myMood: myMood,
+                     peerFace: peerFace, myFace: myFace)
     }
 
     // MARK: - Waiting side
@@ -5961,6 +6045,17 @@ final class MeasureHUD: UIView {
 #endif
 
 // MARK: - NISessionDelegate
+
+extension MeetViewController: PHPickerViewControllerDelegate {
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+        guard let provider = results.first?.itemProvider, provider.canLoadObject(ofClass: UIImage.self) else { return }
+        provider.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
+            guard let image = object as? UIImage else { return }
+            DispatchQueue.main.async { self?.setFace(image) }
+        }
+    }
+}
 
 extension MeetViewController: NISessionDelegate {
 
