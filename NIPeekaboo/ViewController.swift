@@ -3043,13 +3043,15 @@ final class MeetViewController: UIViewController {
             sheet.detents = [.medium(), .large()]
             sheet.selectedDetentIdentifier = .large
             sheet.prefersGrabberVisible = true
+            // 調べ始めると半分の高さに下がる。そのあいだも地図は見えて触れる（待たされて何もできない、をなくす）。
+            sheet.largestUndimmedDetentIdentifier = .medium
         }
         presentOnTop(vc)
     }
 
     /// 頼まれた一文を読み、手順を見せながら進める。相手に送る前は必ず確かめる。
-    private func runAsk(_ text: String, in ui: AskViewController) {
-        ui.begin(text)
+    private func runAsk(_ text: String, in vc: AskViewController) {
+        let ui = vc.begin(text)
         let reading = ui.addStep("言いたいことを読んでいます")
         let partner = partnerName
         Task { @MainActor [weak self] in
@@ -3086,7 +3088,7 @@ final class MeetViewController: UIViewController {
     }
 
     /// 待ち合わせ: 真ん中を出す → 種類で探す → どちらにも近い順 → 1件ずつ確かめる。
-    private func askMeet(_ intent: AskIntent, ui: AskViewController) {
+    private func askMeet(_ intent: AskIntent, ui: AskRun) {
         guard let me = locations.last?.coordinate, let fix = theirFix else { return }
         let partner = partnerName
         let middle = ui.addStep("2人の真ん中を出しています")
@@ -3107,7 +3109,7 @@ final class MeetViewController: UIViewController {
         }
     }
 
-    private func offerSpot(_ spots: [MidpointSpots.Spot], at i: Int, partner: String, ui: AskViewController) {
+    private func offerSpot(_ spots: [MidpointSpots.Spot], at i: Int, partner: String, ui: AskRun) {
         let spot = spots[i]
         let walk = { (m: Double) in max(1, Int((m / 80).rounded())) }
         ui.ask(title: "「\(spot.name)」を \(partner)に送りますか？",
@@ -3124,7 +3126,7 @@ final class MeetViewController: UIViewController {
     }
 
     /// おつかい: 品物を読む → 相手のそばの店を見る → 頼む前に確かめる。
-    private func askErrand(_ intent: AskIntent, ui: AskViewController) {
+    private func askErrand(_ intent: AskIntent, ui: AskRun) {
         let partner = partnerName
         guard !intent.items.isEmpty else {
             ui.finish("何を頼むのか読み取れませんでした（例: 牛乳と卵を買ってきて）", ok: false)
@@ -3160,7 +3162,7 @@ final class MeetViewController: UIViewController {
     }
 
     /// 様子: 一言を読む → 伝える前に確かめる。
-    private func askMoodAgent(_ intent: AskIntent, text: String, ui: AskViewController) {
+    private func askMoodAgent(_ intent: AskIntent, text: String, ui: AskRun) {
         guard group != nil else {
             ui.finish("いまは誰ともつないでいないので、伝える相手がいません", ok: false)
             return
@@ -3175,14 +3177,14 @@ final class MeetViewController: UIViewController {
     }
 
     /// 場所: 自分のまわりで探す → いちばん近いものを見せる。
-    private func askPlace(_ intent: AskIntent, text: String, ui: AskViewController) {
+    private func askPlace(_ intent: AskIntent, text: String, ui: AskRun) {
         guard let me = locations.last else {
             ui.finish("いまいる場所がまだ分かりません", ok: false)
             return
         }
         let raw = [intent.query, intent.placeKind, text].first { !$0.isEmpty } ?? text
-        let query = raw.replacingOccurrences(of: "近くの", with: "")
-            .replacingOccurrences(of: "いちばん近い", with: "")
+        // AIが文のまま返しても、探すのは言葉だけ（「なんからーめん」→「ラーメン」）。
+        let query = AskParser.searchWords(raw.replacingOccurrences(of: "いちばん近い", with: ""))
         let finding = ui.addStep("「\(query)」を探しています")
         let resolver = PlaceResolver()
         placeResolver = resolver
@@ -3203,10 +3205,13 @@ final class MeetViewController: UIViewController {
                    detail: "\(NearbyAlert.text(d))・\(NearbyAlert.walkText(d))" + where_,
                    primary: intent.go ? "案内開始" : "経路", secondary: "地図で見る",
                    onPrimary: { [weak self] in
-                       ui.dismiss(animated: true) { self?.routeToPlace(best, startNow: intent.go) }
+                       // 経路の通信は、閉じるのと同時に始める。
+                       self?.routeToPlace(best, startNow: intent.go)
+                       ui.dismiss(animated: true)
                    },
                    onSecondary: { [weak self] in
-                       ui.dismiss(animated: true) { self?.presentPlace(best) }
+                       ui.dismiss(animated: true)
+                       self?.presentPlace(best)
                    })
         }
     }

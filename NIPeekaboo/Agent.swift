@@ -45,6 +45,9 @@ enum AskParser {
         // 「近くのカフェ」「いちばん近い駅」も言葉で決める（AIは「いちばん近い駅」を
         // 相手への行き方と取り違えた）。
         if rule.kind == .place, nearbyMarkers.contains(where: { text.contains($0) }) { return (rule, false) }
+        // 「ラーメン食べたい」「カラオケ行きたい」のように種類の言葉が取れたら、AIに聞かずに決める。
+        // AIは「ボウリング場」（15km先を選ぶ）や「めん」を返すことがあり、待つぶん遅い（9/26 実測）。
+        if rule.kind == .place, isGeneric(rule.query) { return (rule, false) }
         #if canImport(FoundationModels)
         if #available(iOS 26.0, *), SystemLanguageModel.default.isAvailable {
             let result = await withTimeout(seconds: 10) { try await aiParse(text, partner: partner) }
@@ -127,7 +130,7 @@ enum AskParser {
         if has(nearbyMarkers) {
             var q = text
             for m in nearbyMarkers { q = q.replacingOccurrences(of: m, with: "") }
-            return AskIntent(kind: .place, placeKind: placeWord(in: text) ?? "", query: q)
+            return AskIntent(kind: .place, placeKind: placeWord(in: text) ?? "", query: searchWords(q))
         }
         if has(["伝えて", "様子", "って言って", "と言って", "言っといて", "と伝え", "って伝え"]) {
             return AskIntent(kind: .mood, mood: quoted(text) ?? String(before(text, ["って伝え", "と伝え", "って言っ", "と言っ"]).prefix(20)))
@@ -141,8 +144,44 @@ enum AskParser {
         if has(["会い", "会う", "待ち合わせ", "中間", "合流"]) {
             return AskIntent(kind: .meet, placeKind: placeWord(in: text) ?? "")
         }
-        return AskIntent(kind: .place, placeKind: placeWord(in: text) ?? "", query: text)
+        return AskIntent(kind: .place, placeKind: placeWord(in: text) ?? "", query: searchWords(text))
     }
+
+    // MARK: 地図で探す言葉
+
+    /// 頼みの文から、地図で探す言葉だけを取り出す。
+    /// 「なんからーめん食べたい」→「ラーメン」、「カラオケ行きたいな」→「カラオケ」、「トイレどこ？」→「トイレ」。
+    /// 文のまま探すと、名前が似た遠くの店を選ぶ（9/26 実測：「なんからーめん」→ 955km先の「南香らーめん」、
+    /// 「カラオケ行きたい」→ 103km先の店、「ラーメン食べたい」→ 19km先の「えびラーメンと…が食べたい」という店）。
+    static func searchWords(_ raw: String) -> String {
+        var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "？?！!。、 　"))
+        // 「〜食べたい」「〜行きたいな」「〜ある？」「〜どこ」のような言い方の部分を、後ろから落とす。
+        for _ in 0..<3 {
+            let before = t
+            if let r = t.range(of: tailPattern, options: .regularExpression), r.lowerBound > t.startIndex {
+                t = String(t[..<r.lowerBound])
+            }
+            t = t.trimmingCharacters(in: CharacterSet(charactersIn: "？?！!。、 　"))
+            if t == before { break }
+        }
+        // 頭の「なんか」「ちょっと」「近くで」など。
+        for lead in leadFillers where t.hasPrefix(lead) && t.count > lead.count {
+            t.removeFirst(lead.count)
+            break
+        }
+        if t.hasSuffix("とか"), t.count > 2 { t.removeLast(2) }
+        // ひらがなで打った種類の言葉は、カタカナでも見る（「らーめん」→「ラーメン」）。
+        if let kata = t.applyingTransform(.hiraganaToKatakana, reverse: false), kata != t, isGeneric(kata) { t = kata }
+        return t.isEmpty ? raw : t
+    }
+
+    private static let tailPattern =
+        "(が|を|に|へ|で)?(食べ|たべ|飲み|のみ|行き|いき|歌い|うたい|遊び|あそび|やり|し|寄り|より|休み|やすみ)たい(な|ね|よ|かな|なあ|なー|です|んだけど)?$"
+        + "|(とか)?(って)?(ある|ない|どこ|探して|さがして|教えて|おしえて|知りたい|ないかな|あるかな|ないの|あるの)(かな|か)?$"
+
+    private static let leadFillers = ["なんか", "何か", "ちょっと", "今から", "いまから", "これから",
+                                      "どこか", "どっか", "近くで", "この辺で", "近くの", "近くに"]
 
     private static let placeWords = ["カフェ", "喫茶", "ごはん", "ランチ", "食事", "レストラン", "駅", "公園", "コンビニ"]
     static let nearbyMarkers = ["近くの", "いちばん近い", "一番近い", "最寄りの", "この辺の", "この辺で"]
@@ -151,13 +190,16 @@ enum AskParser {
     static let genericWords = ["カフェ", "喫茶", "コーヒー", "ごはん", "ランチ", "ディナー", "食事", "レストラン",
                                "ラーメン", "そば", "うどん", "寿司", "焼肉", "居酒屋", "ファミレス", "ハンバーガー",
                                "パン", "駅", "コンビニ", "公園", "トイレ", "薬局", "ドラッグストア", "スーパー",
-                               "ATM", "銀行", "病院", "本屋", "書店", "ホテル", "駐車場", "駐輪場", "休憩"]
+                               "ATM", "銀行", "病院", "本屋", "書店", "ホテル", "駐車場", "駐輪場", "休憩",
+                               "カラオケ", "ボウリング", "映画館", "ゲームセンター", "ゲーセン", "ネットカフェ",
+                               "漫画喫茶", "銭湯", "サウナ", "ジム", "牛丼", "カレー", "ピザ", "焼き鳥", "中華",
+                               "餃子", "とんかつ", "ケーキ", "スイーツ", "バー"]
 
     /// 言葉そのもの（「カフェ」「ラーメン屋」）のときだけ。「東京駅」は駅という種類ではなく
     /// 1つの場所なので、末尾が「駅」でも種類とはみなさない（近くの別の駅を選んでいた）。
     static func isGeneric(_ query: String) -> Bool {
         let q = query.trimmingCharacters(in: .whitespaces)
-        return genericWords.contains { w in [w, w + "屋", w + "屋さん", w + "店"].contains(q) }
+        return genericWords.contains { w in [w, w + "屋", w + "屋さん", w + "店", w + "場"].contains(q) }
     }
 
     /// 行き先。「ラゾーナに案内して」→「ラゾーナ」。
@@ -342,7 +384,16 @@ final class PlaceResolver: NSObject, MKLocalSearchCompleterDelegate {
             if firstItem == nil { firstItem = item }
             if let loc = item.placemark.location, loc.distance(from: me) <= 3_000 { return [item] }
         }
-        if let firstItem { return [firstItem] }
+        if let firstItem {
+            // 1つ目が30kmより遠く、近くに同じ言葉の場所があれば、近いほうを採る。
+            // （「東京駅」のように遠くても行きたい1つの場所は、近くに同じ名前が無いのでそのまま）
+            if let d = firstItem.placemark.location?.distance(from: me), d > 30_000,
+               let near = await nearest(query, near: me).first,
+               let nd = near.placemark.location?.distance(from: me), nd <= 5_000 {
+                return [near]
+            }
+            return [firstItem]
+        }
         return await nearest(query, near: me)
     }
 
@@ -429,6 +480,52 @@ enum AskHistory {
     }
 }
 
+// MARK: - 1回分の頼みごと
+
+/// 1回分の頼みごと。画面への書き込みはここを通す。止めたあと・次を頼んだあとに
+/// 遅れて届いた結果（通信やAIの返事）は、画面に出さない。
+@MainActor
+final class AskRun {
+    private weak var ui: AskViewController?
+    private let id: Int
+
+    init(ui: AskViewController, id: Int) {
+        self.ui = ui
+        self.id = id
+    }
+
+    /// まだこの頼みごとが画面に出ているか。
+    var isLive: Bool { ui?.currentRun == id }
+
+    @discardableResult
+    func addStep(_ text: String) -> Int {
+        guard isLive, let ui else { return -1 }
+        return ui.addStep(text)
+    }
+
+    func finishStep(_ index: Int, note: String? = nil, failed: Bool = false) {
+        guard isLive else { return }
+        ui?.finishStep(index, note: note, failed: failed)
+    }
+
+    func ask(title: String, detail: String?, primary: String, secondary: String?,
+             onPrimary: @escaping () -> Void, onSecondary: (() -> Void)?) {
+        guard isLive else { return }
+        ui?.ask(title: title, detail: detail, primary: primary, secondary: secondary,
+                onPrimary: onPrimary, onSecondary: onSecondary)
+    }
+
+    func finish(_ text: String, ok: Bool = true) {
+        guard isLive else { return }
+        ui?.finish(text, ok: ok)
+    }
+
+    func dismiss(animated: Bool, completion: (() -> Void)? = nil) {
+        guard isLive, let ui else { return }
+        ui.dismiss(animated: animated, completion: completion)
+    }
+}
+
 // MARK: - 頼む画面
 
 /// 一文を打つ（声でもいい。キーボードのマイク）→ 手順が1行ずつ進む → 送る前に確認の札。
@@ -441,6 +538,9 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
     private let field = UITextField()
     private let chips = WrappingRow()
     private let recents = UIStackView()
+    private let stopButton = UIButton(type: .system)
+    /// いま画面に出している頼みごとの番号。止める・次を頼むと進み、前の頼みごとの遅い返事は捨てる。
+    private(set) var currentRun = 0
     private let modeLabel = UILabel()
     private let titleLabel = UILabel()
     private let steps = UIStackView()
@@ -474,7 +574,18 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         orb.translatesAutoresizingMaskIntoConstraints = false
         orb.widthAnchor.constraint(equalToConstant: 30).isActive = true
         orb.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        let inputRow = UIStackView(arrangedSubviews: [orb, field])
+        // 調べているあいだは右に「止める」（ChatGPT・Claude の ■ と同じ）。止めても、別の文を送り直してもいい。
+        stopButton.setImage(UIImage(systemName: "stop.circle.fill",
+                                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 28)), for: .normal)
+        stopButton.tintColor = MeetPalette.primary
+        stopButton.accessibilityLabel = "止める"
+        stopButton.isHidden = true
+        stopButton.addAction(UIAction { [weak self] _ in self?.stop() }, for: .touchUpInside)
+        stopButton.translatesAutoresizingMaskIntoConstraints = false
+        stopButton.widthAnchor.constraint(equalToConstant: 36).isActive = true
+        stopButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        stopButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let inputRow = UIStackView(arrangedSubviews: [orb, field, stopButton])
         inputRow.axis = .horizontal
         inputRow.alignment = .center
         inputRow.spacing = 10
@@ -529,12 +640,15 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         recents.spacing = 0
         reloadRecents()
 
-        let column = UIStackView(arrangedSubviews: [inputRow, modeLabel, chips, recents, titleLabel, steps, card])
+        // 結果（題・手順・確かめる札）を上に、候補と最近頼んだことをその下に。
+        // 候補が上にあると、終わったときに結果が画面の外へ押し出される（9/26）。
+        let column = UIStackView(arrangedSubviews: [inputRow, modeLabel, titleLabel, steps, card, chips, recents])
         column.axis = .vertical
         column.spacing = 12
         column.setCustomSpacing(6, after: inputRow)
+        column.setCustomSpacing(16, after: card)
+        column.setCustomSpacing(16, after: steps)
         column.setCustomSpacing(16, after: chips)
-        column.setCustomSpacing(16, after: recents)
         let scroll = UIScrollView()
         scroll.keyboardDismissMode = .interactive
         scroll.addSubview(column)
@@ -639,7 +753,9 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
     // MARK: 進み具合
 
     /// 新しく頼まれた。前の手順を消して、考え始める。
-    func begin(_ text: String) {
+    func begin(_ text: String) -> AskRun {
+        currentRun += 1
+        stopButton.isHidden = false
         chips.isHidden = true
         recents.isHidden = true
         titleLabel.isHidden = false
@@ -651,6 +767,19 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         if let sheet = sheetPresentationController {
             sheet.animateChanges { sheet.selectedDetentIdentifier = .medium }
         }
+        return AskRun(ui: self, id: currentRun)
+    }
+
+    /// 止める。調べている途中の返事は、届いても出さない。回っている印も止める。
+    private func stop() {
+        currentRun += 1
+        for (icon, label) in stepRows where icon.layer.animation(forKey: "spin") != nil {
+            icon.layer.removeAnimation(forKey: "spin")
+            icon.image = UIImage(systemName: "minus.circle")
+            icon.tintColor = MeetPalette.secondary
+            label.textColor = MeetPalette.secondary
+        }
+        finish("止めました", ok: false)
     }
 
     /// 手順を1行足す（くるくる回る印つき）。番号を返す。
@@ -729,6 +858,7 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
 
     /// 終わった（または進めなかった）ことを一言で。
     func finish(_ text: String, ok: Bool = true) {
+        stopButton.isHidden = true
         orb.setThinking(false)
         hideCard()
         let i = addStep(text)
