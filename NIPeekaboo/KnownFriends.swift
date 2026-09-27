@@ -162,7 +162,8 @@ enum KnownFriends {
         // （その名札では部屋の名前が合わず、押しても相手に届かない）。
         var list = all().filter { $0.key != key && $0.name != name }
         list.insert(KnownFriend(key: key, name: name, lastMet: Date()), at: 0)
-        save(Array(list.prefix(10)))
+        // 何人でも覚えておく。消えるのは、本人が消したときだけ（本人 9/28「どちらかが削除しない限り消えないように」）。
+        save(list)
     }
 
     static func forget(key: String) {

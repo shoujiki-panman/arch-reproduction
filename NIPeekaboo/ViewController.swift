@@ -2364,7 +2364,8 @@ final class MeetViewController: UIViewController {
     private func listenForFriends() {
         guard UIApplication.shared.applicationState != .background else { return }
         let me = SelfIdentity.publicKey
-        let friends = Array(KnownFriends.all().prefix(3))
+        // 呼び鈴を張るのは、最近会った5人まで（部屋ごとに線を1本張るので、増やしすぎない）。
+        let friends = Array(KnownFriends.all().prefix(5))
         for gone in doorbells.keys where !friends.contains(where: { $0.key == gone }) {
             doorbells.removeValue(forKey: gone)?.disconnect()
         }
@@ -3847,7 +3848,8 @@ final class MeetViewController: UIViewController {
             return
         }
         // 相手がいないとき。覚えた友だちを並べ、その場で「つなぐ」を押せるようにする。
-        let known = Array(KnownFriends.all().prefix(3))
+        // 覚えている友だちは全員並べる（3人で切ると、4人目からは消えたように見えた）。
+        let known = KnownFriends.all()
         var waitingLine: String?
         var friends: [HomeSheetView.Friend] = []
         if group == nil {
