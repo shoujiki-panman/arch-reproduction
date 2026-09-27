@@ -286,10 +286,13 @@ final class HomeSheetView: UIView {
     private var hasMore: Bool { !more.arrangedSubviews.isEmpty }
 
     private func applyLevel() {
-        body.isHidden = level == .minimized
-        body.alpha = level == .minimized ? 0 : 1
-        more.isHidden = level != .expanded
-        more.alpha = level == .expanded ? 1 : 0
+        // UIStackView は、隠れている行にもう一度「隠す」を言うと数え違えて、行が重なって残る
+        // （9/28 実機：「共有をやめる」と「いま近くで」が重なって出た）。変わるときだけ切り替える。
+        let hideBody = level == .minimized, hideMore = level != .expanded
+        if body.isHidden != hideBody { body.isHidden = hideBody }
+        if more.isHidden != hideMore { more.isHidden = hideMore }
+        body.alpha = hideBody ? 0 : 1
+        more.alpha = hideMore ? 0 : 1
     }
 
     func setLevel(_ next: Level) {
@@ -530,14 +533,6 @@ final class HomeSheetView: UIView {
         name.text = friend.name
         let texts = UIStackView(arrangedSubviews: [name])
         texts.axis = .vertical
-        if !friend.room.isEmpty {
-            // 呼び鈴が届かない原因を確かめるための一時的な表示（9/28）。2台で同じ文字なら同じ部屋。
-            let code = UILabel()
-            code.font = Type.caption
-            code.textColor = MeetPalette.secondary
-            code.text = "部屋 \(friend.room)"
-            texts.addArrangedSubview(code)
-        }
         if friend.waiting {
             let wait = UILabel()
             wait.font = Type.caption
