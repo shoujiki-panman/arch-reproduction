@@ -19,7 +19,7 @@ import FoundationModels
 // MARK: - 何をしたいか
 
 struct AskIntent: Sendable {
-    enum Kind: String, Sendable { case meet, errand, mood, route, place }
+    enum Kind: String, Sendable { case meet, errand, mood, route, place, onTheWay, watch, placeInfo, killTime }
     var kind: Kind
     /// 待ち合わせ・探す場所の種類（カフェ・駅など）。
     var placeKind: String = ""
@@ -30,6 +30,14 @@ struct AskIntent: Sendable {
     var go: Bool = false
     /// 「赤坂駅付近ランチ」の「赤坂駅」。ここのまわりで query を探す（空なら自分のまわり）。
     var near: String = ""
+    /// ふわっとした条件を言い換えた、地図で探す言葉（「作業できる所」→ カフェ・図書館…）。
+    var words: [String] = []
+    /// 「7時までに来なかったら」の締め切り。
+    var deadline: Date?
+    /// 時間つぶしの長さ（分）。
+    var minutes: Int = 0
+    /// 店について聞くこと（hours / phone / site）。
+    var topic: String = ""
 }
 
 enum AskParser {
@@ -40,6 +48,8 @@ enum AskParser {
         // Macで同じAIに6文かけたら、「ちょっと遅れるって言っといて」「改札の前で
         // 待ってると伝えて」を「会う」と取り違えた（2/6）。小さいモデルに迷わせない。
         let rule = keywordParse(text, partner: partner)
+        // 見張る・時間つぶし・寄り道・店のことを聞く は、言い方がはっきりしているので言葉で決める。
+        if [.watch, .killTime, .onTheWay, .placeInfo].contains(rule.kind) { return (rule, false) }
         if (rule.kind == .mood || rule.kind == .route), hasStrongSignal(text) { return (rule, false) }
         // 「ラゾーナに案内して」「〇〇まで行きたい」も言葉で決める（AIは「連れてって」を
         // 「会う」と取り違えた）。
@@ -55,6 +65,8 @@ enum AskParser {
         // 「ラーメン食べたい」「カラオケ行きたい」のように種類の言葉が取れたら、AIに聞かずに決める。
         // AIは「ボウリング場」（15km先を選ぶ）や「めん」を返すことがあり、待つぶん遅い（9/26 実測）。
         if rule.kind == .place, isGeneric(rule.query) { return (rule, false) }
+        // 「雨でも静かに作業できるところ」は、条件を探す言葉（図書館・カフェ…）に言い換えて決める。
+        if rule.kind == .place, !rule.words.isEmpty { return (rule, false) }
         #if canImport(FoundationModels)
         if #available(iOS 26.0, *), SystemLanguageModel.default.isAvailable {
             let result = await withTimeout(seconds: 10) { try await aiParse(text, partner: partner) }
@@ -127,6 +139,27 @@ enum AskParser {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         func has(_ words: [String]) -> Bool { words.contains { text.contains($0) } }
 
+        // 「7時までに来なかったら教えて」（Life360 の No Show と同じ見張り）
+        if has(["来なかったら", "着かなかったら", "来なければ", "着かなければ", "来ないなら", "着かないなら", "来てなかったら"]) {
+            return AskIntent(kind: .watch, deadline: AskSkills.deadline(in: text))
+        }
+        // 「10分遅れる」「遅れそう」だけでも、相手に伝える頼みとして読む。
+        if has(["遅れる", "遅れそう", "遅刻", "遅れます"]), !has(["来なかったら", "着かなかったら"]) {
+            return AskIntent(kind: .mood, mood: String(text.prefix(20)))
+        }
+        // 「舞台まで2時間どうする？」「30分ひまつぶし」
+        if let m = AskSkills.freeMinutes(in: text) {
+            return AskIntent(kind: .killTime, minutes: m)
+        }
+        // 「途中でコーヒー買える所」（行き先への道すがら）。「〇〇に行く途中で」も行き先の指示より先に見る。
+        if has(["途中で", "途中に", "道中", "寄り道", "寄れる", "ついでに寄"]), !has(["買ってきて", "買って来て"]) {
+            return AskIntent(kind: .onTheWay, query: AskSkills.onTheWayWhat(text))
+        }
+        // 「そこ何時まで？」「スタバの電話番号」
+        if let topic = AskSkills.placeTopic(text) {
+            return AskIntent(kind: .placeInfo, query: AskSkills.placeInfoTarget(text), topic: topic)
+        }
+
         // 「〇〇に案内して」「〇〇まで行きたい」「〇〇へ連れてって」
         if let dest = destination(in: text) {
             let toPartner = (!partner.isEmpty && dest.contains(partner)) || dest.contains("のところ") || dest.contains("相手")
@@ -151,7 +184,14 @@ enum AskParser {
         if has(["会い", "会う", "待ち合わせ", "中間", "合流"]) {
             return AskIntent(kind: .meet, placeKind: placeWord(in: text) ?? "")
         }
-        return AskIntent(kind: .place, placeKind: placeWord(in: text) ?? "", query: searchWords(text))
+        var query = searchWords(text)
+        // 「充電できるカフェ」「静かなカフェ」は、最後の種類の言葉（カフェ）で探す。
+        if !isGeneric(query), let kind = genericWords.first(where: { query.hasSuffix($0) }) { query = kind }
+        // 「雨でも静かに作業できるところ」のように種類の言葉が無いときは、条件を探す言葉に言い換える。
+        if !isGeneric(query), !AskSkills.conditionWords(text).isEmpty {
+            return AskIntent(kind: .place, query: query, words: AskSkills.conditionWords(text))
+        }
+        return AskIntent(kind: .place, placeKind: placeWord(in: text) ?? "", query: query)
     }
 
     // MARK: 地図で探す言葉
@@ -236,7 +276,8 @@ enum AskParser {
                                "ATM", "銀行", "病院", "本屋", "書店", "ホテル", "駐車場", "駐輪場", "休憩",
                                "カラオケ", "ボウリング", "映画館", "ゲームセンター", "ゲーセン", "ネットカフェ",
                                "漫画喫茶", "銭湯", "サウナ", "ジム", "牛丼", "カレー", "ピザ", "焼き鳥", "中華",
-                               "餃子", "とんかつ", "ケーキ", "スイーツ", "バー"]
+                               "餃子", "とんかつ", "ケーキ", "スイーツ", "バー",
+                               "コワーキングスペース", "図書館", "ファストフード", "ショッピングモール", "美術館", "博物館"]
 
     /// 言葉そのもの（「カフェ」「ラーメン屋」）のときだけ。「東京駅」は駅という種類ではなく
     /// 1つの場所なので、末尾が「駅」でも種類とはみなさない（近くの別の駅を選んでいた）。
@@ -316,6 +357,177 @@ struct AskPlanAI {
     var query: String
 }
 #endif
+
+// MARK: - AIに頼めること（9/28 本人が6つとも選んだ）
+
+/// 一文から「何を・いつまで・何分」を取り出す部分。どれも言葉の決まりで決める（小さいAIに任せない）。
+/// 形は Googleマップ「マップに相談」・Gemini のナビ・Life360 の No Show・Yelp Assistant の頼まれ方から借りた。
+enum AskSkills {
+
+    // MARK: ふわっとした条件 → 探す言葉
+
+    /// 「雨でも静かに作業できるところ」→ [カフェ, 図書館, コワーキングスペース]。当てはまらなければ空。
+    static func conditionWords(_ text: String) -> [String] {
+        func has(_ w: [String]) -> Bool { w.contains { text.contains($0) } }
+        var out: [String] = []
+        func add(_ w: [String]) { for x in w where !out.contains(x) { out.append(x) } }
+        if has(["作業", "勉強", "仕事", "パソコン", "PC", "Wi-Fi", "WiFi", "wifi", "ワイファイ", "電源", "充電"]) {
+            add(has(["静か"]) ? ["図書館", "カフェ", "コワーキングスペース"] : ["カフェ", "コワーキングスペース", "図書館"])
+        }
+        if has(["子連れ", "子ども", "子供", "ベビーカー", "キッズ", "赤ちゃん"]) { add(["ファミレス", "ショッピングモール", "公園"]) }
+        if has(["休憩", "休みたい", "座りたい", "一息", "ひと息", "涼み", "暖まり", "温まり"]) {
+            add(has(["雨", "寒", "暑", "涼", "暖", "温"]) ? ["カフェ", "ファミレス"] : ["カフェ", "公園", "ファミレス"])
+        }
+        if has(["飲みたい", "飲める", "お酒", "一杯"]) { add(["居酒屋", "バー"]) }
+        if has(["安く", "安い", "さくっと", "サクッと", "手軽", "すぐ食べ"]) { add(["牛丼", "ファストフード", "うどん"]) }
+        if has(["デート", "おしゃれ", "雰囲気"]) { add(["カフェ", "レストラン"]) }
+        if has(["静か"]), out.isEmpty { add(["カフェ", "図書館"]) }
+        if has(["雨"]), out.isEmpty { add(["カフェ", "ショッピングモール", "本屋"]) }
+        return Array(out.prefix(3))
+    }
+
+    // MARK: 見張る（締め切り）
+
+    /// 「7時までに」「19時半までに」「30分たっても」「1時間以内に」→ 締め切りの時刻。読めなければ nil。
+    /// 「7時」は、いまより後でいちばん近い7時（朝7時を過ぎていれば夜7時）。
+    static func deadline(in text: String, now: Date = Date(), calendar: Calendar = .current) -> Date? {
+        let t = text.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? text
+        if let m = firstMatch("([0-9]+)\\s*分(たって|経って|後|以内|しても|過ぎても)", t), let n = Int(m[0]) {
+            return now.addingTimeInterval(TimeInterval(n * 60))
+        }
+        if let m = firstMatch("([0-9]+)\\s*時間(たって|経って|後|以内|しても|過ぎても)", t), let n = Int(m[0]) {
+            return now.addingTimeInterval(TimeInterval(n * 3600))
+        }
+        guard let m = firstMatch("([0-9]{1,2})\\s*時\\s*(半|([0-9]{1,2})\\s*分)?", t), var hour = Int(m[0]), hour < 24 else { return nil }
+        let minute = m[1] == "半" ? 30 : (Int(m[2]) ?? 0)
+        if t.contains("午後") || t.contains("夜"), hour < 12 { hour += 12 }
+        var day = calendar.dateComponents([.year, .month, .day], from: now)
+        day.hour = hour
+        day.minute = minute
+        guard var date = calendar.date(from: day) else { return nil }
+        // 過ぎていれば、12時間後（夜の7時）→ それも過ぎていれば翌日。
+        if date <= now, hour < 12, let pm = calendar.date(byAdding: .hour, value: 12, to: date), pm > now { date = pm }
+        if date <= now, let next = calendar.date(byAdding: .day, value: 1, to: date) { date = next }
+        return date
+    }
+
+    // MARK: 時間つぶし
+
+    /// 「2時間どうする」「30分ひまつぶし」「1時間半あいた」→ 分。時間つぶしの頼みでなければ nil。
+    static func freeMinutes(in text: String) -> Int? {
+        let t = text.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? text
+        let asks = ["時間つぶ", "ひまつぶ", "暇つぶ", "ヒマつぶ", "どうする", "何しよ", "なにしよ", "空いた", "あいた", "空いてる",
+                    "あいてる", "ひま", "暇", "時間ある", "時間がある"]
+        guard asks.contains(where: { t.contains($0) }) else { return nil }
+        // 「10分遅れるけどどうする」は時間つぶしではない。
+        guard !["遅れ", "遅刻", "伝え", "着く", "来る"].contains(where: { t.contains($0) }) else { return nil }
+        var minutes = 0
+        if let m = firstMatch("([0-9]+)\\s*時間(半)?", t), let h = Int(m[0]) { minutes += h * 60 + (m[1] == "半" ? 30 : 0) }
+        if let m = firstMatch("([0-9]+)\\s*分", t), let n = Int(m[0]) { minutes += n }
+        if minutes == 0, ["時間つぶ", "ひまつぶ", "暇つぶ", "ヒマつぶ"].contains(where: { t.contains($0) }) { minutes = 60 }
+        return minutes > 0 ? minutes : nil
+    }
+
+    /// 空いた時間の長さで、行く所の種類を変える（短ければ近場で座れる所、長ければ映画・美術館など）。
+    static func killTimePlan(minutes: Int) -> [String] {
+        switch minutes {
+        case ..<45: return ["カフェ", "本屋", "公園"]
+        case ..<120: return ["カフェ", "本屋", "ショッピングモール", "公園"]
+        default: return ["映画館", "美術館", "カラオケ", "ショッピングモール", "カフェ"]
+        }
+    }
+
+    // MARK: 寄り道
+
+    /// 「途中でコーヒー買える所」→「コーヒー」、「駅に行く途中で寄れるコンビニ」→「コンビニ」。
+    static func onTheWayWhat(_ text: String) -> String {
+        var t = text
+        if let r = t.range(of: "途中で") ?? t.range(of: "途中に") ?? t.range(of: "道中") ?? t.range(of: "寄り道") {
+            t = String(t[r.upperBound...])
+        }
+        for w in ["寄れる", "寄って", "ついでに寄", "買える", "食べられる", "飲める", "で", "に", "の"] where t.hasPrefix(w) {
+            t.removeFirst(w.count)
+        }
+        for tail in ["買える所", "買えるところ", "買える場所", "寄れる所", "寄れるところ", "ある所", "あるところ", "ところ", "所", "場所"]
+            where t.hasSuffix(tail) && t.count > tail.count {
+            t.removeLast(tail.count)
+        }
+        t = t.replacingOccurrences(of: "寄れる", with: "").replacingOccurrences(of: "買える", with: "")
+        return AskParser.searchWords(t)
+    }
+
+    // MARK: 店のことを聞く
+
+    /// 何を聞いているか。hours / phone / site。店のことを聞いていなければ nil。
+    static func placeTopic(_ text: String) -> String? {
+        if ["何時まで", "何時から", "営業時間", "開いてる", "空いてる？", "やってる", "閉まる", "何時に開"].contains(where: { text.contains($0) }) {
+            return "hours"
+        }
+        if ["電話番号", "電話したい", "予約"].contains(where: { text.contains($0) }) { return "phone" }
+        if ["ホームページ", "サイト", "メニュー"].contains(where: { text.contains($0) }) { return "site" }
+        return nil
+    }
+
+    /// 「スタバって何時まで？」→「スタバ」、「そこ何時まで」→ 空（いま見ている場所）。
+    static func placeInfoTarget(_ text: String) -> String {
+        var t = text
+        for mark in ["って", "は", "の", "何時", "営業", "開い", "やって", "電話", "予約", "ホームページ", "サイト", "メニュー", "閉ま"] {
+            if let r = t.range(of: mark) { t = String(t[..<r.lowerBound]) }
+        }
+        t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ["そこ", "ここ", "あそこ", "その店", "このお店", "その店舗", "待ち合わせ"].contains(t) ? "" : t
+    }
+
+    // MARK: 遅れる連絡
+
+    /// 相手に送る一言。到着予定（分）が出せれば入れる。「10分遅れる」のように数があれば、それも残す。
+    static func lateMessage(_ text: String, etaMinutes: Int?) -> String {
+        let t = text.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? text
+        let said = firstMatch("([0-9]+)\\s*分", t).flatMap { Int($0[0]) }
+        let late = ["遅れ", "遅刻", "間に合わ"].contains { t.contains($0) }
+        switch (late, said, etaMinutes) {
+        case (true, let n?, let eta?): return "\(n)分ほど遅れます（あと\(eta)分で着きます）"
+        case (true, nil, let eta?): return "少し遅れます。あと\(eta)分で着きます"
+        case (true, let n?, nil): return "\(n)分ほど遅れます"
+        case (true, nil, nil): return "少し遅れます"
+        case (false, _, let eta?): return "あと\(eta)分で着きます"
+        case (false, _, nil): return "向かっています"
+        }
+    }
+
+    /// 遅れる・もうすぐ着く、の連絡か（到着予定を入れる対象か）。
+    static func isArrivalNote(_ text: String) -> Bool {
+        ["遅れ", "遅刻", "間に合わ", "着く", "着きそう", "向かって", "向かう", "もうすぐ"].contains { text.contains($0) }
+    }
+
+    // MARK: 道のりの計算
+
+    /// 点から、道（折れ線）までのいちばん近い距離（m）。
+    static func distance(from p: MKMapPoint, toPath path: [MKMapPoint]) -> Double {
+        guard path.count >= 2 else { return path.first.map { p.distance(to: $0) } ?? .greatestFiniteMagnitude }
+        var best = Double.greatestFiniteMagnitude
+        for i in 0..<(path.count - 1) {
+            let a = path[i], b = path[i + 1]
+            let dx = b.x - a.x, dy = b.y - a.y
+            let len2 = dx * dx + dy * dy
+            let u = len2 == 0 ? 0 : max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
+            let q = MKMapPoint(x: a.x + u * dx, y: a.y + u * dy)
+            best = min(best, p.distance(to: q))
+        }
+        return best
+    }
+
+    /// 寄り道でふえる距離（m）：自分→店→行き先 − 自分→行き先。
+    static func detour(me: MKMapPoint, stop: MKMapPoint, destination: MKMapPoint) -> Double {
+        me.distance(to: stop) + stop.distance(to: destination) - me.distance(to: destination)
+    }
+
+    private static func firstMatch(_ pattern: String, _ text: String) -> [String]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let m = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return nil }
+        return (1..<m.numberOfRanges).map { i in Range(m.range(at: i), in: text).map { String(text[$0]) } ?? "" }
+    }
+}
 
 // MARK: - 先回り（頼まなくても提案する）
 //

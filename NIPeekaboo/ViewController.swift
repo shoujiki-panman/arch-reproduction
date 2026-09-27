@@ -22,6 +22,8 @@ import AppIntents
 import PhotosUI
 import CryptoKit
 import Security
+import UserNotifications
+import SafariServices
 
 // MARK: - Meet-up protocol (the waiting side -> the side coming to find them)
 
@@ -1870,8 +1872,14 @@ final class MeetViewController: UIViewController {
     }
 
     /// 地図を押した・動かした。下の板をたたみ、地図と並べた板（場所・経路）は上だけの高さへ。
-    private func mapTouched() {
+    /// 店の札を出しているときに地図の別の所を押したら、札を閉じて選ぶのをやめる（Appleマップと同じ。
+    /// 本人 9/28「別の場所をタップしたら解除してほしい」）。別の店を押したときは、すぐ次の札が出る。
+    private func mapTouched(tapped: Bool) {
         homeSheet.minimize()
+        if tapped, let card = topPresented as? PlaceCardViewController, !card.isBeingDismissed {
+            card.dismiss(animated: true)
+            return
+        }
         MapSheets.lower(topPresented)
     }
 
@@ -2361,6 +2369,7 @@ final class MeetViewController: UIViewController {
             guard let self else { return }
             self.theirFix = fix
             self.locations.setPartnerDistance(self.currentMetres())
+            self.checkWatch()
             self.remindIdentityIfNeeded()
             self.checkPeerStore()
             self.updateNearbyAlert()
@@ -3041,10 +3050,11 @@ final class MeetViewController: UIViewController {
     private func openAsk() {
         let partner = partnerName
         let connected = group != nil && theirFix != nil
+        // 例は、頼めることの幅が見えるように選ぶ（9/28 よそのAI地図アプリの頼まれ方から）。
         let suggestions = connected
-            ? ["\(partner)と中間で会う、カフェで", "帰りに牛乳と卵を買ってきて", "「もうすぐ着く」と伝えて",
-               "\(partner)のところへの行き方", "近くのカフェ"]
-            : ["近くのカフェ", "近くのコンビニ", "近くの公園", "いちばん近い駅"]
+            ? ["\(partner)と中間で会う、カフェで", "遅れるって伝えて", "途中でコーヒー買える所",
+               "7時までに来なかったら教えて", "帰りに牛乳と卵を買ってきて"]
+            : ["雨でも静かに作業できるところ", "2時間ひまつぶし", "近くのカフェ", "スタバ何時まで？"]
         let vc = AskViewController(suggestions: suggestions)
         vc.onSubmit = { [weak self, weak vc] text in
             guard let self, let vc else { return }
@@ -3072,7 +3082,7 @@ final class MeetViewController: UIViewController {
             let connected = self.group != nil && self.theirFix != nil
             // 相手が要る頼みごとは、つないでいるときだけ。
             // （`case a, b, c where x` の where は最後の c にしか掛からないので、switch の外で見る）
-            if [.meet, .errand, .route].contains(intent.kind), !connected {
+            if [.meet, .errand, .route, .watch].contains(intent.kind), !connected {
                 ui.finish("いまは\(partner)とつないでいないので、これはできません。つなぐと使えます", ok: false)
                 return
             }
@@ -3084,6 +3094,10 @@ final class MeetViewController: UIViewController {
                 ui.finish("\(partner)までの経路を開きます")
                 ui.dismiss(animated: true) { self.openRoute() }
             case .place: self.askPlace(intent, text: text, ui: ui)
+            case .onTheWay: self.askOnTheWay(intent, text: text, ui: ui)
+            case .watch: self.askWatch(intent, ui: ui)
+            case .placeInfo: self.askPlaceInfo(intent, ui: ui)
+            case .killTime: self.askKillTime(intent, ui: ui)
             }
         }
     }
@@ -3094,7 +3108,11 @@ final class MeetViewController: UIViewController {
         case .errand: return "\(partner)に買い物を頼む" + (intent.items.isEmpty ? "" : "（\(intent.items.joined(separator: "・"))）")
         case .mood: return "様子を伝える"
         case .route: return "\(partner)のところへの行き方"
-        case .place: return "場所を探す"
+        case .place: return intent.words.isEmpty ? "場所を探す" : "条件に合う場所を探す"
+        case .onTheWay: return "途中で寄る所を探す"
+        case .watch: return "\(partner)が着くのを見張る"
+        case .placeInfo: return "お店のことを調べる"
+        case .killTime: return "時間つぶしの場所を探す"
         }
     }
 
@@ -3178,13 +3196,278 @@ final class MeetViewController: UIViewController {
             ui.finish("いまは誰ともつないでいないので、伝える相手がいません", ok: false)
             return
         }
-        let line = cleanName(intent.mood.isEmpty ? text : intent.mood)
-        ui.ask(title: "「\(line)」と伝えますか？", detail: "\(partnerName)の地図で、あなたの名前の下に出ます",
-               primary: "伝える", secondary: nil,
+        let base = cleanName(intent.mood.isEmpty ? text : intent.mood)
+        let confirm = { [weak self] (line: String) in
+            guard let self else { return }
+            ui.ask(title: "「\(line)」と伝えますか？", detail: "\(self.partnerName)の地図で、あなたの名前の下に出ます",
+                   primary: "伝える", secondary: nil,
+                   onPrimary: { [weak self] in
+                       self?.setMood(line)
+                       ui.finish("伝えました")
+                   }, onSecondary: nil)
+        }
+        // 「遅れるって伝えて」「もうすぐ着くって伝えて」には、実際の到着予定を入れる
+        // （Googleマップのナビで「10分遅れるとSarahに送って」と頼めるのと同じ）。
+        guard AskSkills.isArrivalNote(text), let me = locations.last?.coordinate,
+              let dest = meetPin?.coordinate ?? theirFix?.coordinate else {
+            confirm(base)
+            return
+        }
+        let step = ui.addStep(meetPin == nil ? "\(partnerName)のところまでの時間を出しています" : "待ち合わせ場所までの時間を出しています")
+        Task { @MainActor in
+            let route = await Self.walkingRoute(from: me, to: dest)
+            let eta = route.map { max(1, Int(($0.expectedTravelTime / 60).rounded(.up))) }
+            ui.finishStep(step, note: eta.map { "歩いてあと\($0)分" } ?? "道のりが取れませんでした（到着予定なしで伝えます）",
+                          failed: eta == nil)
+            confirm(AskSkills.lateMessage(text, etaMinutes: eta))
+        }
+    }
+
+    /// 徒歩の道のり（取れなければ nil）。
+    private static func walkingRoute(from a: CLLocationCoordinate2D, to b: CLLocationCoordinate2D) async -> MKRoute? {
+        let request = MKDirections.Request()
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: a))
+        request.destination = MKMapItem(placemark: MKPlacemark(coordinate: b))
+        request.transportType = .walking
+        return try? await MKDirections(request: request).calculate().routes.first
+    }
+
+    /// 「H:mm」。
+    private static func clock(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ja_JP")
+        f.dateFormat = "H:mm"
+        return f.string(from: date)
+    }
+
+    /// 「2時間」「1時間30分」「45分」。
+    private static func span(_ minutes: Int) -> String {
+        let h = minutes / 60, m = minutes % 60
+        return h == 0 ? "\(m)分" : (m == 0 ? "\(h)時間" : "\(h)時間\(m)分")
+    }
+
+    // MARK: 途中で寄る
+
+    /// 行き先（待ち合わせ場所、無ければ相手）までの道沿いで探し、寄り道の少ない順に並べる。
+    private func askOnTheWay(_ intent: AskIntent, text: String, ui: AskRun) {
+        guard let meLoc = locations.last else {
+            ui.finish("いまいる場所がまだ分かりません", ok: false)
+            return
+        }
+        let what = intent.query.isEmpty ? "コンビニ" : intent.query
+        // 行き先が無い（つないでいない・待ち合わせも無い）ときは、ふつうに近くで探す。
+        guard let dest = meetPin?.coordinate ?? (group != nil ? theirFix?.coordinate : nil) else {
+            askPlace(AskIntent(kind: .place, query: what), text: text, ui: ui)
+            return
+        }
+        let destName = meetPin?.name ?? partnerName
+        let resolver = PlaceResolver()
+        placeResolver = resolver
+        Task { @MainActor [weak self] in
+            let routing = ui.addStep("\(destName)までの道を出しています")
+            let route = await Self.walkingRoute(from: meLoc.coordinate, to: dest)
+            ui.finishStep(routing, note: route.map { "\(destName)まで 歩いて\(max(1, Int(($0.expectedTravelTime / 60).rounded())))分" }
+                          ?? "道のりが取れないので、まっすぐ結んで探します")
+            var path = [MKMapPoint(meLoc.coordinate), MKMapPoint(dest)]
+            if let line = route?.polyline {
+                path = (0..<line.pointCount).map { line.points()[$0] }
+            }
+            let mid = CLLocation(latitude: (meLoc.coordinate.latitude + dest.latitude) / 2,
+                                 longitude: (meLoc.coordinate.longitude + dest.longitude) / 2)
+            let finding = ui.addStep("道沿いで「\(what)」を探しています")
+            let found = await resolver.resolveMany(what, near: mid, limit: 20)
+            guard let self else { return }
+            self.placeResolver = nil
+            let me = MKMapPoint(meLoc.coordinate), goal = MKMapPoint(dest)
+            let onRoad = found.compactMap { item -> (MKMapItem, Double)? in
+                guard let c = item.placemark.location?.coordinate else { return nil }
+                let p = MKMapPoint(c)
+                guard AskSkills.distance(from: p, toPath: path) <= 150 else { return nil }
+                return (item, AskSkills.detour(me: me, stop: p, destination: goal))
+            }.sorted { $0.1 < $1.1 }.prefix(5)
+            guard !onRoad.isEmpty else {
+                ui.finishStep(finding, note: "道沿いには見つかりませんでした", failed: true)
+                ui.finish("「近くの\(what)」で頼むと、道から外れた所も探せます", ok: false)
+                return
+            }
+            ui.finishStep(finding, note: "\(onRoad.count)件見つけました")
+            let items = onRoad.map(\.0)
+            let rows = onRoad.map { item, extra -> (title: String, detail: String) in
+                let minutes = max(0, Int((extra / 80).rounded()))
+                let kind = PlaceCardViewController.kind(item.pointOfInterestCategory).map { "\($0)・" } ?? ""
+                return (item.name ?? "この場所", kind + (minutes == 0 ? "ほぼ寄り道なし" : "寄り道 +\(minutes)分"))
+            }
+            ui.choose(title: "\(destName)までの道沿いの「\(what)」", rows: rows, onPick: { [weak self] i in
+                ui.dismiss(animated: true)
+                self?.presentPlace(items[i])
+            })
+        }
+    }
+
+    // MARK: 着かなかったら知らせる
+
+    /// 見張りの締め切り（nil なら見張っていない）。着いたら取り消す。
+    private var watchUntil: Date?
+    private static let watchNotificationID = "kokodayo.watch"
+
+    private func askWatch(_ intent: AskIntent, ui: AskRun) {
+        guard let deadline = intent.deadline else {
+            ui.finish("何時までか読み取れませんでした（例: 7時までに来なかったら教えて）", ok: false)
+            return
+        }
+        let partner = partnerName
+        let target = meetPin?.name ?? "あなたのところ"
+        ui.ask(title: "\(Self.clock(deadline))までに\(partner)が\(target)に着かなかったら、知らせますか？",
+               detail: "着いたら見張りは自動で終わります。画面を閉じていても通知で知らせます",
+               primary: "見張る", secondary: nil,
                onPrimary: { [weak self] in
-                   self?.setMood(line)
-                   ui.finish("伝えました")
+                   self?.startWatch(until: deadline, partner: partner, target: target)
+                   ui.finish("\(Self.clock(deadline))まで見張ります")
                }, onSecondary: nil)
+    }
+
+    private func startWatch(until deadline: Date, partner: String, target: String) {
+        watchUntil = deadline
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [Self.watchNotificationID])
+        let content = UNMutableNotificationContent()
+        content.title = "\(partner)がまだ着いていません"
+        content.body = "\(Self.clock(deadline))を過ぎました。\(target)に着いていません。いまどこか見てみますか？"
+        content.sound = .default
+        let seconds = max(1, deadline.timeIntervalSinceNow)
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: seconds, repeats: false)
+        center.add(UNNotificationRequest(identifier: Self.watchNotificationID, content: content, trigger: trigger))
+    }
+
+    /// 相手が着いたか（待ち合わせ場所があればそこ、無ければ自分から60m以内）。着いたら見張りを終える。
+    private func checkWatch() {
+        guard let until = watchUntil else { return }
+        guard Date() < until else {
+            watchUntil = nil
+            return
+        }
+        guard let fix = theirFix else { return }
+        let peer = CLLocation(latitude: fix.lat, longitude: fix.lon)
+        let goal: CLLocation? = meetPin.map { CLLocation(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude) }
+            ?? locations.last
+        let radioNear = radioIsFresh() && (latestDistance.map { $0 < 30 } ?? false)
+        guard radioNear || (goal.map { peer.distance(from: $0) <= 60 } ?? false) else { return }
+        watchUntil = nil
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [Self.watchNotificationID])
+        flash("\(partnerName)が着きました（見張りを終えました）")
+    }
+
+    // MARK: 店のことを聞く
+
+    /// 「そこ何時まで？」「スタバの電話番号」。営業時間は Apple の場所カードに出ているので、そこを開く。
+    private func askPlaceInfo(_ intent: AskIntent, ui: AskRun) {
+        guard let me = locations.last else {
+            ui.finish("いまいる場所がまだ分かりません", ok: false)
+            return
+        }
+        let resolver = PlaceResolver()
+        placeResolver = resolver
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var item: MKMapItem?
+            if !intent.query.isEmpty {
+                let finding = ui.addStep("「\(intent.query)」を探しています")
+                item = await resolver.resolve(intent.query, near: me).first
+                ui.finishStep(finding, note: item.map { "「\($0.name ?? "")」が見つかりました" } ?? "見つかりませんでした",
+                              failed: item == nil)
+            } else if let shown = self.placeCard?.item {
+                item = shown
+            } else if let pin = self.meetPin {
+                // 待ち合わせ場所の名前で、詳しいこと（営業時間など）の入った場所を引き直す。
+                let pinLoc = CLLocation(latitude: pin.coordinate.latitude, longitude: pin.coordinate.longitude)
+                item = await resolver.resolve(pin.name, near: pinLoc).first
+            }
+            self.placeResolver = nil
+            guard let place = item else {
+                ui.finish("どのお店か分かりませんでした。名前を入れてください（例: スタバ何時まで）", ok: false)
+                return
+            }
+            let name = place.name ?? "この場所"
+            switch intent.topic {
+            case "phone":
+                if let phone = place.phoneNumber, let url = URL(string: "tel:" + phone.filter { "+0123456789".contains($0) }) {
+                    ui.ask(title: name, detail: "電話番号 \(phone)", primary: "電話する", secondary: "カードを開く",
+                           onPrimary: { UIApplication.shared.open(url) },
+                           onSecondary: { [weak self] in
+                               ui.dismiss(animated: true)
+                               self?.presentPlace(place)
+                           })
+                } else {
+                    self.showPlaceCardAnswer(place, ui: ui, note: "\(name)の電話番号は見つかりませんでした。カードを開きます")
+                }
+            case "site":
+                if let url = place.url {
+                    ui.ask(title: name, detail: url.host ?? url.absoluteString, primary: "サイトを開く", secondary: "カードを開く",
+                           onPrimary: { [weak self] in self?.presentOnTop(SFSafariViewController(url: url)) },
+                           onSecondary: { [weak self] in
+                               ui.dismiss(animated: true)
+                               self?.presentPlace(place)
+                           })
+                } else {
+                    self.showPlaceCardAnswer(place, ui: ui, note: "\(name)のサイトは見つかりませんでした。カードを開きます")
+                }
+            default:
+                self.showPlaceCardAnswer(place, ui: ui, note: "\(name)の営業時間は、Appleの場所カードに出ています")
+            }
+        }
+    }
+
+    private func showPlaceCardAnswer(_ place: MKMapItem, ui: AskRun, note: String) {
+        ui.ask(title: note, detail: nil, primary: "カードを開く", secondary: nil,
+               onPrimary: { [weak self] in
+                   ui.dismiss(animated: true)
+                   self?.presentPlace(place)
+               }, onSecondary: nil)
+    }
+
+    // MARK: 時間つぶし
+
+    /// 「舞台まで2時間どうする？」。空いた時間の長さで行く所の種類を変え、片道が長すぎない所だけ並べる。
+    private func askKillTime(_ intent: AskIntent, ui: AskRun) {
+        guard let me = locations.last else {
+            ui.finish("いまいる場所がまだ分かりません", ok: false)
+            return
+        }
+        let minutes = max(15, intent.minutes)
+        let kinds = AskSkills.killTimePlan(minutes: minutes)
+        // 片道に使ってよいのは、空いた時間の4分の1まで（行って戻って、まだ半分残る）。
+        let reach = max(400.0, Double(minutes) / 4 * 80)
+        let resolver = PlaceResolver()
+        placeResolver = resolver
+        Task { @MainActor [weak self] in
+            let finding = ui.addStep("\(Self.span(minutes))で行って戻れる「\(kinds.joined(separator: "・"))」を探しています")
+            var picked: [(MKMapItem, String)] = []
+            for kind in kinds {
+                let found = await resolver.resolveMany(kind, near: me, limit: 4).filter {
+                    ($0.placemark.location?.distance(from: me) ?? .greatestFiniteMagnitude) <= reach
+                }
+                for item in found.prefix(2) where !picked.contains(where: { $0.0.name == item.name }) {
+                    picked.append((item, kind))
+                }
+            }
+            guard let self else { return }
+            self.placeResolver = nil
+            guard !picked.isEmpty else {
+                ui.finishStep(finding, note: "歩いて行ける所に見つかりませんでした", failed: true)
+                ui.finish("「近くのカフェ」のように、種類で頼んでみてください", ok: false)
+                return
+            }
+            ui.finishStep(finding, note: "\(picked.count)件見つけました")
+            let items = picked.map(\.0)
+            let rows = picked.map { item, kind -> (title: String, detail: String) in
+                let d = item.placemark.location.map { me.distance(from: $0) } ?? 0
+                return (item.name ?? "この場所", "\(kind)・\(NearbyAlert.walkText(d))")
+            }
+            ui.choose(title: "\(Self.span(minutes))の時間つぶし", rows: rows, onPick: { [weak self] i in
+                ui.dismiss(animated: true)
+                self?.presentPlace(items[i])
+            })
+        }
     }
 
     /// 場所: 自分のまわりで探す → いちばん近いものを見せる。
@@ -3214,6 +3497,37 @@ final class MeetViewController: UIViewController {
                 ui.finishStep(anchoring, note: "「\(anchor.name ?? intent.near)」が見つかりました")
                 center = loc
                 aroundName = anchor.name ?? intent.near
+            }
+            // 「雨でも静かに作業できるところ」は、言い換えた言葉（図書館・カフェ…）でそれぞれ探して、近い順にまとめる。
+            if !intent.words.isEmpty {
+                let finding = ui.addStep("「\(query)」を「\(intent.words.joined(separator: "・"))」で探しています")
+                var merged: [MKMapItem] = []
+                for word in intent.words {
+                    for item in await resolver.resolveMany(word, near: center, limit: 3)
+                        where !merged.contains(where: { $0.name == item.name }) {
+                        merged.append(item)
+                    }
+                }
+                self?.placeResolver = nil
+                merged.sort { ($0.placemark.location?.distance(from: center) ?? .greatestFiniteMagnitude)
+                            < ($1.placemark.location?.distance(from: center) ?? .greatestFiniteMagnitude) }
+                let top = Array(merged.prefix(6))
+                guard !top.isEmpty else {
+                    ui.finishStep(finding, note: "見つかりませんでした", failed: true)
+                    ui.finish("言い方を変えてみてください", ok: false)
+                    return
+                }
+                ui.finishStep(finding, note: "\(top.count)件見つけました")
+                let rows = top.map { item -> (title: String, detail: String) in
+                    let kind = PlaceCardViewController.kind(item.pointOfInterestCategory) ?? ""
+                    let d = item.placemark.location.map { me.distance(from: $0) } ?? 0
+                    return (item.name ?? "この場所", (kind.isEmpty ? "" : kind + "・") + "\(NearbyAlert.text(d))・\(NearbyAlert.walkText(d))")
+                }
+                ui.choose(title: "「\(query)」の候補", rows: rows, onPick: { [weak self] i in
+                    ui.dismiss(animated: true)
+                    self?.presentPlace(top[i])
+                })
+                return
             }
             let finding = ui.addStep(aroundName.map { "\($0)のまわりで「\(query)」を探しています" } ?? "「\(query)」を探しています")
             let items = intent.go ? await resolver.resolve(query, near: center)
@@ -6198,7 +6512,7 @@ final class MeetViewController: UIViewController {
         installStandardMapControls(for: vc.mapView)
         vc.onSelectPlace = { [weak self] item in self?.presentPlace(item) }
         vc.onPlaceLoaded = { [weak self] first, full in self?.placeLoaded(first, full) }
-        vc.onMapTouched = { [weak self] in self?.mapTouched() }
+        vc.onMapTouched = { [weak self] tapped in self?.mapTouched(tapped: tapped) }
         vc.onNavPaused = { [weak self] in self?.navOverlay.setRecenterVisible(true) }
         mapFloor = vc
     }

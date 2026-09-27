@@ -106,8 +106,8 @@ final class MeetMapViewController: UIViewController {
     var onSelectPlace: ((MKMapItem) -> Void)?
     /// 先に渡した仮の場所と、届いた詳しい場所。
     var onPlaceLoaded: ((_ first: MKMapItem, _ full: MKMapItem) -> Void)?
-    /// 指で地図を押した・動かした（板を下げる合図）。
-    var onMapTouched: (() -> Void)?
+    /// 指で地図を押した（true）・動かした（false）。板を下げたり、店の札を閉じたりする合図。
+    var onMapTouched: ((_ tapped: Bool) -> Void)?
     /// 選んだ場所の印と、そこまでの道なりの線。
     private var placePin: MKPointAnnotation?
     private var lastFeature: MKAnnotation?
@@ -326,7 +326,11 @@ final class MeetMapViewController: UIViewController {
         if coordinate == nil, let me, !fitted {
             let camera = MKMapCamera(lookingAtCenter: me.coordinate,
                                      fromDistance: 700, pitch: 0, heading: 0)
-            map.setCamera(camera, animated: true)
+            map.setCamera(camera, animated: false)
+            // 1人のときは、自分の向いている方を上にして地図を回す（本人 9/28「自分の方向で地図も合わせて動いてほしい」）。
+            // MapKit の向きモード（followWithHeading）は入るたびに2km四方ほどに引いてしまうので使わず、
+            // 向きが届くたびにこちらで回す（案内中の地図と同じやり方）。指で動かせば止まる。
+            followHeading = true
             fitted = true
             refitAt = Date()
         }
@@ -510,6 +514,24 @@ final class MeetMapViewController: UIViewController {
     func setMyHeading(_ heading: CLLocationDirection?) {
         myHeading = heading
         refreshMeLook()
+        turnWithHeading()
+    }
+
+    /// 1人のとき、向いている方を上にして回すか（指で動かしたら止める。開き直せばまた回る）。
+    private var followHeading = false
+    private var lastTurn = (heading: -1.0, at: Date.distantPast)
+
+    private func turnWithHeading() {
+        guard followHeading, !userMoved, !navigating, peer == nil,
+              let h = myHeading, let me = map.userLocation.location else { return }
+        // 5度より小さい揺れと、0.3秒より短い間隔は無視する（手に持っているだけで揺れる）。
+        guard lastTurn.heading < 0 || abs(Self.angleDiff(h, lastTurn.heading)) > 5,
+              Date().timeIntervalSince(lastTurn.at) > 0.3 else { return }
+        lastTurn = (h, Date())
+        let camera = MKMapCamera(lookingAtCenter: me.coordinate,
+                                 fromDistance: map.camera.centerCoordinateDistance,
+                                 pitch: map.camera.pitch, heading: h)
+        map.setCamera(camera, animated: true)
     }
 
     private func refreshMeLook() {
@@ -548,6 +570,11 @@ final class MeetMapViewController: UIViewController {
         let flat = MKMapCamera(lookingAtCenter: map.centerCoordinate,
                                fromDistance: map.camera.centerCoordinateDistance, pitch: 0, heading: 0)
         map.setCamera(flat, animated: false)
+        // 目の前の店（数十m）だと建物しか映らないほど寄ってしまう。最低でも300m四方は見せる。
+        let minSide = MKMapPointsPerMeterAtLatitude(item.placemark.coordinate.latitude) * 300
+        if rect.size.width < minSide, rect.size.height < minSide {
+            rect = rect.insetBy(dx: -(minSide - rect.size.width) / 2, dy: -(minSide - rect.size.height) / 2)
+        }
         map.setVisibleMapRect(rect, edgePadding: UIEdgeInsets(top: 140, left: 60, bottom: 380, right: 60),
                               animated: true)
         fitted = true
@@ -643,7 +670,7 @@ extension MeetMapViewController: MKMapViewDelegate {
             [.began, .changed, .ended].contains(recogniser.state)
         } ?? false
         guard touched else { return }
-        onMapTouched?()
+        onMapTouched?(false)
         if navigating {
             if !navPaused {
                 navPaused = true
@@ -751,5 +778,5 @@ extension MeetMapViewController: UIGestureRecognizerDelegate {
 }
 
 extension MeetMapViewController {
-    @objc fileprivate func mapTapped() { onMapTouched?() }
+    @objc fileprivate func mapTapped() { onMapTouched?(true) }
 }
