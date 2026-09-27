@@ -2342,6 +2342,55 @@ final class MeetViewController: UIViewController {
         flash("\(friend.name)とつなぎました")
     }
 
+    // MARK: - 友だちの呼び鈴
+
+    /// 覚えている友だちとの部屋を、アプリを開いているあいだだけ「聞くだけ」で開けておく。
+    /// 相手が「つなぐ」を押すと、相手のアプリは部屋に入った瞬間にあいさつを送るので、それが届いたら知らせる
+    /// （本人 9/28「たぬきと繋いでも向こうに通知が行かない」）。こちらからは何も送らない。
+    /// アプリを閉じていると届かない（それは Apple のプッシュ通知で、あとで作る）。
+    private var doorbells: [String: RemoteChannel] = [:]
+    private var knockedBy: String?
+
+    private func listenForFriends() {
+        guard UIApplication.shared.applicationState != .background else { return }
+        let me = SelfIdentity.publicKey
+        let friends = Array(KnownFriends.all().prefix(3))
+        for gone in doorbells.keys where !friends.contains(where: { $0.key == gone }) {
+            doorbells.removeValue(forKey: gone)?.disconnect()
+        }
+        for friend in friends where doorbells[friend.key] == nil && friend.key != me {
+            let channel = RemoteChannel(groupID: KnownFriends.pairSecret(mine: me, theirs: friend.key))
+            let ring: () -> Void = { [weak self] in DispatchQueue.main.async { self?.friendKnocked(friend) } }
+            channel.onFix = { _ in ring() }
+            channel.onNote = { _ in ring() }
+            channel.connect()
+            doorbells[friend.key] = channel
+        }
+    }
+
+    private func stopListeningForFriends() {
+        doorbells.values.forEach { $0.disconnect() }
+        doorbells = [:]
+        knockedBy = nil
+    }
+
+    /// 友だちが「つなぐ」を押した。こちらもつなぐかを聞く（居場所を出すのは本人が決める）。
+    private func friendKnocked(_ friend: KnownFriend) {
+        guard group == nil, knockedBy != friend.key else { return }
+        knockedBy = friend.key
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        if UIApplication.shared.applicationState != .active {
+            NearbyAlert.notify(title: "\(friend.name)がつなごうとしています", body: "開いて「つなぐ」を押すと、お互いの居場所が見えます")
+        }
+        let alert = UIAlertController(title: "\(friend.name)がつなごうとしています",
+                                      message: "つなぐと、お互いの居場所が見えるようになります", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "あとで", style: .cancel))
+        alert.addAction(UIAlertAction(title: "つなぐ", style: .default) { [weak self] _ in
+            self?.connectToFriend(friend)
+        })
+        presentOnTop(alert)
+    }
+
     /// いまのグループが「覚えた相手と、リンク無しで作ったもの」か。
     /// 待っているあいだの言い方を変えるために見る。
     private var isFriendRoom: Bool {
@@ -5079,6 +5128,7 @@ final class MeetViewController: UIViewController {
         // グループがあるなら遠いときの層を生かす。保存の時だけでは、
         // 保存済みのグループを読み直して再開したときに起きなかった。
         if group != nil { startRemote() } else if remote != nil { stopRemote() }
+        if group == nil { listenForFriends() } else { stopListeningForFriends() }
         if let current = group, current.expires <= Date() {
             expireGroup()
             return
@@ -6231,6 +6281,8 @@ final class MeetViewController: UIViewController {
 
     @objc private func appDidEnterBackground() {
         backgroundedAt = Date()
+        // 閉じたら呼び鈴の線は iOS に切られる。開き直したときに張り直す。
+        if group == nil { stopListeningForFriends() }
         locations.pauseHeading()
         syncLiveActivity(markStale: true)
     }
