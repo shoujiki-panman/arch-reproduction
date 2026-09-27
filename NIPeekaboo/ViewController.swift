@@ -4264,7 +4264,8 @@ final class MeetViewController: UIViewController {
 
     /// 名札を渡す。つないだ直後に一度だけ。
     private func sendIdentity() {
-        guard group != nil else { return }
+        // 本物の名札を読めないあいだは渡さない（仮の名札を相手に覚えさせない）。
+        guard group != nil, !SelfIdentity.unavailable else { return }
         sentIdentity = true
         lastIdentityAt = Date()
         let card = IdentityMessage(id: SelfIdentity.publicKey, name: Self.myDisplayName,

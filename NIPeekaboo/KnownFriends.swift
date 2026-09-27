@@ -26,35 +26,60 @@ enum SelfIdentity {
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
-        cachedPublic = value
+        // 仮の名札（下の key() を参照）は覚えない。次に読めたときに本物に戻る。
+        if !unavailable { cachedPublic = value }
         return value
     }
     private static var cachedPublic: String?
     /// キーチェーンは読むのが遅い。一度読んだら覚えておく。
     private static var cachedKey: Curve25519.Signing.PrivateKey?
+    /// いま本物の名札を読めない（画面ロック中など）。このあいだは名札を相手に渡さない。
+    private(set) static var unavailable = false
+
+    /// 画面を閉じていても（再起動後に一度ロックを外していれば）読める置き方。
+    /// 以前は「ロックを外しているあいだだけ」にしていて、画面ロック中に裏で動いたときに読めず、
+    /// 新しい名札を作ってしまっていた。それを相手が覚え、2台で部屋の名前が食い違った
+    /// （9/28 実機：友だちの行の「部屋」の4文字が2台で違った）。
+    private static let accessible = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
     /// 署名にも使う秘密鍵。無ければその場で作って、以後ずっと同じものを使う。
+    /// 「無い」のではなく「いま読めない」ときは、作らない（作ると名札が変わってしまう）。
     static func key() -> Curve25519.Signing.PrivateKey {
         if let cachedKey { return cachedKey }
-        if let existing = load() {
+        switch load() {
+        case .found(let existing):
             cachedKey = existing
+            unavailable = false
+            loosenAccess()
             return existing
+        case .missing:
+            let key = Curve25519.Signing.PrivateKey()
+            let item: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecAttrAccessible as String: accessible,
+                kSecAttrSynchronizable as String: false,
+                kSecValueData as String: key.rawRepresentation,
+            ]
+            SecItemAdd(item as CFDictionary, nil)
+            cachedKey = key
+            unavailable = false
+            return key
+        case .locked:
+            // 仮の鍵で動かす（覚えない・渡さない）。部屋の名前は合わないが、名札を書き換えるよりいい。
+            unavailable = true
+            return Curve25519.Signing.PrivateKey()
         }
-        let key = Curve25519.Signing.PrivateKey()
-        let item: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            kSecAttrSynchronizable as String: false,
-            kSecValueData as String: key.rawRepresentation,
-        ]
-        SecItemAdd(item as CFDictionary, nil)
-        cachedKey = key
-        return key
     }
 
-    private static func load() -> Curve25519.Signing.PrivateKey? {
+    private enum Loaded {
+        case found(Curve25519.Signing.PrivateKey)
+        case missing
+        case locked
+    }
+
+    private static func load() -> Loaded {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -63,9 +88,21 @@ enum SelfIdentity {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return try? Curve25519.Signing.PrivateKey(rawRepresentation: data)
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return .missing }
+        guard status == errSecSuccess, let data = result as? Data,
+              let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: data) else { return .locked }
+        return .found(key)
+    }
+
+    /// 前の置き方（ロック中は読めない）で入っている名札を、ロック中も読める置き方に直す。
+    private static func loosenAccess() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemUpdate(query as CFDictionary, [kSecAttrAccessible as String: accessible] as CFDictionary)
     }
 }
 
@@ -107,7 +144,9 @@ enum KnownFriends {
     /// つないだ相手を覚える。同じ相手なら名前と日付だけ新しくする。
     static func remember(key: String, name: String) {
         guard !key.isEmpty else { return }
-        var list = all().filter { $0.key != key }
+        // 同じ名前で違う名札のものは、前に間違って覚えた名札とみなして入れ替える
+        // （その名札では部屋の名前が合わず、押しても相手に届かない）。
+        var list = all().filter { $0.key != key && $0.name != name }
         list.insert(KnownFriend(key: key, name: name, lastMet: Date()), at: 0)
         save(Array(list.prefix(10)))
     }
