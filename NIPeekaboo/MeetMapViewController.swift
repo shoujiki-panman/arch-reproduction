@@ -308,6 +308,11 @@ final class MeetMapViewController: UIViewController {
                 let p = PeerPoint(coordinate: coordinate, title: peerName)
                 map.addAnnotation(p)
                 peer = p
+                // 相手が現れた瞬間は、指で動かしたあとでも2人が入るように合わせ直す
+                // （9/28「地図を広げないと繋がらなかったり」：相手が画面の外に出たままだった）。
+                fitted = false
+                userMoved = false
+                followHeading = false
             }
         } else if let existing = peer {
             // 相手がいなくなったら点も消す。終わったあとに札だけ残ると、

@@ -2426,8 +2426,11 @@ final class MeetViewController: UIViewController {
         let channel = RemoteChannel(groupID: seed)
         channel.onFix = { [weak self] fix in
             guard let self else { return }
+            let first = self.theirFix == nil
             self.theirFix = fix
             self.locations.setPartnerDistance(self.currentMetres())
+            // 相手の最初の居場所が届いたら、こちらもすぐ返す（相手の画面にも待たずに出る）。
+            if first, CACurrentMediaTime() - self.lastPushAt > 2 { self.pushLocationIfFar() }
             self.checkWatch()
             self.remindIdentityIfNeeded()
             self.checkPeerStore()
@@ -2444,7 +2447,11 @@ final class MeetViewController: UIViewController {
         // （名札が届かず、次にリンク無しでつなげなかった原因）。
         channel.onState = { [weak self] joined in
             guard joined else { return }
-            DispatchQueue.main.async { self?.sendMyState() }
+            DispatchQueue.main.async {
+                self?.sendMyState()
+                // 部屋に入ったら、30秒の区切りを待たずに居場所をすぐ送る（つないでから見えるまでが遅かった）。
+                self?.pushLocationIfFar()
+            }
         }
         channel.connect()
         remote = channel
