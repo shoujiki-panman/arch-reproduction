@@ -536,6 +536,129 @@ enum KawasakiFire {
 
 // 警察・消防の知らせ ここまで（Foundation だけの部分）
 
+// MARK: - 近くのイベント（川崎市）
+
+/// 近くのイベント1つ（本人 9/28「イベントの情報とか面白く出て欲しい」）。
+struct LocalEvent {
+    let title: String
+    let kind: String          // 学び・講座／音楽／祭り …
+    let day: Date             // 期間の中でいちばん早い開催日
+    let timeFrom: String      // 「18:00」（無ければ空）
+    let place: String
+    let latitude: Double
+    let longitude: Double
+    let cost: String
+    let detail: String
+    let url: URL?
+}
+
+/// 川崎市「かわさきイベントアプリ」のオープンデータ（CC BY 2.1 JP、鍵いらず、場所の緯度経度つき）。
+/// https://eventapp.city.kawasaki.jp/data/api/v1/reference.html
+enum KawasakiEvents {
+    static let credit = "出典：川崎市 かわさきイベントアプリ オープンデータ（CC BY 2.1 JP）"
+
+    /// from から days 日のあいだに開かれるイベント。1ページ100件まで、3ページまで読む。
+    static func fetch(from: Date, days: Int = 7) async -> (events: [LocalEvent], ok: Bool) {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "Asia/Tokyo")
+        f.dateFormat = "yyyy-MM-dd"
+        let to = from.addingTimeInterval(TimeInterval(days - 1) * 86_400)
+        var out: [LocalEvent] = []
+        var ok = false
+        for page in 1...3 {
+            let q = "page=\(page)&format=JSON&place=1,2,3,4,5,6,7&from=\(f.string(from: from))&to=\(f.string(from: to))"
+            guard let url = URL(string: "https://eventapp.city.kawasaki.jp/data/api/v1/events?" + q),
+                  let (data, response) = try? await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 10)),
+                  (response as? HTTPURLResponse)?.statusCode == 200 else { break }
+            ok = true
+            let (events, pages) = parse(data, from: from, days: days)
+            out += events
+            if page >= pages { break }
+        }
+        return (out, ok)
+    }
+
+    /// 答え（JSON）から、期間の中に開催日があるものだけを取り出す。2つ目は全部で何ページあるか。
+    static func parse(_ data: Data, from: Date, days: Int) -> ([LocalEvent], Int) {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = root["event_data"] as? [[String: Any]] else { return ([], 0) }
+        let pages = root["total_pages"] as? Int ?? 1
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        let start = cal.startOfDay(for: from)
+        guard let end = cal.date(byAdding: .day, value: days, to: start) else { return ([], pages) }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = cal.timeZone
+        f.dateFormat = "yyyy-MM-dd"
+        let events: [LocalEvent] = list.compactMap { e in
+            guard let title = e["title"] as? String,
+                  let lat = (e["place_lat"] as? NSNumber)?.doubleValue ?? Double(e["place_lat"] as? String ?? ""),
+                  let lon = (e["place_lon"] as? NSNumber)?.doubleValue ?? Double(e["place_lon"] as? String ?? ""),
+                  let dates = e["date_list"] as? [[String: Any]] else { return nil }
+            let inRange = dates.compactMap { d -> (Date, String)? in
+                guard let s = d["date"] as? String, let day = f.date(from: s), day >= start, day < end else { return nil }
+                return (day, String((d["time_from"] as? String ?? "").prefix(5)))
+            }.sorted { $0.0 < $1.0 }
+            guard let first = inRange.first else { return nil }
+            // 「募集の申込終了」のように、もう行けないものは出さない。
+            guard !title.contains("申込終了"), !title.contains("受付終了") else { return nil }
+            let rel = (e["rel_list"] as? [[String: Any]])?.first?["rel_url"] as? String
+            let entry = (e["entry_list"] as? [[String: Any]])?.first?["entry_url"] as? String
+            let link = [e["open_url"] as? String, rel, entry].compactMap { $0 }.first { !$0.isEmpty }
+            let address = e["place_adr"] as? String ?? ""
+            let place = address.split(separator: " ").last.map(String.init) ?? address
+            return LocalEvent(title: title.replacingOccurrences(of: "\u{3000}", with: " "),
+                              kind: mainKind(e["type1"] as? String ?? ""),
+                              day: first.0, timeFrom: first.1 == "00:00" ? "" : first.1,
+                              place: place, latitude: lat, longitude: lon,
+                              cost: (e["cost_ext"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                              detail: e["content"] as? String ?? "",
+                              url: link.flatMap(URL.init(string:)))
+        }
+        return (events, pages)
+    }
+
+    /// 種類は「学び・講座,体感・体験,音楽」のように並んでくる。いちばん特徴のある1つにする（音楽や祭りを学びより先に）。
+    static func mainKind(_ list: String) -> String {
+        let kinds = list.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        let order = ["祭り", "音楽", "文化・芸術", "食", "スポーツ", "観光", "遊び", "体感・体験", "生き物", "環境・自然",
+                     "子ども・子育て", "買い物", "学び・講座"]
+        return order.first(where: kinds.contains) ?? kinds.first ?? ""
+    }
+
+    /// 「今日」「明日」「10/4(土)」。
+    static func dayText(_ day: Date, now: Date = Date()) -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        let d = cal.dateComponents([.day], from: cal.startOfDay(for: now), to: cal.startOfDay(for: day)).day ?? 0
+        if d == 0 { return "今日" }
+        if d == 1 { return "明日" }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ja_JP")
+        f.timeZone = cal.timeZone
+        f.dateFormat = "M/d(E)"
+        return f.string(from: day)
+    }
+
+    /// 種類ごとの SF Symbols。
+    static func symbol(_ kind: String) -> String {
+        switch kind {
+        case let k where k.contains("音楽"): return "music.note"
+        case let k where k.contains("祭"): return "party.popper"
+        case let k where k.contains("スポーツ"): return "figure.run"
+        case let k where k.contains("食"): return "fork.knife"
+        case let k where k.contains("子ども") || k.contains("子育て"): return "figure.2.and.child.holdinghands"
+        case let k where k.contains("文化") || k.contains("芸術"): return "paintpalette"
+        case let k where k.contains("観光"): return "camera"
+        case let k where k.contains("学び") || k.contains("講座"): return "book"
+        case let k where k.contains("自然") || k.contains("環境") || k.contains("生き物"): return "leaf"
+        default: return "calendar"
+        }
+    }
+}
+
 // MARK: - 好きなもの（話題を探す言葉）
 
 enum Favorites {
@@ -556,7 +679,7 @@ enum Favorites {
 
 final class NearbyNowViewController: UITableViewController {
 
-    private enum Section: Int, CaseIterable { case disaster, police, emergency, shelters, talk }
+    private enum Section: Int, CaseIterable { case disaster, police, emergency, shelters, events, talk }
 
     private let me: CLLocation?
     /// 避難場所を押したら、アプリの中の経路へ。
@@ -578,7 +701,11 @@ final class NearbyNowViewController: UITableViewController {
     enum Focus { case safety, talk }
     private let focus: Focus
     /// この画面に並べる区切り。
-    private var sections: [Section] { focus == .talk ? [.talk] : [.disaster, .police, .emergency, .shelters] }
+    private var sections: [Section] { focus == .talk ? [.events, .talk] : [.disaster, .police, .emergency, .shelters] }
+    /// 近くのイベント（5km以内・今日から1週間・早い順）。
+    private var events: [LocalEvent] = []
+    private var loadingEvents = true
+    private var eventsFailed = false
 
     init(me: CLLocation?, focus: Focus = .safety) {
         self.me = me
@@ -619,6 +746,20 @@ final class NearbyNowViewController: UITableViewController {
             self.shelters = await Shelters.near(me)
             self.loadingShelters = false
             self.reload(.shelters)
+        }
+        guard focus == .talk else { return }
+        Task { @MainActor in
+            let r = await KawasakiEvents.fetch(from: Date())
+            self.events = r.events.filter {
+                me.distance(from: CLLocation(latitude: $0.latitude, longitude: $0.longitude)) <= 5_000
+            }.sorted {
+                $0.day != $1.day ? $0.day < $1.day
+                    : me.distance(from: CLLocation(latitude: $0.latitude, longitude: $0.longitude))
+                        < me.distance(from: CLLocation(latitude: $1.latitude, longitude: $1.longitude))
+            }.prefix(20).map { $0 }
+            self.eventsFailed = !r.ok
+            self.loadingEvents = false
+            self.reload(.events)
         }
     }
 
@@ -668,6 +809,7 @@ final class NearbyNowViewController: UITableViewController {
         case .emergency: return "もしものとき"
         case .shelters: return "近くの避難場所（国土地理院）"
         case .talk: return "いまの話題（X・Yahoo!リアルタイム検索）"
+        case .events: return "近くのイベント（今日から1週間）"
         }
     }
 
@@ -696,6 +838,7 @@ final class NearbyNowViewController: UITableViewController {
         case .emergency: return EmergencyContact.all.count
         case .shelters: return loadingShelters || shelters.isEmpty ? 1 : shelters.count
         case .talk: return 1 + Favorites.all.count + 1
+        case .events: return loadingEvents || events.isEmpty ? 1 : events.count
         }
     }
 
@@ -781,6 +924,27 @@ final class NearbyNowViewController: UITableViewController {
                 content.imageProperties.tintColor = .systemGreen
                 cell.accessoryType = .disclosureIndicator
             }
+        case .events:
+            if loadingEvents {
+                content.text = "近くのイベントを探しています…"
+                content.textProperties.color = .secondaryLabel
+            } else if events.isEmpty {
+                content.text = eventsFailed ? "イベントを取れませんでした" : "5km以内の今週のイベントは見つかりませんでした"
+                content.secondaryText = "いまは川崎市のイベントに対応しています"
+                content.textProperties.color = .secondaryLabel
+            } else {
+                let e = events[indexPath.row]
+                let d = me.map { $0.distance(from: CLLocation(latitude: e.latitude, longitude: e.longitude)) }
+                content.text = e.title
+                content.textProperties.numberOfLines = 2
+                let when = KawasakiEvents.dayText(e.day) + (e.timeFrom.isEmpty ? "" : " \(e.timeFrom)〜")
+                content.secondaryText = [when, e.kind, d.map { NearbyAlert.text($0) }].compactMap { $0 }
+                    .filter { !$0.isEmpty }.joined(separator: "・")
+                content.image = UIImage(systemName: KawasakiEvents.symbol(e.kind))
+                // 今日のものは目立たせる。
+                content.imageProperties.tintColor = KawasakiEvents.dayText(e.day) == "今日" ? .systemPink : .systemIndigo
+                cell.accessoryType = .disclosureIndicator
+            }
         case .talk:
             let favorites = Favorites.all
             if indexPath.row == 0 {
@@ -825,6 +989,15 @@ final class NearbyNowViewController: UITableViewController {
             // 経路の通信は、閉じるのと同時に始める。
             onRoute?(item)
             dismiss(animated: true)
+        case .events:
+            guard !events.isEmpty else { return }
+            let e = events[indexPath.row]
+            let vc = LocalEventViewController(event: e)
+            vc.onRoute = { [weak self] item in
+                self?.onRoute?(item)
+                self?.dismiss(animated: true)
+            }
+            navigationController?.pushViewController(vc, animated: true)
         case .talk:
             let favorites = Favorites.all
             if indexPath.row == 0 {
@@ -902,5 +1075,80 @@ private final class PoliceMailViewController: UIViewController {
         text.textContainerInset = UIEdgeInsets(top: 16, left: 12, bottom: 24, right: 12)
         text.text = "\(item.sentAt)　\(item.sentBy)\n\n" + item.message.replacingOccurrences(of: "\r\n", with: "\n")
         view.addSubview(text)
+    }
+}
+
+// MARK: - イベントの詳しいこと
+
+/// イベント1つの詳しいこと。iOS 標準の表（insetGrouped）に、日時・場所・費用・内容を並べ、下に「経路」「公式ページ」。
+final class LocalEventViewController: UITableViewController {
+    private let event: LocalEvent
+    var onRoute: ((MKMapItem) -> Void)?
+    private var rows: [(String, String, String)] = []   // 印・見出し・中身
+
+    init(event: LocalEvent) {
+        self.event = event
+        super.init(style: .insetGrouped)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = event.kind.isEmpty ? "イベント" : event.kind
+        let when = KawasakiEvents.dayText(event.day) + (event.timeFrom.isEmpty ? "" : " \(event.timeFrom)〜")
+        rows = [("calendar", "いつ", when), ("mappin.and.ellipse", "どこ", event.place)]
+        if !event.cost.isEmpty { rows.append(("yensign.circle", "費用", event.cost)) }
+        if !event.detail.isEmpty { rows.append(("text.alignleft", "内容", event.detail)) }
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "row")
+    }
+
+    override func numberOfSections(in tableView: UITableView) -> Int { 3 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        [1, rows.count, event.url == nil ? 1 : 2][section]
+    }
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        section == 2 ? KawasakiEvents.credit : nil
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "row", for: indexPath)
+        var content = UIListContentConfiguration.subtitleCell()
+        cell.accessoryType = .none
+        switch indexPath.section {
+        case 0:
+            content.text = event.title
+            content.textProperties.font = .preferredFont(forTextStyle: .headline)
+            content.textProperties.numberOfLines = 0
+        case 1:
+            let r = rows[indexPath.row]
+            content.image = UIImage(systemName: r.0)
+            content.text = r.2
+            content.textProperties.numberOfLines = 0
+            content.secondaryText = r.1
+        default:
+            if indexPath.row == 0 {
+                content.text = "ここへの経路"
+                content.image = UIImage(systemName: "figure.walk")
+            } else {
+                content.text = "公式ページを開く"
+                content.image = UIImage(systemName: "safari")
+            }
+            content.textProperties.color = .tintColor
+        }
+        cell.contentConfiguration = content
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.section == 2 else { return }
+        if indexPath.row == 0 {
+            let item = MKMapItem(placemark: MKPlacemark(coordinate: CLLocationCoordinate2D(latitude: event.latitude,
+                                                                                            longitude: event.longitude)))
+            item.name = event.place.isEmpty ? event.title : event.place
+            onRoute?(item)
+        } else if let url = event.url {
+            present(SFSafariViewController(url: url), animated: true)
+        }
     }
 }
