@@ -3196,34 +3196,75 @@ final class MeetViewController: UIViewController {
         let raw = [intent.query, intent.placeKind, text].first { !$0.isEmpty } ?? text
         // AIが文のまま返しても、探すのは言葉だけ（「なんからーめん」→「ラーメン」）。
         let query = AskParser.searchWords(raw.replacingOccurrences(of: "いちばん近い", with: ""))
-        let finding = ui.addStep("「\(query)」を探しています")
         let resolver = PlaceResolver()
         placeResolver = resolver
         Task { @MainActor [weak self] in
-            let items = await resolver.resolve(query, near: me)
+            // 「赤坂駅付近ランチ」は、先に赤坂駅を見つけて、そのまわりで探す。
+            var center = me
+            var aroundName: String?
+            if !intent.near.isEmpty {
+                let anchoring = ui.addStep("「\(intent.near)」を探しています")
+                guard let anchor = await resolver.resolve(intent.near, near: me).first,
+                      let loc = anchor.placemark.location else {
+                    ui.finishStep(anchoring, note: "「\(intent.near)」が見つかりませんでした", failed: true)
+                    ui.finish("場所の名前を変えてみてください", ok: false)
+                    self?.placeResolver = nil
+                    return
+                }
+                ui.finishStep(anchoring, note: "「\(anchor.name ?? intent.near)」が見つかりました")
+                center = loc
+                aroundName = anchor.name ?? intent.near
+            }
+            let finding = ui.addStep(aroundName.map { "\($0)のまわりで「\(query)」を探しています" } ?? "「\(query)」を探しています")
+            let items = intent.go ? await resolver.resolve(query, near: center)
+                                  : await resolver.resolveMany(query, near: center)
             guard let self else { return }
             self.placeResolver = nil
-            guard let best = items.first, let loc = best.placemark.location else {
+            guard let best = items.first, let bestLoc = best.placemark.location else {
                 ui.finishStep(finding, note: "見つかりませんでした", failed: true)
                 ui.finish("言い方を変えてみてください", ok: false)
                 return
             }
-            ui.finishStep(finding, note: items.count == 1 ? "「\(best.name ?? "")」が見つかりました"
-                                                          : "\(items.count)件見つけました。いちばん近いのは「\(best.name ?? "")」")
-            let d = me.distance(from: loc)
-            let where_ = best.placemark.title.map { "\n\($0)" } ?? ""
-            ui.ask(title: intent.go ? "「\(best.name ?? "この場所")」へ案内しますか？" : (best.name ?? "この場所"),
-                   detail: "\(NearbyAlert.text(d))・\(NearbyAlert.walkText(d))" + where_,
-                   primary: intent.go ? "案内開始" : "経路", secondary: "地図で見る",
-                   onPrimary: { [weak self] in
-                       // 経路の通信は、閉じるのと同時に始める。
-                       self?.routeToPlace(best, startNow: intent.go)
-                       ui.dismiss(animated: true)
-                   },
-                   onSecondary: { [weak self] in
-                       ui.dismiss(animated: true)
-                       self?.presentPlace(best)
-                   })
+            // 「〇〇に案内して」は1つに決めて、すぐ案内できるように確かめる。
+            if intent.go {
+                ui.finishStep(finding, note: "「\(best.name ?? "")」が見つかりました")
+                let d = me.distance(from: bestLoc)
+                let where_ = best.placemark.title.map { "\n\($0)" } ?? ""
+                ui.ask(title: "「\(best.name ?? "この場所")」へ案内しますか？",
+                       detail: "\(NearbyAlert.text(d))・\(NearbyAlert.walkText(d))" + where_,
+                       primary: "案内開始", secondary: "地図で見る",
+                       onPrimary: { [weak self] in
+                           // 経路の通信は、閉じるのと同時に始める。
+                           self?.routeToPlace(best, startNow: true)
+                           ui.dismiss(animated: true)
+                       },
+                       onSecondary: { [weak self] in
+                           ui.dismiss(animated: true)
+                           self?.presentPlace(best)
+                       })
+                return
+            }
+            // 探しものは、Appleマップの検索結果のように候補を並べる（9/27「候補が一つだけではだめ」）。
+            ui.finishStep(finding, note: "\(items.count)件見つけました")
+            let rows = items.map { item -> (title: String, detail: String) in
+                var parts: [String] = []
+                if let kind = PlaceCardViewController.kind(item.pointOfInterestCategory) { parts.append(kind) }
+                if let loc = item.placemark.location {
+                    if let aroundName {
+                        parts.append("\(aroundName)から\(NearbyAlert.text(center.distance(from: loc)))")
+                    } else {
+                        let d = me.distance(from: loc)
+                        parts.append("\(NearbyAlert.text(d))・\(NearbyAlert.walkText(d))")
+                    }
+                }
+                return (item.name ?? "この場所", parts.joined(separator: "・"))
+            }
+            ui.choose(title: aroundName.map { "\($0)のまわりの「\(query)」" } ?? "近くの「\(query)」",
+                      rows: rows,
+                      onPick: { [weak self] i in
+                          ui.dismiss(animated: true)
+                          self?.presentPlace(items[i])
+                      })
         }
     }
 

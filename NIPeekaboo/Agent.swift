@@ -28,6 +28,8 @@ struct AskIntent: Sendable {
     var query: String = ""
     /// 「〇〇に案内して」のように、そこへ行きたいと言っている。見つけたら案内開始を勧める。
     var go: Bool = false
+    /// 「赤坂駅付近ランチ」の「赤坂駅」。ここのまわりで query を探す（空なら自分のまわり）。
+    var near: String = ""
 }
 
 enum AskParser {
@@ -42,6 +44,11 @@ enum AskParser {
         // 「ラゾーナに案内して」「〇〇まで行きたい」も言葉で決める（AIは「連れてって」を
         // 「会う」と取り違えた）。
         if rule.go { return (rule, false) }
+        // 「赤坂駅付近ランチ」「渋谷でラーメン」は、場所とそのまわりで探すものに分けて言葉で決める。
+        // 文のまま探して、18km先の「四ツ谷駅 赤坂口改札内の充電スポット」を出していた（9/27 実機）。
+        if rule.kind == .place, let a = anchored(text) {
+            return (AskIntent(kind: .place, query: a.what, near: a.near), false)
+        }
         // 「近くのカフェ」「いちばん近い駅」も言葉で決める（AIは「いちばん近い駅」を
         // 相手への行き方と取り違えた）。
         if rule.kind == .place, nearbyMarkers.contains(where: { text.contains($0) }) { return (rule, false) }
@@ -174,6 +181,42 @@ enum AskParser {
         // ひらがなで打った種類の言葉は、カタカナでも見る（「らーめん」→「ラーメン」）。
         if let kata = t.applyingTransform(.hiraganaToKatakana, reverse: false), kata != t, isGeneric(kata) { t = kata }
         return t.isEmpty ? raw : t
+    }
+
+    /// 「赤坂駅付近ランチ」→（赤坂駅, ランチ）、「渋谷でラーメン食べたい」→（渋谷, ラーメン）。
+    /// 場所の名前と、そのまわりで探すものに分ける。分けられなければ nil。
+    static func anchored(_ raw: String) -> (near: String, what: String)? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // ①「〜付近」「〜の近く」「〜周辺」のように、まわりを表す言葉がはっきりあるとき。
+        let around = "^(.+?)(の近く|の近所|付近|周辺|のそば|の周り|のまわり|のあたり|あたり|辺り|の辺)(の|で|に|にある)?(.+)$"
+        if let m = match(around, text), !m[0].isEmpty {
+            let what = searchWords(m[3])
+            let place = m[0].trimmingCharacters(in: .whitespaces)
+            // 1文字（「この辺」の「こ」）は場所の名前ではない。
+            if !what.isEmpty, place.count >= 2, !isFiller(place) { return (place, what) }
+        }
+        // ②「渋谷でラーメン」「赤坂駅のカフェ」。後ろが種類の言葉のときだけ（「はなと中間で会う」を取り違えない）。
+        if let m = match("^(.+?)(で|の)(.+)$", text) {
+            let place = m[0].trimmingCharacters(in: .whitespaces)
+            let what = searchWords(m[2])
+            if place.count >= 2, !isFiller(place), !isGeneric(place), isGeneric(what) { return (place, what) }
+        }
+        return nil
+    }
+
+    /// 「近く」「この辺」のように、場所の名前ではない言葉。
+    private static func isFiller(_ word: String) -> Bool {
+        ["近く", "この辺", "この近く", "近所", "いちばん近い", "一番近い", "最寄り", "ここ", "いま", "今"]
+            .contains(word) || leadFillers.contains(word)
+    }
+
+    /// 正規表現に当てて、かっこの中身を順に返す（当たらなければ nil）。
+    private static func match(_ pattern: String, _ text: String) -> [String]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let m = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return nil }
+        return (1..<m.numberOfRanges).map { i in
+            Range(m.range(at: i), in: text).map { String(text[$0]) } ?? ""
+        }
     }
 
     private static let tailPattern =
@@ -397,6 +440,27 @@ final class PlaceResolver: NSObject, MKLocalSearchCompleterDelegate {
         return await nearest(query, near: me)
     }
 
+    /// 候補をいくつか（Appleマップの検索結果のように）。center のまわりで探し、近い順。
+    /// 種類の言葉（ラーメン・カフェ）は近い順にそのまま。名前（スタバ・ラゾーナ）は、
+    /// いちばん当てはまる1つを先頭に、同じ言葉で見つかったほかの場所を後ろに足す。
+    func resolveMany(_ query: String, near center: CLLocation, limit: Int = 5) async -> [MKMapItem] {
+        // まわりで探した結果でも、5kmより遠いものは並べない（51km先のうどん屋が出ていた）。
+        let around = await nearest(query, near: center).filter {
+            ($0.placemark.location?.distance(from: center) ?? .greatestFiniteMagnitude) <= 5_000
+        }
+        if AskParser.isGeneric(query) { return Array(around.prefix(limit)) }
+        let best = await resolve(query, near: center)
+        var out = best
+        for item in around where out.count < limit {
+            let dup = out.contains { a in
+                guard let p = a.placemark.location, let q = item.placemark.location else { return false }
+                return p.distance(from: q) < 50 || a.name == item.name
+            }
+            if !dup { out.append(item) }
+        }
+        return out
+    }
+
     private func nearest(_ query: String, near me: CLLocation) async -> [MKMapItem] {
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = query
@@ -518,6 +582,11 @@ final class AskRun {
     func finish(_ text: String, ok: Bool = true) {
         guard isLive else { return }
         ui?.finish(text, ok: ok)
+    }
+
+    func choose(title: String, rows: [(title: String, detail: String)], onPick: @escaping (Int) -> Void) {
+        guard isLive else { return }
+        ui?.choose(title: title, rows: rows, onPick: onPick)
     }
 
     func dismiss(animated: Bool, completion: (() -> Void)? = nil) {
@@ -851,6 +920,51 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         }
         card.setCustomSpacing(12, after: card.arrangedSubviews.last!)
         card.addArrangedSubview(row)
+        card.alpha = 0
+        card.isHidden = false
+        UIView.animate(withDuration: 0.25) { self.card.alpha = 1 }
+    }
+
+    /// 候補の一覧（Appleマップの検索結果と同じく、名前と「種類・距離」を1行ずつ）。押すとその場所の札へ。
+    func choose(title: String, rows: [(title: String, detail: String)], onPick: @escaping (Int) -> Void) {
+        stopButton.isHidden = true
+        orb.setThinking(false)
+        card.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let t = UILabel()
+        t.font = Type.font(17, .bold, .headline)
+        t.textColor = MeetPalette.primary
+        t.numberOfLines = 0
+        t.text = title
+        card.addArrangedSubview(t)
+        for (i, row) in rows.enumerated() {
+            var conf = UIButton.Configuration.plain()
+            conf.title = row.title
+            conf.subtitle = row.detail
+            conf.image = UIImage(systemName: "chevron.right",
+                                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+            conf.imagePlacement = .trailing
+            conf.baseForegroundColor = MeetPalette.primary
+            conf.imageColorTransformer = UIConfigurationColorTransformer { _ in MeetPalette.secondary }
+            conf.titleAlignment = .leading
+            conf.titleLineBreakMode = .byTruncatingTail
+            conf.subtitleLineBreakMode = .byTruncatingTail
+            conf.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 0, bottom: 10, trailing: 0)
+            conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                var a = attrs
+                a.font = Type.font(16, .semibold, .body)
+                return a
+            }
+            conf.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                var a = attrs
+                a.font = Type.caption
+                a.foregroundColor = MeetPalette.secondary
+                return a
+            }
+            let b = UIButton(configuration: conf)
+            b.contentHorizontalAlignment = .fill
+            b.addAction(UIAction { _ in onPick(i) }, for: .touchUpInside)
+            card.addArrangedSubview(b)
+        }
         card.alpha = 0
         card.isHidden = false
         UIView.animate(withDuration: 0.25) { self.card.alpha = 1 }
