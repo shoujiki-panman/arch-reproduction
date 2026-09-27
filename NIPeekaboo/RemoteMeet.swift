@@ -213,11 +213,29 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
         manager.activityType = .fitness
     }
 
-    /// 案内中だけ細かく取る（曲がり角の手前で知らせるため）。ふだんは10m単位で十分。
+    /// 案内中だけ細かく取る（曲がり角の手前で知らせるため）。
+    private var navigating = false
+    private var partnerMetres: Double?
+
     func setPrecise(_ on: Bool) {
-        manager.desiredAccuracy = on ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
-        manager.distanceFilter = on ? 2 : 5
+        navigating = on
+        applyPlan()
     }
+
+    /// 相手までの距離を知らせる。遠いあいだは粗く・間をあけて取り、電池を持たせる。
+    func setPartnerDistance(_ metres: Double?) {
+        partnerMetres = metres
+        applyPlan()
+    }
+
+    private func applyPlan() {
+        let plan = LocationPlan.settings(partnerMetres: partnerMetres, navigating: navigating)
+        if manager.desiredAccuracy != plan.accuracy { manager.desiredAccuracy = plan.accuracy }
+        if manager.distanceFilter != plan.filter { manager.distanceFilter = plan.filter }
+    }
+
+    /// 位置を取り始めた時刻（最初の1分は、誤差の大きい位置でも待ちすぎない）。
+    private var startedAt = Date()
 
     /// 共有しているあいだだけ true。画面を閉じても位置を取り続けるのはこの間だけ。
     private var sharing = false
@@ -225,6 +243,7 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
     /// 共有を始める。設定しだいで、画面を閉じていても取り続ける。
     func start() {
         sharing = true
+        startedAt = Date()
         if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
         applyBackground()
         manager.startUpdatingLocation()
@@ -235,6 +254,7 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
     /// 背景での取得は切るので、閉じればiOSが止める。どこにも送らない。
     func startForeground() {
         sharing = false
+        startedAt = Date()
         if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
         manager.allowsBackgroundLocationUpdates = false
         manager.startUpdatingLocation()
@@ -252,7 +272,8 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
     /// シミュレータには磁石が無いので、ここは何も返さない。
     func startHeading() {
         guard CLLocationManager.headingAvailable() else { return }
-        manager.headingFilter = 2
+        // 2度ごとだと、手に持っているだけで1秒に何十回も届く。5度で十分（電池）。
+        manager.headingFilter = 5
         manager.headingOrientation = .portrait
         manager.startUpdatingHeading()
     }
@@ -294,7 +315,7 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
     }
 
     func locationManager(_ m: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let l = locations.last else { return }
+        guard let l = locations.last(where: { LocationPlan.usable($0, last: last, startedAt: startedAt) }) else { return }
         last = l
         onFix?(l)
     }
@@ -325,5 +346,31 @@ struct MeetDistance {
                                 accuracy: max(mine.horizontalAccuracy, theirs.acc))
         }
         return nil
+    }
+}
+
+/// 位置の取り方と、使ってよい位置の見分け方（ここだけは画面と切り離して確かめられるようにしておく）。
+enum LocationPlan {
+    /// 使ってよい位置か。
+    /// iOSは取り始めた直後に「前に取った古い位置」を先に渡すことがある（Appleの説明書にある）。
+    /// 古い位置や誤差の大きい位置を相手に送ると、相手の地図で大きくずれる（9/27 本人「相手との位置が大きくズレる」）。
+    static func usable(_ new: CLLocation, last: CLLocation?, startedAt: Date, now: Date = Date()) -> Bool {
+        guard new.horizontalAccuracy >= 0 else { return false }                 // 無効な位置
+        guard now.timeIntervalSince(new.timestamp) <= 15 else { return false }   // 古い（取り置き）
+        if new.horizontalAccuracy <= 100 { return true }
+        // 誤差が大きくても、ましな位置が1分以上来ていなければ使う（屋内で止まって見えるよりはいい）。
+        if let last { return new.timestamp.timeIntervalSince(last.timestamp) > 60 }
+        return now.timeIntervalSince(startedAt) > 20
+    }
+
+    /// 相手までの距離で、どれだけ細かく・どれだけ動いたら取るかを変える。
+    /// 遠いあいだに10m単位で取り続けても、相手の画面ではほとんど変わらない（電池だけ減る）。
+    static func settings(partnerMetres: Double?, navigating: Bool)
+        -> (accuracy: CLLocationAccuracy, filter: CLLocationDistance) {
+        if navigating { return (kCLLocationAccuracyBest, 2) }
+        guard let d = partnerMetres else { return (kCLLocationAccuracyNearestTenMeters, 10) }
+        if d < 300 { return (kCLLocationAccuracyNearestTenMeters, 5) }
+        if d < 2_000 { return (kCLLocationAccuracyNearestTenMeters, 15) }
+        return (kCLLocationAccuracyHundredMeters, 50)
     }
 }

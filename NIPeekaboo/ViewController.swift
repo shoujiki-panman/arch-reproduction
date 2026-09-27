@@ -2208,6 +2208,10 @@ final class MeetViewController: UIViewController {
     /// Timers stop in the background, so the expiry is checked on the way back.
     @objc private func appWillEnterForeground() {
         mapFloor?.followSystemAppearance()
+        // しばらく閉じていたら、地図を「いまの2人」に合わせ直す。指で動かしたあとは合わせ直さない
+        // 決まりのせいで、朝の八丁畷のまま赤坂で開いていた（9/27「開くと今と違うエリアに飛ばされる」）。
+        if let away = backgroundedAt, Date().timeIntervalSince(away) > 120 { mapFloor?.refit() }
+        backgroundedAt = nil
         locations.startHeading()
         expireGroup()
         refreshDials()
@@ -2356,6 +2360,7 @@ final class MeetViewController: UIViewController {
         channel.onFix = { [weak self] fix in
             guard let self else { return }
             self.theirFix = fix
+            self.locations.setPartnerDistance(self.currentMetres())
             self.remindIdentityIfNeeded()
             self.checkPeerStore()
             self.updateNearbyAlert()
@@ -2382,6 +2387,7 @@ final class MeetViewController: UIViewController {
             self?.updateNavFacing()
         }
         locations.onFix = { [weak self] _ in
+            self?.locations.setPartnerDistance(self?.currentMetres())
             self?.pushLocationIfFar()
             self?.pushToMap()
             self?.refreshMapFloor()
@@ -2391,9 +2397,12 @@ final class MeetViewController: UIViewController {
             self?.stepNavigation()
         }
         locations.start()
-        // 立ち止まっていても相手の画面が止まらないよう、定期的にも送る
-        remotePush = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
-            self?.pushLocationIfFar()
+        // 立ち止まっていても相手の画面で「いま」のままでいるよう、30秒に1回だけ送り直す。
+        // 以前は4秒おきに送っていて、止まっているあいだも電波を使い続けていた（9/27「電池を食い過ぎ」）。
+        // 動いたときは、位置が届いたその場で送る（上の onFix）。
+        remotePush = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            guard let self, CACurrentMediaTime() - self.lastPushAt > 25 else { return }
+            self.pushLocationIfFar()
         }
     }
 
@@ -2409,6 +2418,7 @@ final class MeetViewController: UIViewController {
     /// 完全に止めると、電波の値が現実と食い違っていても気づけない
     /// （シミュレータで実際に起きた: 6km離れているのに電波は0.04mを返し続けた）。
     private var lastSlowPush = CFTimeInterval(0)
+    private var lastPushAt = CFTimeInterval(0)
     private func pushLocationIfFar() {
         guard let l = locations.last, let channel = remote else { return }
         let radioFresh = latestDistance != nil && CACurrentMediaTime() - lastDistanceAt < 3
@@ -2416,6 +2426,7 @@ final class MeetViewController: UIViewController {
             guard CACurrentMediaTime() - lastSlowPush > 10 else { return }
             lastSlowPush = CACurrentMediaTime()
         }
+        lastPushAt = CACurrentMediaTime()
         channel.send(l)
     }
 
@@ -3242,8 +3253,13 @@ final class MeetViewController: UIViewController {
         checkDisasters()
     }
 
+    private var lastDisasterCheck = Date.distantPast
     private func checkDisasters() {
         guard let me = locations.last else { return }
+        // 画面を閉じて共有しているあいだは、10分に1回に落とす（3分おきの通信と住所引きで電池を食う）。
+        if UIApplication.shared.applicationState != .active,
+           Date().timeIntervalSince(lastDisasterCheck) < 600 { return }
+        lastDisasterCheck = Date()
         Task { @MainActor [weak self] in
             guard let w = await WhereaboutsFinder.find(me) else { return }
             async let q = JMA.quakes(prefCode: w.code, prefName: w.prefecture, hours: 0.5)
@@ -5832,7 +5848,11 @@ final class MeetViewController: UIViewController {
         }
     }
 
+    /// 画面を閉じた時刻（開き直したときに、地図を合わせ直すかを決める）。
+    private var backgroundedAt: Date?
+
     @objc private func appDidEnterBackground() {
+        backgroundedAt = Date()
         locations.pauseHeading()
         syncLiveActivity(markStale: true)
     }
