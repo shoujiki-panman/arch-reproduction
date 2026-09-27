@@ -130,20 +130,34 @@ enum KnownFriends {
     /// 画面の更新のたびに呼ばれるので、ファイルは最初の一度だけ読み、あとは覚えておく（書くときに入れ替える）。
     static func all() -> [KnownFriend] {
         if let cache { return cache }
-        guard let url, let data = try? Data(contentsOf: url),
-              let list = try? JSONDecoder().decode([KnownFriend].self, from: data) else {
+        guard let url else { return [] }
+        // ファイルが無いのは「まだ誰も覚えていない」。覚えておいてよい。
+        guard FileManager.default.fileExists(atPath: url.path) else {
             cache = []
             return []
         }
+        // あるのに読めないのは、画面ロック中などで「いま読めない」だけ。空だと覚えてはいけない
+        // （9/28「友達がいなくなった」：ロック中に裏で起きたとき空を覚え、そのまま一覧が消えていた）。
+        guard let data = try? Data(contentsOf: url),
+              let list = try? JSONDecoder().decode([KnownFriend].self, from: data) else { return [] }
         let sorted = list.sorted { $0.lastMet > $1.lastMet }
         cache = sorted
+        // 前の置き方（ロック中は読めない）のファイルを、読めたときに直しておく。
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                                               ofItemAtPath: url.path)
         return sorted
     }
     private static var cache: [KnownFriend]?
 
+    /// いま一覧を読めているか（読めないまま書くと、覚えていた友だちを消してしまう）。
+    private static var readable: Bool {
+        _ = all()
+        return cache != nil
+    }
+
     /// つないだ相手を覚える。同じ相手なら名前と日付だけ新しくする。
     static func remember(key: String, name: String) {
-        guard !key.isEmpty else { return }
+        guard !key.isEmpty, readable else { return }
         // 同じ名前で違う名札のものは、前に間違って覚えた名札とみなして入れ替える
         // （その名札では部屋の名前が合わず、押しても相手に届かない）。
         var list = all().filter { $0.key != key && $0.name != name }
@@ -152,13 +166,15 @@ enum KnownFriends {
     }
 
     static func forget(key: String) {
+        guard readable else { return }
         save(all().filter { $0.key != key })
     }
 
     private static func save(_ list: [KnownFriend]) {
         cache = list.sorted { $0.lastMet > $1.lastMet }
         guard let url, let data = try? JSONEncoder().encode(list) else { return }
-        try? data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+        // 画面ロック中でも読めるように（再起動後に一度ロックを外していれば）。名札と同じ考え方。
+        try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         var target = url
