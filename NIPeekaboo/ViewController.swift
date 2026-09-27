@@ -1551,6 +1551,16 @@ final class MeetViewController: UIViewController {
                 print("CAPS os=\(UIDevice.current.systemVersion) preciseDistance=\(c.supportsPreciseDistanceMeasurement) direction=\(c.supportsDirectionMeasurement) cameraAssist=\(c.supportsCameraAssistance)")
             }
         }
+        #if DEBUG
+        // 呼び鈴の確かめ用：この端末の名札（公開鍵）と、友だちごとの部屋名の頭を出す。
+        if args.contains("-printIdentity") {
+            let me = SelfIdentity.publicKey
+            print("IDENTITY \(me)")
+            for f in KnownFriends.all() {
+                print("FRIEND \(f.name) key=\(f.key.prefix(12)) room=\(KnownFriends.pairSecret(mine: me, theirs: f.key).prefix(8))")
+            }
+        }
+        #endif
         if args.contains("-previewLog") {
             // What the accessibility settings actually report to us, so a claim
             // about reduced motion can be checked rather than assumed.
@@ -3834,9 +3844,15 @@ final class MeetViewController: UIViewController {
         var waitingLine: String?
         var friends: [HomeSheetView.Friend] = []
         if group == nil {
-            friends = known.map { .init(name: $0.name, face: nil, waiting: false) }
+            let me = SelfIdentity.publicKey
+            friends = known.map { .init(name: $0.name, face: nil, waiting: false,
+                                        room: String(KnownFriends.pairSecret(mine: me, theirs: $0.key).prefix(4))) }
         } else if isFriendRoom {
-            friends = known.filter { $0.key == peerIdentity }.map { .init(name: $0.name, face: nil, waiting: true) }
+            let me = SelfIdentity.publicKey
+            friends = known.filter { $0.key == peerIdentity }.map {
+                .init(name: $0.name, face: nil, waiting: true,
+                      room: String(KnownFriends.pairSecret(mine: me, theirs: $0.key).prefix(4)))
+            }
         } else {
             waitingLine = awaitingApproval ? "ホストの許可を待っています"
                 : "リンクを開いた人が入ると、ここに出ます"

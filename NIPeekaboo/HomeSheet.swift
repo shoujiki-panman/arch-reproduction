@@ -99,6 +99,8 @@ final class HomeSheetView: UIView {
         var face: UIImage?
         /// 自分はもう押した。相手が押すのを待っている。
         var waiting: Bool
+        /// 2人の部屋の合言葉の頭4文字（確かめ用。2台で同じなら同じ部屋に入れる）。
+        var room: String = ""
     }
 
     enum Mode {
@@ -528,6 +530,14 @@ final class HomeSheetView: UIView {
         name.text = friend.name
         let texts = UIStackView(arrangedSubviews: [name])
         texts.axis = .vertical
+        if !friend.room.isEmpty {
+            // 呼び鈴が届かない原因を確かめるための一時的な表示（9/28）。2台で同じ文字なら同じ部屋。
+            let code = UILabel()
+            code.font = Type.caption
+            code.textColor = MeetPalette.secondary
+            code.text = "部屋 \(friend.room)"
+            texts.addArrangedSubview(code)
+        }
         if friend.waiting {
             let wait = UILabel()
             wait.font = Type.caption
