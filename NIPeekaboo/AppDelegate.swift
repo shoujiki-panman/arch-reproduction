@@ -16,8 +16,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         // 知らせの「合図する」を受けるには、起動が終わる前に名乗っておく必要がある。
         UNUserNotificationCenter.current().delegate = self
         NearbyAlert.registerCategory()
+        // 閉じていても届く呼び鈴のために、通知の宛先をもらう（許可のダイアログは近くの知らせと同じもの）。
+        application.registerForRemoteNotifications()
         return true
     }
+
+    func application(_ application: UIApplication,
+                     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        PushKnock.save(token: deviceToken)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {}
 
     func application(_ application: UIApplication, configurationForConnecting
                      connectingSceneSession: UISceneSession,
@@ -43,6 +52,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         if response.actionIdentifier == NearbyAlert.pingAction {
             NearbyAlert.pendingPing = true
             NotificationCenter.default.post(name: .kokodayoPingRequested, object: nil)
+        }
+        // 呼び鈴（友だちが「つなぐ」を押した）の通知から開いた。画面ができてから渡す。
+        if let key = response.notification.request.content.userInfo["knock"] as? String {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                NotificationCenter.default.post(name: .kokodayoKnock, object: key)
+            }
         }
         completionHandler()
     }

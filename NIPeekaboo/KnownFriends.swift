@@ -112,6 +112,10 @@ struct KnownFriend: Codable, Equatable {
     var name: String
     /// 最後につないだ日。並べ替えと、古いものを落とすためだけに使う。
     var lastMet: Date
+    /// 相手の iPhone の通知の宛先（Apple のプッシュ通知）と、その環境（sandbox / production）。
+    /// 閉じている相手にも「つなごうとしています」を届けるため。部屋の中で暗号にして受け取ったもの。
+    var push: String? = nil
+    var pushEnv: String? = nil
 
     static func == (a: KnownFriend, b: KnownFriend) -> Bool { a.key == b.key }
 }
@@ -156,12 +160,14 @@ enum KnownFriends {
     }
 
     /// つないだ相手を覚える。同じ相手なら名前と日付だけ新しくする。
-    static func remember(key: String, name: String) {
+    static func remember(key: String, name: String, push: String? = nil, pushEnv: String? = nil) {
         guard !key.isEmpty, readable else { return }
+        let before = all().first { $0.key == key }
         // 同じ名前で違う名札のものは、前に間違って覚えた名札とみなして入れ替える
         // （その名札では部屋の名前が合わず、押しても相手に届かない）。
         var list = all().filter { $0.key != key && $0.name != name }
-        list.insert(KnownFriend(key: key, name: name, lastMet: Date()), at: 0)
+        list.insert(KnownFriend(key: key, name: name, lastMet: Date(),
+                                push: push ?? before?.push, pushEnv: pushEnv ?? before?.pushEnv), at: 0)
         // 何人でも覚えておく。消えるのは、本人が消したときだけ（本人 9/28「どちらかが削除しない限り消えないように」）。
         save(list)
     }
@@ -199,4 +205,49 @@ enum KnownFriends {
         return value
     }
     private static var pairMemo: [String: String] = [:]
+}
+
+// MARK: - 閉じていても届く呼び鈴（Apple のプッシュ通知）
+
+/// 友だちが「つなぐ」を押したとき、相手のアプリが閉じていても知らせる（9/28 本人が「Aのあとで B」を選んだ）。
+/// 宛先（device token）は友だちとの部屋の中で暗号にして渡し、送るのは Supabase の関数（knock）から Apple へ。
+/// 中継に渡るのは宛先と「名前」だけで、居場所は渡らない。
+enum PushKnock {
+    private static let tokenKey = "kokodayo.pushToken"
+    private static let endpoint = URL(string: "https://dmewybltarntlapasoiz.supabase.co/functions/v1/knock")!
+    private static let apiKey = "sb_publishable_iT6waNVeHj-Kb0Rp_Ux90w_1VCCk-WK"
+
+    static var myToken: String? { UserDefaults.standard.string(forKey: tokenKey) }
+
+    static func save(token: Data) {
+        UserDefaults.standard.set(token.map { String(format: "%02x", $0) }.joined(), forKey: tokenKey)
+    }
+
+    /// 開発用の署名で入れたアプリは sandbox、App Store / TestFlight は production。
+    /// 入っている配布用ファイル（embedded.mobileprovision）の中の aps-environment で見分ける。
+    static let environment: String = {
+        guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision"),
+              let data = FileManager.default.contents(atPath: path),
+              let text = String(data: data, encoding: .isoLatin1) else { return "production" }
+        guard let r = text.range(of: "<key>aps-environment</key>") else { return "production" }
+        return text[r.upperBound...].prefix(80).contains("development") ? "sandbox" : "production"
+    }()
+
+    /// 相手に「〇〇がつなごうとしています」を送る。宛先を知らなければ何もしない（アプリを開いていれば呼び鈴Aで届く）。
+    static func ring(_ friend: KnownFriend, from me: String, name: String) async {
+        guard let to = friend.push else { return }
+        var request = URLRequest(url: endpoint, timeoutInterval: 10)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let body: [String: String] = ["to": to, "env": friend.pushEnv ?? "production", "from": me, "name": name]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        _ = try? await URLSession.shared.data(for: request)
+    }
+}
+
+extension Notification.Name {
+    /// 呼び鈴の通知が押された（object に相手の名札）。
+    static let kokodayoKnock = Notification.Name("kokodayo.knock")
 }

@@ -178,11 +178,16 @@ struct IdentityMessage: Codable {
     /// まだ相手の名札を持っていない、という合図。持っている側は返さない。
     /// これが無いと、先に部屋に居た側の名乗りが誰にも聞かれずに終わる。
     var wants: Bool = false
+    /// 閉じていても届く呼び鈴のための、通知の宛先とその環境（無い端末もある）。
+    var push: String?
+    var env: String?
 
-    init(id: String, name: String, wants: Bool) {
+    init(id: String, name: String, wants: Bool, push: String? = nil, env: String? = nil) {
         self.id = id
         self.name = name
         self.wants = wants
+        self.push = push
+        self.env = env
     }
 
     init(from decoder: Decoder) throws {
@@ -191,6 +196,8 @@ struct IdentityMessage: Codable {
         id = try c.decode(String.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
         wants = try c.decodeIfPresent(Bool.self, forKey: .wants) ?? false
+        push = try c.decodeIfPresent(String.self, forKey: .push)
+        env = try c.decodeIfPresent(String.self, forKey: .env)
     }
 }
 
@@ -1503,6 +1510,8 @@ final class MeetViewController: UIViewController {
         // 起こされたときは2つめが拾う（画面より先にボタンが押されている）。
         NotificationCenter.default.addObserver(self, selector: #selector(pingFromNotification),
                                                name: .kokodayoPingRequested, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(knockFromNotification(_:)),
+                                               name: .kokodayoKnock, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(pingFromNotification),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
         refreshDials()
@@ -2350,6 +2359,9 @@ final class MeetViewController: UIViewController {
         if supportsUWB { startup() }
         refreshDials()
         flash("\(friend.name)とつなぎました")
+        // 相手のアプリが閉じていても届くように、Apple のプッシュ通知でも知らせる。
+        let myName = Self.myDisplayName
+        Task { await PushKnock.ring(friend, from: me, name: myName) }
     }
 
     // MARK: - 友だちの呼び鈴
@@ -2383,6 +2395,14 @@ final class MeetViewController: UIViewController {
         doorbells.values.forEach { $0.disconnect() }
         doorbells = [:]
         knockedBy = nil
+    }
+
+    /// 呼び鈴の通知を押して開いた。その友だちとつなぐかを聞く。
+    @objc private func knockFromNotification(_ note: Notification) {
+        guard let key = note.object as? String,
+              let friend = KnownFriends.all().first(where: { $0.key == key }) else { return }
+        knockedBy = nil
+        friendKnocked(friend)
     }
 
     /// 友だちが「つなぐ」を押した。こちらもつなぐかを聞く（居場所を出すのは本人が決める）。
@@ -3998,7 +4018,7 @@ final class MeetViewController: UIViewController {
             guard !theirID.isEmpty, theirID != SelfIdentity.publicKey else { return }
             peerIdentity = theirID
             // 覚えるのは名札と名前だけ。居場所も、会った場所も残さない。
-            KnownFriends.remember(key: theirID, name: personName(card.name))
+            KnownFriends.remember(key: theirID, name: personName(card.name), push: card.push, pushEnv: card.env)
             refreshFriends()
             // 「まだ持っていない」と言われた時だけ返す。これで往復は1回で終わる。
             if card.wants { sendIdentity() }
@@ -4280,7 +4300,8 @@ final class MeetViewController: UIViewController {
         sentIdentity = true
         lastIdentityAt = Date()
         let card = IdentityMessage(id: SelfIdentity.publicKey, name: Self.myDisplayName,
-                                   wants: peerIdentity == nil)
+                                   wants: peerIdentity == nil,
+                                   push: PushKnock.myToken, env: PushKnock.environment)
         guard let data = try? JSONEncoder().encode(card) else { return }
         sendToPartner(data)
     }
