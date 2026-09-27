@@ -550,6 +550,8 @@ struct LocalEvent {
     let cost: String
     let detail: String
     let url: URL?
+    /// 出典（CC BY の決まりで、使ったデータの出どころを画面に出す）。出どころが川崎市と東京都で分かれるので1件ずつ持つ。
+    let credit: String
 }
 
 /// 川崎市「かわさきイベントアプリ」のオープンデータ（CC BY 2.1 JP、鍵いらず、場所の緯度経度つき）。
@@ -615,7 +617,8 @@ enum KawasakiEvents {
                               place: place, latitude: lat, longitude: lon,
                               cost: (e["cost_ext"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
                               detail: e["content"] as? String ?? "",
-                              url: link.flatMap(URL.init(string:)))
+                              url: link.flatMap(URL.init(string:)),
+                              credit: credit)
         }
         return (events, pages)
     }
@@ -656,6 +659,228 @@ enum KawasakiEvents {
         case let k where k.contains("自然") || k.contains("環境") || k.contains("生き物"): return "leaf"
         default: return "calendar"
         }
+    }
+}
+
+// MARK: - 近くのイベント（東京都）
+
+/// 東京都のイベント（本人 9/28、川崎市に続いて東京でも出したい）。
+///
+/// 2026-09-28 に東京都オープンデータ API カタログ（spec.api.metro.tokyo.lg.jp）と
+/// カタログサイト（catalog.data.metro.tokyo.lg.jp の CKAN）で「イベント」を調べた結果:
+///  - 区市町村の「イベント一覧」（自治体標準オープンデータセット）は、API にあるものがどれも古く、
+///    今日から1週間の催しが1件も無かった（いちばん新しい江東区でも 2026-03-29 開始が最後、板橋区は 2026-03-15）。
+///    千代田区・渋谷区・品川区・大田区は、そもそもイベント一覧を出していなかった。
+///  - いま使えるのは次の2つだけだった。どちらも CSV で、同じ URL の中身が差し替わる（API の apiId は
+///    差し替えのたびに新しくなる。ビッグサイトの 2023年7〜9月の apiId が古い中身のまま残っていたのを確かめた）。
+///    ・港区イベント情報（港区のオープンデータサイト、2026-09-02 更新、277件、今日から1週間に32件）。
+///      ただし緯度経度が入っているのは 277件中3件だけ。場所の分からないものは地図の距離で絞れないので出さない。
+///    ・東京ビッグサイトのイベント情報（2026-08-26 更新、9〜11月の154件、今日から1週間に10件）。
+///      会場は1つなので、国土地理院の住所検索で「江東区有明三丁目11-1」を引いた位置を使う。
+enum TokyoEvents {
+    enum Source: CaseIterable {
+        case minato, bigSight
+
+        var name: String {
+            switch self {
+            case .minato: return "港区"
+            case .bigSight: return "東京ビッグサイト"
+            }
+        }
+
+        var url: URL {
+            switch self {
+            case .minato:
+                return URL(string: "https://opendata.city.minato.tokyo.jp/dataset/abb98f48-76fb-4013-9d7e-d3028830e7f2/resource/53b60f4a-f39e-41f2-b7a6-41f5c7ab23d3/download/minatokueventjoho.csv")!
+            case .bigSight:
+                return URL(string: "https://www.opendata.metro.tokyo.lg.jp/tokyobigsight/tokyobigsighteventinformation.csv")!
+            }
+        }
+
+        /// どちらも CC BY（港区はカタログの表示が「CC BY」で版の記載なし、ビッグサイトは CC BY 4.0）。
+        var credit: String {
+            switch self {
+            case .minato: return "出典：港区 港区イベント情報 オープンデータ（CC BY）"
+            case .bigSight: return "出典：株式会社東京ビッグサイト 東京ビッグサイトのイベント情報（東京都オープンデータカタログ、CC BY 4.0）"
+            }
+        }
+
+        /// 港区は UTF-8（先頭に BOM）、ビッグサイトは Shift_JIS（Windows の文字）だった。
+        func text(_ data: Data) -> String? {
+            switch self {
+            case .minato: return String(data: data, encoding: .utf8)
+            case .bigSight:
+                let cp932 = CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.dosJapanese.rawValue))
+                return String(data: data, encoding: String.Encoding(rawValue: cp932))
+            }
+        }
+
+        func parse(_ data: Data, from: Date, days: Int) -> [LocalEvent] {
+            guard let text = text(data) else { return [] }
+            let table = TokyoEvents.records(TokyoEvents.csv(text))
+            switch self {
+            case .minato: return TokyoEvents.minato(table, from: from, days: days, credit: credit)
+            case .bigSight: return TokyoEvents.bigSight(table, from: from, days: days, credit: credit)
+            }
+        }
+    }
+
+    /// 東京ビッグサイトの位置（国土地理院 住所検索「東京都江東区有明三丁目１１番１号」、2026-09-28 に引いた値）。
+    static let bigSightPlace = (latitude: 35.630508, longitude: 139.792313)
+
+    /// 全部の出どころを同時に取りに行く（いまは2つ。1つ10秒で打ち切る）。どれか1つでも取れたら ok。
+    /// 出どころが少ないので、いまいる区市町村に関係なく全部取り、距離（5km）で絞るのは呼ぶ側に任せる。
+    static func fetch(from: Date, days: Int = 7) async -> (events: [LocalEvent], ok: Bool) {
+        await withTaskGroup(of: [LocalEvent]?.self) { group in
+            for source in Source.allCases {
+                group.addTask {
+                    guard let (data, response) = try? await URLSession.shared.data(for: URLRequest(url: source.url, timeoutInterval: 10)),
+                          (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+                    return source.parse(data, from: from, days: days)
+                }
+            }
+            var out: [LocalEvent] = []
+            var ok = false
+            for await events in group {
+                guard let events else { continue }
+                ok = true
+                out += events
+            }
+            return (out, ok)
+        }
+    }
+
+    /// CSV を行と列に分ける（"…" の中のカンマ・改行・"" に対応）。改行は CRLF でも LF でもよい。
+    static func csv(_ text: String) -> [[String]] {
+        var rows: [[String]] = []
+        var row: [String] = []
+        var field = ""
+        var quoted = false
+        var scalars = text.unicodeScalars.makeIterator()
+        var pending: Unicode.Scalar? = nil
+        while let c = pending ?? scalars.next() {
+            pending = nil
+            if quoted {
+                if c == "\"" {
+                    if let n = scalars.next() {
+                        if n == "\"" { field.unicodeScalars.append("\"") } else { quoted = false; pending = n }
+                    } else { quoted = false }
+                } else {
+                    field.unicodeScalars.append(c)
+                }
+            } else if c == "\"" {
+                quoted = true
+            } else if c == "," {
+                row.append(field)
+                field = ""
+            } else if c == "\n" || c == "\r" {
+                if c == "\r", let n = scalars.next(), n != "\n" { pending = n }
+                row.append(field)
+                field = ""
+                rows.append(row)
+                row = []
+            } else if c != "\u{FEFF}" {
+                field.unicodeScalars.append(c)
+            }
+        }
+        if !field.isEmpty || !row.isEmpty {
+            row.append(field)
+            rows.append(row)
+        }
+        return rows
+    }
+
+    /// 1行目を見出しにして、見出し → 中身 の辞書にする（空の行は捨てる）。
+    static func records(_ rows: [[String]]) -> [[String: String]] {
+        guard let head = rows.first else { return [] }
+        return rows.dropFirst().compactMap { r in
+            guard r.contains(where: { !$0.isEmpty }) else { return nil }
+            var d: [String: String] = [:]
+            for (i, k) in head.enumerated() where i < r.count && !k.isEmpty { d[k] = r[i] }
+            return d
+        }
+    }
+
+    /// 東京の時刻で、年月日だけの日付を作る。
+    static func day(_ y: Int, _ m: Int, _ d: Int) -> Date? {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        return cal.date(from: DateComponents(year: y, month: m, day: d))
+    }
+
+    /// 期間 [start, end) と重なる開催期間のうち、いちばん早く行ける日（期間が始まる前からやっているものは start）。
+    static func firstDay(_ spans: [(Date, Date)], from: Date, days: Int) -> Date? {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        let start = cal.startOfDay(for: from)
+        guard let end = cal.date(byAdding: .day, value: days, to: start) else { return nil }
+        return spans.filter { $0.0 < end && $0.1 >= start }.map { max($0.0, start) }.min()
+    }
+
+    /// 「2026年9月1日から2026年9月1日,2026年9月15日から2026年9月15日」を (始め, 終わり) の並びにする。
+    /// 1日だけのものは「2026年10月3日」と「から」が無い形でも来る（2026-09-28 の実データで4件）。
+    /// 数字は半角の 0〜9 だけを拾う（isNumber だと「一」「十」も数字に入ってしまう）。
+    static func minatoSpans(_ s: String) -> [(Date, Date)] {
+        s.split(separator: ",").compactMap { part in
+            let nums = part.split(whereSeparator: { !("0"..."9").contains($0) }).compactMap { Int($0) }
+            guard nums.count >= 3, let a = day(nums[0], nums[1], nums[2]) else { return nil }
+            let b = nums.count >= 6 ? day(nums[3], nums[4], nums[5]) ?? a : a
+            return (a, b)
+        }
+    }
+
+    /// 港区イベント情報（列: ページURL・開催日時・ページタイトル・内容・ところ・費用・緯度・経度 …）。
+    /// 時刻の列は無い（「開催日詳細」に文で書かれている）ので、時刻は空にする。
+    static func minato(_ table: [[String: String]], from: Date, days: Int, credit: String) -> [LocalEvent] {
+        table.compactMap { r in
+            guard let title = r["ページタイトル"]?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
+                  let lat = Double(r["緯度"]?.trimmingCharacters(in: .whitespaces) ?? ""),
+                  let lon = Double(r["経度"]?.trimmingCharacters(in: .whitespaces) ?? ""),
+                  let first = firstDay(minatoSpans(r["開催日時"] ?? ""), from: from, days: days) else { return nil }
+            guard !title.contains("申込終了"), !title.contains("受付終了") else { return nil }
+            let place = (r["ところ"] ?? "").split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+            return LocalEvent(title: title.replacingOccurrences(of: "\u{3000}", with: " "), kind: "",
+                              day: first, timeFrom: "", place: place.trimmingCharacters(in: .whitespaces),
+                              latitude: lat, longitude: lon,
+                              cost: (r["費用"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                              detail: (r["内容"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                              url: (r["ページURL"]).flatMap(URL.init(string:)), credit: credit)
+        }
+    }
+
+    /// 「2026/9/30」を日付に。
+    static func slashDay(_ s: String?) -> Date? {
+        let nums = (s ?? "").split(whereSeparator: { !("0"..."9").contains($0) }).compactMap { Int($0) }
+        return nums.count >= 3 ? day(nums[0], nums[1], nums[2]) : nil
+    }
+
+    /// 東京ビッグサイトのイベント情報（列: 展示会名・会期(開始)・会期(終了)・利用施設・開催時間・来場対象者・入場料について・内容・URL）。
+    /// 業界の人向け（来場対象者「商談」）の展示会が多いので、来場対象を内容の先頭に書く。
+    static func bigSight(_ table: [[String: String]], from: Date, days: Int, credit: String) -> [LocalEvent] {
+        table.compactMap { r in
+            guard let title = r["展示会名"]?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
+                  let a = slashDay(r["会期(開始)"]),
+                  let first = firstDay([(a, slashDay(r["会期(終了)"]) ?? a)], from: from, days: days) else { return nil }
+            let hours = r["開催時間"] ?? ""
+            let time = hours.range(of: #"\d{1,2}:\d{2}"#, options: .regularExpression).map { String(hours[$0]) } ?? ""
+            let hall = (r["利用施設"] ?? "").trimmingCharacters(in: .whitespaces)
+            let who = (r["来場対象者"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let about = (r["内容"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = [who.isEmpty ? nil : "来場対象：\(who)", hours.isEmpty ? nil : "開催時間：\(hours.trimmingCharacters(in: .whitespaces))",
+                          about.isEmpty ? nil : about].compactMap { $0 }.joined(separator: "\n")
+            return LocalEvent(title: title, kind: "展示会", day: first, timeFrom: time,
+                              place: hall.isEmpty ? "東京ビッグサイト" : "東京ビッグサイト \(hall)",
+                              latitude: bigSightPlace.latitude, longitude: bigSightPlace.longitude,
+                              cost: (r["入場料について"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                              detail: detail,
+                              url: (r["URL"]?.trimmingCharacters(in: .whitespaces)).flatMap(URL.init(string:)), credit: credit)
+        }
+    }
+
+    /// 川崎市と東京都の両方に出ている同じ催しを1つにする（名前と日が同じなら同じもの）。先に来たほうを残す。
+    static func dedupe(_ list: [LocalEvent]) -> [LocalEvent] {
+        var seen = Set<String>()
+        return list.filter { seen.insert("\($0.title)|\($0.day.timeIntervalSince1970)").inserted }
     }
 }
 
@@ -731,8 +956,10 @@ final class NearbyNowViewController: UITableViewController {
             tableView.reloadData()
             return
         }
+        // 場所（都道府県・区市町村）は、災害情報とイベントの両方で使う。住所を引くのは1回だけにして、2か所で待つ。
+        let found = Task { await WhereaboutsFinder.find(me) }
         Task { @MainActor in
-            self.whereabouts = await WhereaboutsFinder.find(me)
+            self.whereabouts = await found.value
             self.loadPolice()
             if let w = self.whereabouts {
                 async let q = JMA.quakes(prefCode: w.code, prefName: w.prefecture, hours: 24)
@@ -749,7 +976,14 @@ final class NearbyNowViewController: UITableViewController {
         }
         guard focus == .talk else { return }
         Task { @MainActor in
-            let r = await KawasakiEvents.fetch(from: Date())
+            // 川崎市は東京都のすぐ隣なので、東京にいるときも川崎市の分は取る（5km 以内に入ることがある）。
+            // 東京都の分は、いまいる場所が東京都と分かったときだけ、川崎市と同時に取りに行く。
+            let now = Date()
+            async let kawasaki = KawasakiEvents.fetch(from: now)
+            var tokyo: (events: [LocalEvent], ok: Bool)? = nil
+            if await found.value?.prefecture == "東京都" { tokyo = await TokyoEvents.fetch(from: now) }
+            let k = await kawasaki
+            let r = (events: TokyoEvents.dedupe(k.events + (tokyo?.events ?? [])), ok: k.ok || tokyo?.ok == true)
             self.events = r.events.filter {
                 me.distance(from: CLLocation(latitude: $0.latitude, longitude: $0.longitude)) <= 5_000
             }.sorted {
@@ -827,6 +1061,11 @@ final class NearbyNowViewController: UITableViewController {
             default:
                 return nil
             }
+        case .events:
+            // CC BY の決まりで、並べたイベントの出どころを全部出す（川崎市・港区・東京ビッグサイト）。
+            var credits: [String] = []
+            for e in events where !credits.contains(e.credit) { credits.append(e.credit) }
+            return credits.isEmpty ? nil : credits.joined(separator: "\n")
         default: return nil
         }
     }
@@ -930,7 +1169,7 @@ final class NearbyNowViewController: UITableViewController {
                 content.textProperties.color = .secondaryLabel
             } else if events.isEmpty {
                 content.text = eventsFailed ? "イベントを取れませんでした" : "5km以内の今週のイベントは見つかりませんでした"
-                content.secondaryText = "いまは川崎市のイベントに対応しています"
+                content.secondaryText = "いまは川崎市と、東京都の港区・東京ビッグサイトのイベントに対応しています"
                 content.textProperties.color = .secondaryLabel
             } else {
                 let e = events[indexPath.row]
@@ -1107,7 +1346,7 @@ final class LocalEventViewController: UITableViewController {
         [1, rows.count, event.url == nil ? 1 : 2][section]
     }
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        section == 2 ? KawasakiEvents.credit : nil
+        section == 2 ? event.credit : nil
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
