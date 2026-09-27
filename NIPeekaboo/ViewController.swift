@@ -2977,10 +2977,12 @@ final class MeetViewController: UIViewController {
             vc?.dismiss(animated: true)
             self?.setMeetPin(name: item.name ?? "この場所", at: item.placemark.coordinate)
         }
+        vc.onExits = { [weak self] exits in self?.mapFloor?.showExits(exits) }
         vc.onClose = { [weak self] in
             // 経路や案内に進まずに閉じたら、印も片づける。
             guard let self, self.navRoute == nil, self.placeRoutePreview == nil, !self.placeRouteLoading else { return }
             self.mapFloor?.showPlace(nil)
+            self.mapFloor?.showExits([])
         }
         // 詳しいこと（標準の場所カード）が入るので、半分の高さから。地図を触ると上だけの高さへ下がる。
         MapSheets.configure(vc)
@@ -3389,6 +3391,27 @@ final class MeetViewController: UIViewController {
             }
             let name = place.name ?? "この場所"
             switch intent.topic {
+            case "exit":
+                // 「赤坂サカスは何番出口？」→ いちばん近い駅の出口（OpenStreetMap の出入口から）。
+                let dest = place.placemark.coordinate
+                let looking = ui.addStep("\(name)に近い駅の出口を探しています")
+                let exits = StationExits.best(for: dest, among: await StationExits.around(dest))
+                guard let first = exits.first else {
+                    ui.finishStep(looking, note: "近くに駅の出口が見つかりませんでした", failed: true)
+                    self.showPlaceCardAnswer(place, ui: ui, note: "\(name)の近くの出口は分かりませんでした。カードを開きます")
+                    return
+                }
+                ui.finishStep(looking, note: "\(exits.count)駅の出口を見ました")
+                let others = exits.dropFirst().map { "\($0.label)（歩いて約\(StationExits.walkMinutes(from: $0, to: dest))分）" }
+                ui.ask(title: "\(name)は「\(first.label)」がいちばん近いです",
+                       detail: "出口から歩いて約\(StationExits.walkMinutes(from: first, to: dest))分"
+                           + (others.isEmpty ? "" : "\nほか：" + others.joined(separator: "、"))
+                           + "\n出口の場所 © OpenStreetMap",
+                       primary: "地図で見る", secondary: nil,
+                       onPrimary: { [weak self] in
+                           ui.dismiss(animated: true)
+                           self?.presentPlace(place)
+                       }, onSecondary: nil)
             case "phone":
                 if let phone = place.phoneNumber, let url = URL(string: "tel:" + phone.filter { "+0123456789".contains($0) }) {
                     ui.ask(title: name, detail: "電話番号 \(phone)", primary: "電話する", secondary: "カードを開く",
@@ -3636,8 +3659,8 @@ final class MeetViewController: UIViewController {
     }
 
     /// いま近くで（災害・もしものとき・避難場所・話題）。
-    private func openNearbyNow() {
-        let vc = NearbyNowViewController(me: locations.last)
+    private func openNearbyNow(focus: NearbyNowViewController.Focus = .safety) {
+        let vc = NearbyNowViewController(me: locations.last, focus: focus)
         vc.onRoute = { [weak self] item in self?.routeToPlace(item) }
         let nav = UINavigationController(rootViewController: vc)
         if let sheet = nav.sheetPresentationController {
@@ -6417,6 +6440,7 @@ final class MeetViewController: UIViewController {
         homeSheet.onSuggestionDismiss = { [weak self] in self?.dismissSuggestion() }
         homeSheet.onExplore = { [weak self] in self?.exploreTapped() }
         homeSheet.onNearbyNow = { [weak self] in self?.openNearbyNow() }
+        homeSheet.onTalk = { [weak self] in self?.openNearbyNow(focus: .talk) }
         homeSheet.onConnect = { [weak self] index in
             let friends = KnownFriends.all()
             guard friends.indices.contains(index) else { return }

@@ -110,6 +110,8 @@ final class MeetMapViewController: UIViewController {
     var onMapTouched: ((_ tapped: Bool) -> Void)?
     /// 選んだ場所の印と、そこまでの道なりの線。
     private var placePin: MKPointAnnotation?
+    /// 選んだ場所にいちばん近い駅の出口の印。
+    private var exitPins: [ExitPoint] = []
     private var lastFeature: MKAnnotation?
     private var placeLine: MKPolyline?
 
@@ -582,6 +584,19 @@ final class MeetMapViewController: UIViewController {
         onUserMoved?()
     }
 
+    /// 駅の出口の印を立てる（空なら消す）。
+    func showExits(_ exits: [StationExit]) {
+        map.removeAnnotations(exitPins)
+        exitPins = exits.map { e in
+            let p = ExitPoint()
+            p.coordinate = e.coordinate
+            p.title = "\(e.ref)出口"
+            p.subtitle = e.station
+            return p
+        }
+        map.addAnnotations(exitPins)
+    }
+
     /// 選んだ場所までの道なりの線。nil で消す。
     func showPlaceRoute(_ route: MKRoute?) {
         if let placeLine { map.removeOverlay(placeLine) }
@@ -738,6 +753,17 @@ extension MeetMapViewController: MKMapViewDelegate {
     // ピンではなく「人が立っている」形にする。
     // 相手がどこかにいる、という感じは、記号よりも姿のほうが伝わる（マリオカートの選択画面のように）。
     func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+        // 駅の出口は iOS 標準のピン（電車の印・藍色）。「5a出口」と名前を出す。
+        if annotation is ExitPoint {
+            let view = (mapView.dequeueReusableAnnotationView(withIdentifier: "exit") as? MKMarkerAnnotationView)
+                ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "exit")
+            view.annotation = annotation
+            view.markerTintColor = .systemIndigo
+            view.glyphImage = UIImage(systemName: "tram.fill")
+            view.titleVisibility = .visible
+            view.displayPriority = .required
+            return view
+        }
         // 自分も同じ姿で立たせる。青い点だと、自分だけ地図アプリのままになる
         // 自分は iOS 標準の青い点（向きの扇つき）。手描きの印はやめた（本人 9/25「デザインは自前しないで」）。
         if annotation is MKUserLocation { return nil }
@@ -780,3 +806,6 @@ extension MeetMapViewController: UIGestureRecognizerDelegate {
 extension MeetMapViewController {
     @objc fileprivate func mapTapped() { onMapTouched?(true) }
 }
+
+/// 駅の出口の印。
+final class ExitPoint: MKPointAnnotation {}

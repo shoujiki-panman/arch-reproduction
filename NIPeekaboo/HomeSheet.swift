@@ -117,6 +117,8 @@ final class HomeSheetView: UIView {
     var onSearch: (() -> Void)?
     var onExplore: (() -> Void)?
     var onNearbyNow: (() -> Void)?
+    /// いまの話題（X・Yahoo!リアルタイム検索）。災害とは別の入口にする（9/28）。
+    var onTalk: (() -> Void)?
     var onAsk: (() -> Void)?
     /// 先回りの提案。あるときだけ、板のいちばん上に出す。
     var suggestion: Suggestion?
@@ -242,7 +244,9 @@ final class HomeSheetView: UIView {
             }
             body.addArrangedSubview(tiles(peer))
             more.addArrangedSubview(moreRow("まわりを見る", symbol: "binoculars", action: onExplore))
-            more.addArrangedSubview(moreRow("いま近くで（災害・話題・もしものとき）", symbol: "exclamationmark.shield",
+            more.addArrangedSubview(moreRow("いまの話題（X・リアルタイム）", symbol: "bubble.left.and.text.bubble.right",
+                                            action: onTalk))
+            more.addArrangedSubview(moreRow("いま近くで（災害・警察・もしものとき）", symbol: "exclamationmark.shield",
                                             action: onNearbyNow))
             more.addArrangedSubview(moreRow("いまの様子を伝える", symbol: "text.bubble", action: onMood))
             if canInvite {
@@ -252,7 +256,9 @@ final class HomeSheetView: UIView {
         case let .friends(friends, waitingLine, canInvite, canEnd):
             body.addArrangedSubview(moreRow("まわりを見る（カフェ・ごはん・公園）", symbol: "binoculars",
                                              action: onExplore))
-            body.addArrangedSubview(moreRow("いま近くで（災害・話題・もしものとき）", symbol: "exclamationmark.shield",
+            body.addArrangedSubview(moreRow("いまの話題（X・リアルタイム）", symbol: "bubble.left.and.text.bubble.right",
+                                             action: onTalk))
+            body.addArrangedSubview(moreRow("いま近くで（災害・警察・もしものとき）", symbol: "exclamationmark.shield",
                                              action: onNearbyNow))
             body.addArrangedSubview(sectionTitle(!friends.isEmpty ? "友だち"
                                                   : waitingLine != nil ? "待っています" : "人と会う"))
@@ -1436,9 +1442,13 @@ final class PlaceCardViewController: UIViewController, MapSideSheet, UISheetPres
     var onRoute: ((MKMapItem) -> Void)?
     var onMeet: ((MKMapItem) -> Void)?
     var onClose: (() -> Void)?
+    /// いちばん近い駅の出口が分かった（地図に印を立てるため）。空なら印を消す。
+    var onExits: (([StationExit]) -> Void)?
 
     private let titleLabel = UILabel()
     private let sub = UILabel()
+    /// 「最寄りの出口：赤坂駅 5a出口（歩いて約2分）」。地下鉄でどこから出るか分かるように（9/28）。
+    private let exitLabel = UILabel()
     private let buttons = UIStackView()
     private let header = UIStackView()
     private var detail: UIViewController?
@@ -1466,8 +1476,13 @@ final class PlaceCardViewController: UIViewController, MapSideSheet, UISheetPres
         buttons.spacing = 10
         buttons.distribution = .fillEqually
 
+        exitLabel.font = Type.caption
+        exitLabel.textColor = MeetPalette.primary
+        exitLabel.numberOfLines = 0
+        exitLabel.isHidden = true
         header.addArrangedSubview(titleLabel)
         header.addArrangedSubview(sub)
+        header.addArrangedSubview(exitLabel)
         header.addArrangedSubview(buttons)
         header.axis = .vertical
         header.spacing = 4
@@ -1501,6 +1516,7 @@ final class PlaceCardViewController: UIViewController, MapSideSheet, UISheetPres
             parts.append("\(NearbyAlert.text(d))・\(NearbyAlert.walkText(d))")
         }
         sub.text = parts.joined(separator: "・")
+        loadExits()
 
         buttons.arrangedSubviews.forEach { $0.removeFromSuperview() }
         buttons.addArrangedSubview(button("経路", symbol: "figure.walk", primary: true) { [weak self] in
@@ -1541,6 +1557,33 @@ final class PlaceCardViewController: UIViewController, MapSideSheet, UISheetPres
             detail = card
         }
         showTitleIfNeeded()
+    }
+
+    /// いちばん近い駅の出口を探して、距離の一行の下に出す。駅そのものを見ているときは出さない。
+    private func loadExits() {
+        exitLabel.isHidden = true
+        onExits?([])
+        guard item.pointOfInterestCategory != .publicTransport else { return }
+        let shown = item
+        let dest = item.placemark.coordinate
+        Task { @MainActor [weak self] in
+            let exits = StationExits.best(for: dest, among: await StationExits.around(dest))
+            guard let self, self.item === shown, !exits.isEmpty else { return }
+            let lines = exits.map { "\($0.label)（歩いて約\(StationExits.walkMinutes(from: $0, to: dest))分）" }
+            let text = NSMutableAttributedString()
+            if let icon = UIImage(systemName: "tram.fill")?.withTintColor(MeetPalette.action, renderingMode: .alwaysOriginal) {
+                text.append(NSAttributedString(attachment: NSTextAttachment(image: icon)))
+                text.append(NSAttributedString(string: " "))
+            }
+            text.append(NSAttributedString(string: "最寄りの出口：" + lines.joined(separator: "、")))
+            text.append(NSAttributedString(string: "\n出口の場所 © OpenStreetMap",
+                                           attributes: [.foregroundColor: MeetPalette.secondary,
+                                                        .font: UIFont.preferredFont(forTextStyle: .caption2)]))
+            self.exitLabel.attributedText = text
+            self.exitLabel.isHidden = false
+            self.header.setCustomSpacing(10, after: self.exitLabel)
+            self.onExits?(exits)
+        }
     }
 
     /// 名前は標準カードにも出るので、ふだんは距離の一行とボタンだけ。

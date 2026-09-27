@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		KD0000000000000000000E02 /* station_exits.json in Resources */ = {isa = PBXBuildFile; fileRef = KD0000000000000000000E01 /* station_exits.json */; };
 		KD0000000000000000000002 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = KD0000000000000000000001 /* PrivacyInfo.xcprivacy */; };
 		0A7C6E61248C5CEE00DEC871 /* MathUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7C6E60248C5CEE00DEC871 /* MathUtilities.swift */; };
 		71418B3224949358007DAB1C /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 71418B3124949358007DAB1C /* README.md */; };
@@ -61,6 +62,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		KD0000000000000000000E01 /* station_exits.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = station_exits.json; sourceTree = "<group>"; };
 		KD0000000000000000000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		0A7C6E60248C5CEE00DEC871 /* MathUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathUtilities.swift; sourceTree = "<group>"; };
 		43D6B566D60E1D86FC1BA04C /* SampleCode.xcconfig */ = {isa = PBXFileReference; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
@@ -204,6 +206,7 @@
 				ADDB290824897F7E00F72056 /* LaunchScreen.storyboard */,
 				ADDB290B24897F7E00F72056 /* Info.plist */,
 				KD0000000000000000000001 /* PrivacyInfo.xcprivacy */,
+				KD0000000000000000000E01 /* station_exits.json */,
 			);
 			path = NIPeekaboo;
 			sourceTree = "<group>";
@@ -302,6 +305,7 @@
 				ADDB290A24897F7E00F72056 /* LaunchScreen.storyboard in Resources */,
 				ADDB290724897F7E00F72056 /* Assets.xcassets in Resources */,
 				KD0000000000000000000002 /* PrivacyInfo.xcprivacy in Resources */,
+				KD0000000000000000000E02 /* station_exits.json in Resources */,
 				71418B3224949358007DAB1C /* README.md in Resources */,
 				ADDB290524897F7D00F72056 /* Main.storyboard in Resources */,
 			);

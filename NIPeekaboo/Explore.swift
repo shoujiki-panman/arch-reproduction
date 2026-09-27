@@ -429,3 +429,142 @@ final class MidpointViewController: UIViewController {
 
     @objc private func dismissSelf() { dismiss(animated: true) }
 }
+
+// MARK: - 駅の出口（OpenStreetMap）
+
+/// 地下鉄・駅の出入口1つ。「赤坂駅」の「5a」出口。
+struct StationExit: Equatable {
+    let station: String
+    let ref: String
+    let coordinate: CLLocationCoordinate2D
+
+    /// 「赤坂駅 5a出口」。
+    var label: String { "\(station) \(ref)出口" }
+
+    static func == (a: StationExit, b: StationExit) -> Bool {
+        a.station == b.station && a.ref == b.ref
+    }
+}
+
+/// 行き先にいちばん近い駅の出口を探す（本人 9/28「地下鉄で行きたい場所がどこの出口から出たらいいかわからない」）。
+/// Appleの地図の検索からは出口が取れない（「赤坂駅 5a出口」で探しても駅しか返らない）ので、
+/// 誰でも使える OpenStreetMap の出入口（railway=subway_entrance / train_station_entrance）を使う。
+/// 出典の表示が要る（© OpenStreetMap contributors、ODbL）。
+enum StationExits {
+    /// 公開の Overpass サーバー。混んでいて遅い・断ることがある（9/28 実測：504・406・20秒待ち）ので、
+    /// 3つに同時に聞いて、いちばん早く返った答えを使う。
+    private static let servers = ["https://overpass-api.de/api/interpreter",
+                                  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+                                  "https://overpass.kumi.systems/api/interpreter"]
+    /// 同じ辺りを何度も聞かない（約200m四方ごとに覚えておく）。
+    private static var cache: [String: [StationExit]] = [:]
+
+    /// 首都圏の出口（アプリに入れておいた分、1,321か所・385駅。2026-09-28 に OpenStreetMap から取った）。
+    /// 地下は電波が弱く、公開サーバーも遅いので、まずこれを見る。無い所だけサーバーに聞く。
+    static let bundled: [StationExit] = {
+        guard let url = Bundle.main.url(forResource: "station_exits", withExtension: "json"),
+              let data = try? Data(contentsOf: url) else { return [] }
+        return decodeBundled(data)
+    }()
+
+    /// [[駅, 番号, 緯度, 経度], …] を読む。
+    static func decodeBundled(_ data: Data) -> [StationExit] {
+        guard let rows = try? JSONSerialization.jsonObject(with: data) as? [[Any]] else { return [] }
+        return rows.compactMap { r in
+            guard r.count == 4, let name = r[0] as? String, let ref = r[1] as? String,
+                  let lat = (r[2] as? NSNumber)?.doubleValue, let lon = (r[3] as? NSNumber)?.doubleValue else { return nil }
+            return StationExit(station: name, ref: ref, coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon))
+        }
+    }
+
+    /// その場所から radius m 以内の出入口。取れなければ空。
+    static func around(_ c: CLLocationCoordinate2D, radius: Int = 600) async -> [StationExit] {
+        let here = CLLocation(latitude: c.latitude, longitude: c.longitude)
+        let local = bundled.filter {
+            here.distance(from: CLLocation(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)) <= Double(radius)
+        }
+        if !local.isEmpty { return local }
+        let key = String(format: "%.3f,%.3f,%d", c.latitude, c.longitude, radius)
+        if let hit = cache[key] { return hit }
+        let query = "[out:json][timeout:15];node(around:\(radius),\(c.latitude),\(c.longitude))"
+            + "[railway~\"^(subway_entrance|train_station_entrance)$\"];out;"
+        let answer: Data? = await withTaskGroup(of: Data?.self) { group in
+            for server in servers {
+                group.addTask { await fetch(server, query: query) }
+            }
+            for await data in group where data != nil {
+                group.cancelAll()
+                return data
+            }
+            return nil
+        }
+        guard let answer else { return [] }
+        let exits = parse(answer)
+        cache[key] = exits
+        return exits
+    }
+
+    private static func fetch(_ server: String, query: String) async -> Data? {
+        guard let url = URL(string: server) else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("kokodayo-ios/1.0", forHTTPHeaderField: "User-Agent")
+        var body = URLComponents()
+        body.queryItems = [URLQueryItem(name: "data", value: query)]
+        request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              (try? JSONSerialization.jsonObject(with: data)) != nil else { return nil }
+        return data
+    }
+
+    /// Overpass の答え（JSON）から出口を取り出す。番号（ref）の無いものは、名前の「(1)」から拾う。どちらも無ければ捨てる。
+    static func parse(_ data: Data) -> [StationExit] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let elements = root["elements"] as? [[String: Any]] else { return [] }
+        return elements.compactMap { e in
+            guard let lat = e["lat"] as? Double, let lon = e["lon"] as? Double,
+                  let tags = e["tags"] as? [String: String] else { return nil }
+            // 日本語の名前を先に（「Roppongi」ではなく「六本木駅」）。
+            var name = (tags["name:ja"] ?? tags["name"] ?? "").replacingOccurrences(of: "（", with: "(")
+                .replacingOccurrences(of: "）", with: ")")
+            var ref = tags["ref"] ?? ""
+            // 「赤坂駅 (1)」「乃木坂(3)」→ 駅「赤坂駅」・番号「1」
+            if let open = name.range(of: "("), name.hasSuffix(")") {
+                if ref.isEmpty { ref = String(name[open.upperBound..<name.index(before: name.endIndex)]) }
+                name = String(name[..<open.lowerBound])
+            }
+            // ローマ字だけの名前（「Roppongi」）は、駅名として出せないので捨てる。
+            if name.unicodeScalars.allSatisfy({ $0.isASCII }) { name = "" }
+            name = name.trimmingCharacters(in: .whitespaces)
+            ref = ref.replacingOccurrences(of: "出口", with: "").trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty, !ref.isEmpty else { return nil }
+            if !name.hasSuffix("駅") { name += "駅" }
+            return StationExit(station: name, ref: ref, coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon))
+        }
+    }
+
+    /// 行き先にいちばん近い出口。駅ごとに1つずつ、近い順に2駅まで（「赤坂駅 5a出口」「赤坂見附駅 10出口」）。
+    static func best(for dest: CLLocationCoordinate2D, among exits: [StationExit], stations: Int = 2) -> [StationExit] {
+        let goal = CLLocation(latitude: dest.latitude, longitude: dest.longitude)
+        func d(_ e: StationExit) -> Double {
+            goal.distance(from: CLLocation(latitude: e.coordinate.latitude, longitude: e.coordinate.longitude))
+        }
+        var seen = Set<String>()
+        var out: [StationExit] = []
+        for e in exits.sorted(by: { d($0) < d($1) }) where !seen.contains(e.station) {
+            seen.insert(e.station)
+            out.append(e)
+            if out.count == stations { break }
+        }
+        return out
+    }
+
+    /// 出口から行き先まで歩いて何分か（道は直線より長いので1.25倍・分速80m。ほかの画面と同じ値）。
+    static func walkMinutes(from e: StationExit, to dest: CLLocationCoordinate2D) -> Int {
+        let m = CLLocation(latitude: e.coordinate.latitude, longitude: e.coordinate.longitude)
+            .distance(from: CLLocation(latitude: dest.latitude, longitude: dest.longitude))
+        return max(1, Int((m * 1.25 / 80).rounded()))
+    }
+}

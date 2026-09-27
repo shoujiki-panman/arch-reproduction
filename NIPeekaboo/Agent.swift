@@ -458,8 +458,9 @@ enum AskSkills {
 
     // MARK: 店のことを聞く
 
-    /// 何を聞いているか。hours / phone / site。店のことを聞いていなければ nil。
+    /// 何を聞いているか。exit / hours / phone / site。店のことを聞いていなければ nil。
     static func placeTopic(_ text: String) -> String? {
+        if ["何番出口", "どの出口", "出口", "どこから出"].contains(where: { text.contains($0) }) { return "exit" }
         if ["何時まで", "何時から", "営業時間", "開いてる", "空いてる？", "やってる", "閉まる", "何時に開"].contains(where: { text.contains($0) }) {
             return "hours"
         }
@@ -471,7 +472,8 @@ enum AskSkills {
     /// 「スタバって何時まで？」→「スタバ」、「そこ何時まで」→ 空（いま見ている場所）。
     static func placeInfoTarget(_ text: String) -> String {
         var t = text
-        for mark in ["って", "は", "の", "何時", "営業", "開い", "やって", "電話", "予約", "ホームページ", "サイト", "メニュー", "閉ま"] {
+        for mark in ["って", "は", "の", "何時", "営業", "開い", "やって", "電話", "予約", "ホームページ", "サイト", "メニュー", "閉ま",
+                     "何番", "どの出口", "出口", "から出", "に行くには", "へ行くには"] {
             if let r = t.range(of: mark) { t = String(t[..<r.lowerBound]) }
         }
         t = t.trimmingCharacters(in: .whitespacesAndNewlines)
