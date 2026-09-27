@@ -3858,7 +3858,9 @@ final class MeetViewController: UIViewController {
                                         room: String(KnownFriends.pairSecret(mine: me, theirs: $0.key).prefix(4))) }
         } else if isFriendRoom {
             let me = SelfIdentity.publicKey
-            friends = known.filter { $0.key == peerIdentity }.map {
+            // 待っている相手は、部屋の名前から探す（名札だけで探すと、名札を入れ替えたあとに見つからず、
+            // 行が消えて「やめる」だけが残った。9/28）。
+            friends = known.filter { KnownFriends.pairSecret(mine: me, theirs: $0.key) == group?.id }.map {
                 .init(name: $0.name, face: nil, waiting: true,
                       room: String(KnownFriends.pairSecret(mine: me, theirs: $0.key).prefix(4)))
             }
