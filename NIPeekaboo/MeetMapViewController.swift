@@ -332,6 +332,7 @@ final class MeetMapViewController: UIViewController {
             // 1人のときは、自分の向いている方を上にして地図を回す（本人 9/28「自分の方向で地図も合わせて動いてほしい」）。
             // MapKit の向きモード（followWithHeading）は入るたびに2km四方ほどに引いてしまうので使わず、
             // 向きが届くたびにこちらで回す（案内中の地図と同じやり方）。指で動かせば止まる。
+            // MapKit の向きモードは、入り方を変えても2km四方ほどに引いてしまった（9/28 シミュレータで2回）。
             followHeading = true
             fitted = true
             refitAt = Date()
@@ -521,19 +522,46 @@ final class MeetMapViewController: UIViewController {
 
     /// 1人のとき、向いている方を上にして回すか（指で動かしたら止める。開き直せばまた回る）。
     private var followHeading = false
-    private var lastTurn = (heading: -1.0, at: Date.distantPast)
+
+    /// 向きが届くたびに一気に回すとカクカクする（本人 9/28「向きに合わせて動くのがカクカク」）。
+    /// 目標の向きだけ受け取り、画面の書き換えごとに少しずつ近づける。追いついたら止まる（電池）。
+    private var targetHeading: CLLocationDirection?
+    private var turnLink: CADisplayLink?
 
     private func turnWithHeading() {
+        guard followHeading, !userMoved, !navigating, peer == nil, let h = myHeading else {
+            stopTurning()
+            return
+        }
+        targetHeading = h
+        guard turnLink == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(turnStep))
+        link.add(to: .main, forMode: .common)
+        turnLink = link
+    }
+
+    @objc private func turnStep() {
         guard followHeading, !userMoved, !navigating, peer == nil,
-              let h = myHeading, let me = map.userLocation.location else { return }
-        // 5度より小さい揺れと、0.3秒より短い間隔は無視する（手に持っているだけで揺れる）。
-        guard lastTurn.heading < 0 || abs(Self.angleDiff(h, lastTurn.heading)) > 5,
-              Date().timeIntervalSince(lastTurn.at) > 0.3 else { return }
-        lastTurn = (h, Date())
+              let target = targetHeading, let me = map.userLocation.location else {
+            stopTurning()
+            return
+        }
+        let now = map.camera.heading
+        let diff = Self.angleDiff(target, now)
+        guard abs(diff) > 0.3 else {
+            stopTurning()
+            return
+        }
+        // 残りの2割ずつ近づける（最初は速く、終わりはゆっくり）。拡大・縮小はいまのまま。
         let camera = MKMapCamera(lookingAtCenter: me.coordinate,
                                  fromDistance: map.camera.centerCoordinateDistance,
-                                 pitch: map.camera.pitch, heading: h)
-        map.setCamera(camera, animated: true)
+                                 pitch: map.camera.pitch, heading: now + diff * 0.2)
+        map.setCamera(camera, animated: false)
+    }
+
+    private func stopTurning() {
+        turnLink?.invalidate()
+        turnLink = nil
     }
 
     private func refreshMeLook() {
