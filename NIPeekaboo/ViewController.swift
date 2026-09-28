@@ -1250,6 +1250,10 @@ final class MeetViewController: UIViewController {
     // MARK: - AR
 
     private let sceneView = ARSCNView()
+    /// カメラの場の受け手。UWBのカメラ補助は「位置の取り直しをしない」と答える受け手を求める
+    /// （Apple WWDC22「What's new in Nearby Interaction」）。受け手が無いまま渡していて、
+    /// 9/12・9/29 の実機で -5883（設定が合わない）が出ていた。ARSession は受け手を弱く持つので、ここで持つ。
+    private let arSessionDelegate = NoRelocalization()
     private var arrowContainer = SCNNode()
     private var dotsContainer = SCNNode()
     private var circleNode = SCNNode()
@@ -6152,6 +6156,7 @@ final class MeetViewController: UIViewController {
         if ARWorldTrackingConfiguration.supportsUserFaceTracking {
             config.userFaceTrackingEnabled = false
         }
+        sceneView.session.delegate = arSessionDelegate
         sceneView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         #endif
         arRunning = true
@@ -8906,4 +8911,10 @@ class PaddedLabel: UILabel {
         return CGSize(width: s.width + insets.left + insets.right,
                       height: s.height + insets.top + insets.bottom)
     }
+}
+
+/// カメラの場で、見失ったあとの位置の取り直しをしないと答えるだけの受け手。
+/// UWBのカメラ補助に同じ場を渡すための条件の1つ（Apple WWDC22）。
+final class NoRelocalization: NSObject, ARSessionDelegate {
+    func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool { false }
 }
