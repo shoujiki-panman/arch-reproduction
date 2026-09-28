@@ -2457,6 +2457,7 @@ final class MeetViewController: UIViewController {
             self.checkPeerStore()
             self.updateNearbyAlert()
             self.refreshDials()
+            self.syncLiveActivity()
             self.pushToMap()
         }
         // 離れているあいだ、おつかいのやりとりが通る唯一の道。
@@ -2490,6 +2491,8 @@ final class MeetViewController: UIViewController {
             self?.pushMyHeading()
             // 相手が止まっていても、自分が歩けば距離は縮む。こちらの動きでも見直す。
             self?.updateNearbyAlert()
+            // 閉じているあいだはロック画面の島だけが見える。自分が動いた分も映す。
+            self?.syncLiveActivity()
             self?.stepNavigation()
         }
         locations.start()
@@ -6305,11 +6308,14 @@ final class MeetViewController: UIViewController {
     private func syncLiveActivity(markStale: Bool = false) {
         guard #available(iOS 16.2, *) else { return }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        guard activePeerID != nil, group != nil || isDemo else {
+        // 電波の相手がいなくなっても（閉じると近くの電波は切れる）、出ている島は
+        // 地図の居場所で動かし続ける。新しく出すのは、これまでどおり電波の相手がいるときだけ。
+        let keepByMap = meetActivity != nil && group != nil && theirFix != nil
+        guard activePeerID != nil || keepByMap, group != nil || isDemo else {
             endLiveActivity()
             return
         }
-        let who = activePeerID.map { name(of: $0) } ?? "相手"
+        let who = activePeerID.map { name(of: $0) } ?? partnerName
         let guide = guidance(for: who)
         // The readout already says 見つけた; the line under it is the advice.
         let instruction = guide.tone == .arrived ? guide.detail : guide.headline
@@ -6334,11 +6340,12 @@ final class MeetViewController: UIViewController {
             arrived: arrived,
             untilText: group.map { untilText($0.expires) } ?? "",
             instruction: instruction)
-        // NearbyInteraction stops the moment the app leaves the front, so the
-        // island's last line is history from then on: stale now, not in 30 s.
-        // In the foreground, half a minute of silence means the same thing.
+        // 表では30秒届かなければ古い。裏では位置が30秒おきにしか来ないので90秒まで待つ。
+        // 裏で位置を取れないときだけ、閉じた瞬間に古い印を付ける（9/29 0:59 に島が止まっていた）。
+        let inBackground = UIApplication.shared.applicationState == .background
         let content = ActivityContent(state: state,
-                                      staleDate: markStale ? Date() : Date().addingTimeInterval(30))
+                                      staleDate: markStale ? Date()
+                                          : Date().addingTimeInterval(inBackground ? 90 : 30))
         lastSentInstruction = instruction
         lastSentArrived = arrived
         // Zero after a background trip: mach time barely moves while the phone
@@ -6360,7 +6367,8 @@ final class MeetViewController: UIViewController {
         // 閉じたら呼び鈴の線は iOS に切られる。開き直したときに張り直す。
         if group == nil { stopListeningForFriends() }
         locations.pauseHeading()
-        syncLiveActivity(markStale: true)
+        // 裏でも位置を取り続けるなら、島は地図の居場所で動き続ける。取れないときだけ止まったと言う。
+        syncLiveActivity(markStale: !locations.continuesInBackground)
     }
 
     /// An island left over from a run that was killed would show a number nobody

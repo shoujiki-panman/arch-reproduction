@@ -302,6 +302,9 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
         onHeading?(newHeading)
     }
 
+    /// いま、画面を閉じても位置を取り続ける設定になっているか。
+    var continuesInBackground: Bool { manager.allowsBackgroundLocationUpdates }
+
     /// 画面を閉じているあいだも受け取るか。Info.plist に background location が
     /// 書かれていないのに true にすると落ちるので、書かれているかを見てから決める。
     func applyBackground() {
