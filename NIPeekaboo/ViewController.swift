@@ -2688,6 +2688,13 @@ final class MeetViewController: UIViewController {
             return
         }
         let metres = CLLocation(latitude: fix.lat, longitude: fix.lon).distance(from: me)
+        if gpsTooClose() {
+            // 誤差の内では方位も当てにならない。矢印は出さない。
+            findScreen.update(name: name, distance: "すぐ近く",
+                              detail: "地図では測れない近さです。周りを見てください",
+                              angle: nil, cameraAvailable: true)
+            return
+        }
         let bearing = Self.bearing(from: me.coordinate, to: fix.coordinate)
         let heading = locations.heading?.trueHeading ?? -1
         let angle = heading >= 0 ? bearing - heading : bearing
@@ -2732,7 +2739,9 @@ final class MeetViewController: UIViewController {
         guard phase == .guiding else { return }
         let name = partnerName
         let radio = radioIsFresh() ? latestDistance : nil
+        let tooClose = gpsTooClose()
         var detail = radio.map { "電波で\(formatMeters($0))" }
+            ?? (tooClose ? "すぐ近く・周りを見てください" : nil)
             ?? currentMetres().map { "\(NearbyAlert.text($0))・\(NearbyAlert.walkText($0))" }
             ?? "居場所がまだ届いていません"
         if let mood = peerMood, !mood.isEmpty { detail += "\n「\(mood)」" }
@@ -2740,8 +2749,13 @@ final class MeetViewController: UIViewController {
         // 電波の大きな数字は近いときだけ。遠いときは右上の札が距離を言う。
         arReadout.isHidden = radio == nil
 
-        let turn = nextManeuver()
-        if let turn, let me = locations.last {
+        let turn = tooClose ? nil : nextManeuver()
+        if tooClose {
+            // 道なりの「目的地は右側 2m先」は、ずれたGPSの点までの話なので出さない。
+            arTurnCard.isHidden = false
+            arTurnCard.showTurn(symbol: "hand.wave", text: "\(name)はすぐ近く",
+                                detail: "手を振って合図しましょう")
+        } else if let turn, let me = locations.last {
             arTurnCard.isHidden = false
             arTurnCard.showTurn(symbol: RouteSheetViewController.symbol(for: turn.text), text: turn.text,
                                 detail: NearbyAlert.text(turn.at.distance(from: me)) + "先")
@@ -2807,7 +2821,7 @@ final class MeetViewController: UIViewController {
         guard let frame = sceneView.session.currentFrame else { return }
         groundMap.place(camera: frame.camera.transform, heading: locations.heading?.trueHeading)
         if let me = locations.last {
-            groundMap.refresh(center: me, route: (navRoute ?? mapFloor?.currentRoute)?.polyline,
+            groundMap.refresh(center: me, heading: locations.heading?.trueHeading, route: (navRoute ?? mapFloor?.currentRoute)?.polyline,
                               peer: theirFix?.coordinate, peerName: partnerName)
         }
     }
@@ -3849,6 +3863,8 @@ final class MeetViewController: UIViewController {
             var parts: [String] = []
             if let radio {
                 parts.append("電波で\(formatMeters(radio))")
+            } else if gpsTooClose() {
+                parts.append("すぐ近く")
             } else if let metres {
                 parts.append(NearbyAlert.text(metres))
                 parts.append(NearbyAlert.walkText(metres))
@@ -5429,6 +5445,12 @@ final class MeetViewController: UIViewController {
         return abs(map.meters - Double(d)) <= max(200, map.accuracy * 3)
     }
 
+    /// 電波の距離が無く、GPSの距離が2台の誤差の内にある（=数字は当てにならないが、すぐ近く）。
+    private func gpsTooClose() -> Bool {
+        guard !radioIsFresh(), let map = mapDistance() else { return false }
+        return NearbyAlert.withinGPSError(metres: map.meters, accuracy: map.accuracy)
+    }
+
     /// UWBの値がいま使えるか。2秒来なければ「無い」とみなす。
     private func radioIsFresh() -> Bool {
         #if DEBUG
@@ -5447,6 +5469,10 @@ final class MeetViewController: UIViewController {
             return Guidance(headline: "見つけた", detail: "手を振って合図しましょう", tone: .arrived)
         }
         // 電波が切れたら、地図の数字に切り替える。人には切り替えさせない。
+        if gpsTooClose() {
+            return Guidance(headline: "すぐ近く",
+                            detail: "地図では測れない近さです。周りを見てください", tone: .near)
+        }
         if !radioIsFresh(), let map = mapDistance() {
             let minutes = max(1, Int((map.meters / 80).rounded()))
             let metres = map.meters < 1000 ? "\(Int(map.meters.rounded()))m" : String(format: "%.1fkm", map.meters / 1000)
@@ -6302,6 +6328,7 @@ final class MeetViewController: UIViewController {
             // 画面と同じ数字を出す。電波の値だけを渡していたので、電波が切れた
             // あとも島が古い「0.5 m」を出し続け、地図は1.2kmと言っていた。
             metres: currentMetres(),
+            near: gpsTooClose() ? true : nil,
             name: who,
             closing: trendClosing,
             arrived: arrived,

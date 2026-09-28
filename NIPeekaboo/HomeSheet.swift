@@ -1306,9 +1306,36 @@ final class GroundMap {
     private var routeRef: MKPolyline?
     private var snapshotAt = Date.distantPast
     private var working = false
-    /// 地図に写す範囲（半径 m）と、床の上の直径（m）。
-    private let radius: CLLocationDistance = 220
+    /// いま貼ってある地図の上が向いている方角（北から時計回りの度）。
+    /// 北が上の地図を床に置くと、南を向いたとき文字が逆さまになる（9/29 実機）。
+    /// 向いている方を上にして描き、文字を読める向きにする。
+    private var snapHeading: Double = 0
+    /// いま貼ってある地図に写っている範囲（半径 m）。
+    private var shownRadius: CLLocationDistance = 0
+    /// 床の上の地図の直径（m）。
     private let diameter: CGFloat = 1.3
+
+    /// 写す範囲。相手が近いほど寄る（半径220mのままだと、15m先の相手が自分の三角の下に隠れた）。
+    static func radius(toPeer metres: CLLocationDistance?) -> CLLocationDistance {
+        guard let metres else { return 220 }
+        return min(220, max(40, metres * 2.5))
+    }
+
+    /// 地図を描き直すか。動いた・向きが変わった・寄り具合が変わった・道なりの線が変わった。
+    static func needsRedraw(moved: CLLocationDistance, radius: CLLocationDistance,
+                            shownRadius: CLLocationDistance, headingChange: Double,
+                            routeChanged: Bool) -> Bool {
+        if routeChanged || shownRadius == 0 { return true }
+        if moved > max(3, radius * 0.07) { return true }
+        if abs(radius - shownRadius) > shownRadius * 0.3 { return true }
+        return headingChange > 35
+    }
+
+    /// 2つの方角の差（0〜180度）。
+    static func angleGap(_ a: Double, _ b: Double) -> Double {
+        let d = abs((a - b).truncatingRemainder(dividingBy: 360))
+        return d > 180 ? 360 - d : d
+    }
 
     init() {
         let plane = SCNPlane(width: diameter, height: diameter)
@@ -1350,10 +1377,11 @@ final class GroundMap {
         let forward = -back / len
         // 世界の向きの角度（-z が0、上から見て反時計回りが正）。
         let camYaw = atan2(-forward.x, -forward.z)
-        let heading = Float(degrees * .pi / 180)          // 北から時計回り
+        // 貼ってある地図の上は snapHeading の方角。いま向いている方との差だけ回す。
+        let turn = Float((degrees - snapHeading) * .pi / 180)   // 北から時計回り
         root.simdPosition = simd_float3(pos.x + forward.x * 1.1, pos.y - 1.25, pos.z + forward.z * 1.1)
-        root.eulerAngles.y = camYaw + heading              // 地図の上（北）を世界の北へ
-        meYaw.eulerAngles.y = -heading                      // 三角は向いている方へ
+        root.eulerAngles.y = camYaw + turn                  // 地図の上を、実際のその方角へ
+        meYaw.eulerAngles.y = -turn                          // 三角は向いている方へ
         if root.opacity < 1 {
             SCNTransaction.begin()
             SCNTransaction.animationDuration = 0.4
@@ -1362,16 +1390,23 @@ final class GroundMap {
         }
     }
 
-    /// 地図の画像を作り直す。15m以上動いたか、道なりの線が変わったときだけ（重いので）。
-    func refresh(center me: CLLocation, route: MKPolyline?, peer: CLLocationCoordinate2D?, peerName: String) {
+    /// 地図の画像を作り直す。重いので、needsRedraw が言うときだけ・2秒に1回まで。
+    func refresh(center me: CLLocation, heading: Double?, route: MKPolyline?,
+                 peer: CLLocationCoordinate2D?, peerName: String) {
+        guard let heading, heading >= 0 else { return }
         let moved = center.map { $0.distance(from: me) } ?? .greatestFiniteMagnitude
-        guard !working, moved > 15 || route !== routeRef,
-              Date().timeIntervalSince(snapshotAt) > 2 else { return }
+        let toPeer = peer.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: me) }
+        let radius = Self.radius(toPeer: toPeer)
+        guard !working, Date().timeIntervalSince(snapshotAt) > 2,
+              Self.needsRedraw(moved: moved, radius: radius, shownRadius: shownRadius,
+                               headingChange: Self.angleGap(heading, snapHeading),
+                               routeChanged: route !== routeRef) else { return }
         working = true
         snapshotAt = Date()
         let options = MKMapSnapshotter.Options()
-        options.region = MKCoordinateRegion(center: me.coordinate,
-                                            latitudinalMeters: radius * 2, longitudinalMeters: radius * 2)
+        // 向いている方を上に。写る範囲の半分は高さの約0.268倍（MacのMapKitで実測 9/29）。
+        options.camera = MKMapCamera(lookingAtCenter: me.coordinate, fromDistance: radius / 0.268,
+                                     pitch: 0, heading: heading)
         options.size = CGSize(width: 512, height: 512)
         options.scale = 2
         options.traitCollection = UITraitCollection(userInterfaceStyle: .dark)
@@ -1382,7 +1417,10 @@ final class GroundMap {
             guard let snapshot else { return }
             let image = Self.compose(snapshot, route: route, peer: peer, peerName: peerName)
             DispatchQueue.main.async {
+                // 画像と、その画像の上の方角は同時に入れ替える（ずれた1コマを出さない）。
                 (self.disc.geometry?.firstMaterial)?.diffuse.contents = image
+                self.snapHeading = heading
+                self.shownRadius = radius
                 self.center = me
                 self.routeRef = route
             }

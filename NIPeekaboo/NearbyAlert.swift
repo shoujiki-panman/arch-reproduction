@@ -50,6 +50,12 @@ enum NearbyAlert {
         return (km.hasSuffix(".0") ? String(km.dropLast(2)) : km) + "km"
     }
 
+    /// GPSだけで測った距離が、2台の誤差の内に入っているか。入っていたら数字は出さず「すぐ近く」と言う。
+    /// （9/29 実機：本当は2mなのに15mと出た。GPSは1台で±5〜15mずれ、2台ならその差はさらに当てにならない）
+    static func withinGPSError(metres: Double, accuracy: Double) -> Bool {
+        metres <= max(20, accuracy * 2)
+    }
+
     /// 歩いた見込み。分速80mは地図の画面と同じ値にそろえる。
     static func walkText(_ metres: Double) -> String {
         "歩いて約\(max(1, Int((metres / 80).rounded())))分"
