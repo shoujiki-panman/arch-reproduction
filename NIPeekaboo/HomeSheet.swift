@@ -273,12 +273,7 @@ final class HomeSheetView: UIView {
             }
             more.addArrangedSubview(moreRow("共有をやめる", symbol: "xmark.circle", action: onEnd, danger: true))
         case let .friends(friends, waitingLine, canInvite, canEnd):
-            body.addArrangedSubview(moreRow("まわりを見る（カフェ・ごはん・公園）", symbol: "binoculars",
-                                             action: onExplore))
-            body.addArrangedSubview(moreRow("いまの話題（X・リアルタイム）", symbol: "bubble.left.and.text.bubble.right",
-                                             action: onTalk))
-            body.addArrangedSubview(moreRow("いま近くで（災害・警察・もしものとき）", symbol: "exclamationmark.shield",
-                                             action: onNearbyNow))
+            // いちばんの用事（友だちとつなぐ）を先に、まわりのことはその下に（10/3 配置の見直し）。
             body.addArrangedSubview(sectionTitle(!friends.isEmpty ? "友だち"
                                                   : waitingLine != nil ? "待っています" : "人と会う"))
             if let waitingLine { body.addArrangedSubview(statusLine(waitingLine)) }
@@ -293,6 +288,13 @@ final class HomeSheetView: UIView {
             if canEnd {
                 body.addArrangedSubview(moreRow("やめる", symbol: "xmark.circle", action: onEnd, danger: true))
             }
+            body.addArrangedSubview(sectionTitle("まわり"))
+            body.addArrangedSubview(moreRow("まわりを見る（カフェ・ごはん・公園）", symbol: "binoculars",
+                                             action: onExplore))
+            body.addArrangedSubview(moreRow("いまの話題（X・リアルタイム）", symbol: "bubble.left.and.text.bubble.right",
+                                             action: onTalk))
+            body.addArrangedSubview(moreRow("いま近くで（災害・警察・もしものとき）", symbol: "exclamationmark.shield",
+                                             action: onNearbyNow))
         }
         if !body.arrangedSubviews.isEmpty { stack.addArrangedSubview(body) }
         if !more.arrangedSubviews.isEmpty { stack.addArrangedSubview(more) }

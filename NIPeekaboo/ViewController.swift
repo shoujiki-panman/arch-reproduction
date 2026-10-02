@@ -2029,14 +2029,16 @@ final class MeetViewController: UIViewController {
                                children: limits)
 
         if let current = group {
-            var share: [UIMenuElement] = [limitMenu]
+            // 友だちとのつながりは「やめるまで」なので、期限は出さない（10/3 重複と配置の見直し）。
+            var share: [UIMenuElement] = isFriendRoom ? [] : [limitMenu]
             // One person at a time, without ending it for everyone.
             let people = current.approved.filter { $0 != current.myMember }.map { member in
                 UIAction(title: "\(name(ofMember: member))（\(Badge.of(member))）",
                          image: UIImage(systemName: "person.crop.circle.badge.minus"),
                          attributes: .destructive) { [weak self] _ in self?.stopSharing(with: member) }
             }
-            if !people.isEmpty {
+            // 友だちとの1対1では「この人との共有をやめる」は板の「共有をやめる」と同じなので出さない。
+            if !people.isEmpty, !isFriendRoom {
                 share.append(UIMenu(title: current.isHost ? "グループから外す" : "この人との共有をやめる",
                                     image: UIImage(systemName: "person.crop.circle.badge.minus"),
                                     children: people))
@@ -2053,8 +2055,7 @@ final class MeetViewController: UIViewController {
                 card.subtitle = "アプリがない人にも"
                 share.append(contentsOf: [spot, card])
             }
-            share.append(UIAction(title: "共有をやめる", image: UIImage(systemName: "xmark.circle"),
-                                  attributes: .destructive) { [weak self] _ in self?.finishMeet() })
+            // 「共有をやめる」は板の下にある（同じものを2か所に置かない）。
             let others = current.approved.filter { $0 != current.myMember }.map { name(ofMember: $0) }
             let who = others.isEmpty ? "参加待ち" : others.joined(separator: "、")
             // 誰と・いつまでは中の1行目に書く（外の行は1行で収める）。
@@ -2119,10 +2120,8 @@ final class MeetViewController: UIViewController {
             self?.refreshDials()
         }
         proactive.state = Proactive.isOn ? .on : .off
-        let safety = UIAction(title: "もしものとき・災害", image: UIImage(systemName: "exclamationmark.shield")) { [weak self] _ in
-            self?.openNearbyNow()
-        }
-        items.append(UIMenu(title: "", options: .displayInline, children: [safety, nearMenu, proactive]))
+        // 「もしものとき・災害」は板の「いま近くで」と同じ画面なので、ここには置かない。
+        items.append(UIMenu(title: "", options: .displayInline, children: [nearMenu, proactive]))
 
         // ■ 設定
         let haptics = UIAction(title: hapticsOn ? "振動を止める" : "振動を使う",
@@ -5467,8 +5466,8 @@ final class MeetViewController: UIViewController {
         // 地図を指で動かしたあとだけ「戻す」を出す。動かしていないのに出すと、
         // 押しても何も変わらないボタンになる。
         recenterButton.isHidden = true
-        // 「まわりを見る」は自分の場所だけで動く。相手を待つあいだこそ使う。
-        exploreButton.isHidden = !(floorUp || dialExplores || ringHidden)
+        // 「まわりを見る」は板の行にある。地図の上の双眼鏡は同じものなので出さない（10/3）。
+        exploreButton.isHidden = true
         // カメラ（実際の道の上に曲がり角と相手を重ねる見え方）へは、右上から一押しで。
         switchButton.isHidden = theirFix == nil || group == nil
 
