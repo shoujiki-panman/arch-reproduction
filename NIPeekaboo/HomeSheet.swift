@@ -116,7 +116,6 @@ final class HomeSheetView: UIView {
     var onInvite: (() -> Void)?
     var onEnd: (() -> Void)?
     var onConnect: ((Int) -> Void)?
-    var onSearch: (() -> Void)?
     var onExplore: (() -> Void)?
     var onNearbyNow: (() -> Void)?
     /// いまの話題（X・Yahoo!リアルタイム検索）。災害とは別の入口にする（9/28）。
@@ -556,28 +555,10 @@ final class HomeSheetView: UIView {
         ask.layer.borderColor = UIColor(red: 0.43, green: 0.36, blue: 1, alpha: 0.7).cgColor
         ask.layer.cornerRadius = 12
 
-        let search = searchButton()
-        search.setContentHuggingPriority(.required, for: .horizontal)
-        let row = UIStackView(arrangedSubviews: [ask, search])
-        row.axis = .horizontal
-        row.spacing = 8
-        return row
+        // 🔍の検索はこの欄にまとめた（打つと場所の候補が出る。10/3 本人「まとめて」）。
+        return ask
     }
 
-    private func searchButton() -> UIView {
-        var conf = UIButton.Configuration.filled()
-        conf.image = UIImage(systemName: "magnifyingglass")
-        conf.imagePadding = 8
-        conf.baseBackgroundColor = MeetPalette.raised
-        conf.baseForegroundColor = MeetPalette.secondary
-        conf.cornerStyle = .large
-        conf.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
-        let button = UIButton(type: .system)
-        button.configuration = conf
-        button.accessibilityLabel = "場所を検索"
-        button.addAction(UIAction { [weak self] _ in self?.onSearch?() }, for: .touchUpInside)
-        return button
-    }
 
     private func statusLine(_ text: String) -> UIView {
         let label = UILabel()
@@ -1792,97 +1773,3 @@ extension PlaceCardViewController: MKMapItemDetailViewControllerDelegate {
 
 // MARK: - 場所を検索
 
-/// 場所の検索。打つそばから候補を出す（MKLocalSearchCompleter、Appleマップと同じ仕組み）。
-final class SearchPlacesViewController: UIViewController, UISearchBarDelegate, UITableViewDataSource,
-                                        UITableViewDelegate, MKLocalSearchCompleterDelegate {
-    private let searchBar = UISearchBar()
-    private let table = UITableView()
-    private let completer = MKLocalSearchCompleter()
-    private var results: [MKLocalSearchCompletion] = []
-    private let near: CLLocation?
-    var onPick: ((MKMapItem) -> Void)?
-
-    init(near: CLLocation?) {
-        self.near = near
-        super.init(nibName: nil, bundle: nil)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = MeetPalette.background
-        searchBar.placeholder = "場所・お店・駅を検索"
-        searchBar.searchBarStyle = .minimal
-        searchBar.delegate = self
-        table.backgroundColor = .clear
-        table.dataSource = self
-        table.delegate = self
-        table.keyboardDismissMode = .onDrag
-        completer.delegate = self
-        completer.resultTypes = [.pointOfInterest, .address]
-        if let near {
-            completer.region = MKCoordinateRegion(center: near.coordinate,
-                                                  latitudinalMeters: 5000, longitudinalMeters: 5000)
-        }
-        for v in [searchBar, table] as [UIView] {
-            view.addSubview(v)
-            v.translatesAutoresizingMaskIntoConstraints = false
-        }
-        NSLayoutConstraint.activate([
-            searchBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            searchBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            searchBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            table.topAnchor.constraint(equalTo: searchBar.bottomAnchor, constant: 4),
-            table.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            table.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            table.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
-    }
-
-    /// キーボードは板と一緒に上がってくる（出きってからだと、打てるまで一拍おそい）。
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        searchBar.becomeFirstResponder()
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        if !searchBar.isFirstResponder { searchBar.becomeFirstResponder() }
-    }
-
-    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
-        completer.queryFragment = searchText
-        if searchText.isEmpty { results = []; table.reloadData() }
-    }
-
-    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
-        results = completer.results
-        table.reloadData()
-    }
-
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { results.count }
-
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = UITableViewCell(style: .subtitle, reuseIdentifier: nil)
-        let r = results[indexPath.row]
-        cell.backgroundColor = .clear
-        cell.textLabel?.text = r.title
-        cell.textLabel?.textColor = MeetPalette.primary
-        cell.detailTextLabel?.text = r.subtitle
-        cell.detailTextLabel?.textColor = MeetPalette.secondary
-        cell.imageView?.image = UIImage(systemName: "mappin.circle.fill")
-        cell.imageView?.tintColor = MeetPalette.action
-        return cell
-    }
-
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        // 閉じるのと、場所を引くのを同時に（通信を待ってから閉じると、押してから間が空く）。
-        let onPick = self.onPick
-        MKLocalSearch(request: MKLocalSearch.Request(completion: results[indexPath.row])).start { response, _ in
-            guard let item = response?.mapItems.first else { return }
-            onPick?(item)
-        }
-        dismiss(animated: true)
-    }
-}

@@ -3242,7 +3242,8 @@ final class MeetViewController: UIViewController {
             ? ["\(partner)と中間で会う、カフェで", "遅れるって伝えて", "途中でコーヒー買える所",
                "7時までに来なかったら教えて", "帰りに牛乳と卵を買ってきて"]
             : ["雨でも静かに作業できるところ", "2時間ひまつぶし", "近くのカフェ", "スタバ何時まで？"]
-        let vc = AskViewController(suggestions: suggestions)
+        let vc = AskViewController(suggestions: suggestions, near: locations.last)
+        vc.onPickPlace = { [weak self] item in self?.presentPlace(item) }
         vc.onSubmit = { [weak self, weak vc] text in
             guard let self, let vc else { return }
             self.runAsk(text, in: vc)
@@ -3793,12 +3794,6 @@ final class MeetViewController: UIViewController {
 
     /// 場所の名前を1つに決める係（入力候補の返事を待つあいだ持っておく）。
     private var placeResolver: PlaceResolver?
-
-    private func openSearch() {
-        let vc = SearchPlacesViewController(near: locations.last)
-        vc.onPick = { [weak self] item in self?.presentPlace(item) }
-        presentOnTop(vc)
-    }
 
     // MARK: - 災害の知らせ（気象庁）
 
@@ -6728,7 +6723,6 @@ final class MeetViewController: UIViewController {
         homeSheet.onMood = { [weak self] in self?.askMood() }
         homeSheet.onInvite = { [weak self] in self?.callPartnerTapped() }
         homeSheet.onEnd = { [weak self] in self?.finishMeet() }
-        homeSheet.onSearch = { [weak self] in self?.openSearch() }
         homeSheet.onAsk = { [weak self] in self?.openAsk() }
         homeSheet.onSuggestion = { [weak self] in self?.actOnSuggestion() }
         homeSheet.onErrandOpen = { [weak self] in self?.openErrandList() }

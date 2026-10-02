@@ -838,7 +838,7 @@ final class AskRun {
 // MARK: - 頼む画面
 
 /// 一文を打つ（声でもいい。キーボードのマイク）→ 手順が1行ずつ進む → 送る前に確認の札。
-final class AskViewController: UIViewController, UITextFieldDelegate {
+final class AskViewController: UIViewController, UITextFieldDelegate, MKLocalSearchCompleterDelegate {
 
     var onSubmit: ((String) -> Void)?
     private let suggestions: [String]
@@ -856,7 +856,17 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
     private let card = UIStackView()
     private var stepRows: [(icon: UIImageView, label: UILabel)] = []
 
-    init(suggestions: [String]) {
+    /// 打っているあいだに出す場所の候補（🔍の検索をここにまとめた。10/3 本人「まとめて」）。
+    /// 候補を押せば場所の札、決定キーならAIが一文として読む。
+    private let places = UIStackView()
+    private let completer = MKLocalSearchCompleter()
+    private var placeResults: [MKLocalSearchCompletion] = []
+    private let near: CLLocation?
+    /// 候補の場所が選ばれた（閉じてから札を出す）。
+    var onPickPlace: ((MKMapItem) -> Void)?
+
+    init(suggestions: [String], near: CLLocation? = nil) {
+        self.near = near
         self.suggestions = suggestions
         super.init(nibName: nil, bundle: nil)
     }
@@ -949,9 +959,20 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         recents.spacing = 0
         reloadRecents()
 
+        places.axis = .vertical
+        places.spacing = 0
+        places.isHidden = true
+        completer.delegate = self
+        completer.resultTypes = [.pointOfInterest, .address]
+        if let near {
+            completer.region = MKCoordinateRegion(center: near.coordinate,
+                                                  latitudinalMeters: 5000, longitudinalMeters: 5000)
+        }
+        field.addTarget(self, action: #selector(fieldChanged), for: .editingChanged)
+
         // 結果（題・手順・確かめる札）を上に、候補と最近頼んだことをその下に。
         // 候補が上にあると、終わったときに結果が画面の外へ押し出される（9/26）。
-        let column = UIStackView(arrangedSubviews: [inputRow, modeLabel, titleLabel, steps, card, chips, recents])
+        let column = UIStackView(arrangedSubviews: [inputRow, places, modeLabel, titleLabel, steps, card, chips, recents])
         column.axis = .vertical
         column.spacing = 12
         column.setCustomSpacing(6, after: inputRow)
@@ -992,9 +1013,82 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         return true
     }
 
+    // MARK: 打っているあいだの場所の候補
+
+    @objc private func fieldChanged() {
+        let text = (field.text ?? "").trimmingCharacters(in: .whitespaces)
+        // 頼みごとを進めているあいだは、候補を出さない（結果の上に被せない）。
+        guard titleLabel.isHidden, !text.isEmpty else {
+            completer.cancel()
+            showPlaces([])
+            return
+        }
+        completer.queryFragment = text
+    }
+
+    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        guard titleLabel.isHidden, !(field.text ?? "").isEmpty else { return }
+        showPlaces(Array(completer.results.prefix(5)))
+    }
+
+    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {}
+
+    /// 候補を並べる。打っているあいだは、例と最近頼んだことを隠す（Googleマップと同じ）。
+    private func showPlaces(_ results: [MKLocalSearchCompletion]) {
+        placeResults = results
+        places.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        places.isHidden = results.isEmpty
+        let typing = !(field.text ?? "").isEmpty
+        if titleLabel.isHidden {
+            chips.isHidden = typing
+            recents.isHidden = typing || AskHistory.shown(AskHistory.items, excluding: suggestions).isEmpty
+        }
+        for (index, r) in results.enumerated() {
+            var conf = UIButton.Configuration.plain()
+            conf.title = r.title
+            conf.subtitle = r.subtitle.isEmpty ? nil : r.subtitle
+            conf.image = UIImage(systemName: "mappin.circle.fill")
+            conf.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 20)
+            conf.imagePadding = 12
+            conf.baseForegroundColor = MeetPalette.primary
+            conf.imageColorTransformer = UIConfigurationColorTransformer { _ in MeetPalette.action }
+            conf.titleLineBreakMode = .byTruncatingTail
+            conf.subtitleLineBreakMode = .byTruncatingTail
+            conf.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 0, bottom: 10, trailing: 0)
+            conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                var a = attrs
+                a.font = Type.font(16, .semibold, .body)
+                return a
+            }
+            conf.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                var a = attrs
+                a.font = Type.caption
+                a.foregroundColor = MeetPalette.secondary
+                return a
+            }
+            let row = UIButton(configuration: conf)
+            row.contentHorizontalAlignment = .leading
+            row.addAction(UIAction { [weak self] _ in self?.pickPlace(at: index) }, for: .touchUpInside)
+            places.addArrangedSubview(row)
+        }
+    }
+
+    private func pickPlace(at index: Int) {
+        guard placeResults.indices.contains(index) else { return }
+        // 閉じるのと、場所を引くのを同時に（通信を待ってから閉じると、押してから間が空く）。
+        let onPick = onPickPlace
+        MKLocalSearch(request: MKLocalSearch.Request(completion: placeResults[index])).start { response, _ in
+            guard let item = response?.mapItems.first else { return }
+            onPick?(item)
+        }
+        dismiss(animated: true)
+    }
+
     private func submit() {
         let text = (field.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        completer.cancel()
+        showPlaces([])
         field.resignFirstResponder()
         AskHistory.record(text)
         onSubmit?(text)
