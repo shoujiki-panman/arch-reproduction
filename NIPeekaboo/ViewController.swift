@@ -2185,11 +2185,15 @@ final class MeetViewController: UIViewController {
         UserDefaults.standard.removeObject(forKey: Self.groupKey)
         GroupKey.purgeExpired()
         guard let url = Self.groupFileURL, let data = try? Data(contentsOf: url),
-              let saved = try? JSONDecoder().decode(TodayGroup.self, from: data) else { return }
+              let decoded = try? JSONDecoder().decode(TodayGroup.self, from: data) else { return }
         // リンク無しでつないだグループは、グループの鍵ではなく端末の名札で署名している。
         // グループの鍵だけを探していたので、開き直すたびに黙って捨てられていた。
-        let friendKey = saved.myMember == SelfIdentity.publicKey ? SelfIdentity.key() : nil
-        guard saved.expires > Date(), saved.expires <= Self.maxExpiry(),
+        let friendKey = decoded.myMember == SelfIdentity.publicKey ? SelfIdentity.key() : nil
+        // 覚えた友だちとのつながりは、やめるまで続く（前の版で今日の4時までにしたものも延ばす）。
+        var saved = decoded
+        let friendRoom = friendKey != nil && Self.isFriendRoom(id: saved.id)
+        if friendRoom { saved.expires = Self.untilStopped }
+        guard saved.expires > Date(), friendRoom || saved.expires <= Self.maxExpiry(),
               let key = GroupKey.load(groupID: saved.id) ?? friendKey else {
             GroupKey.delete(groupID: saved.id)
             try? FileManager.default.removeItem(at: url)
@@ -2296,7 +2300,20 @@ final class MeetViewController: UIViewController {
     }
 
     /// どれだけ長くしても、ここは越えない。リンクが何と言っていても切り落とす。
+    /// （リンクは知らない人にも届きうるので。覚えた友だちとのつながりは untilStopped）
     static func maxExpiry() -> Date { Date().addingTimeInterval(24 * 3600) }
+
+    /// 覚えた友だちとは、やめるまでつないだまま（10/3 本人「一回繋いだら解除しない限りは繋いでていいよ」）。
+    /// 期限の欄は残すので、ずっと先の日付を入れておく。
+    static let untilStopped = Date(timeIntervalSince1970: 4_102_444_800)   // 2100-01-01
+
+    static func isUntilStopped(_ date: Date) -> Bool { date.timeIntervalSinceNow > 365 * 24 * 3600 }
+
+    /// この部屋が、覚えた相手とリンク無しで作ったものか。
+    private static func isFriendRoom(id: String) -> Bool {
+        let me = SelfIdentity.publicKey
+        return KnownFriends.all().contains { KnownFriends.pairSecret(mine: me, theirs: $0.key) == id }
+    }
 
     private static func endOfToday() -> Date {
         let calendar = Calendar.current
@@ -2306,6 +2323,7 @@ final class MeetViewController: UIViewController {
     }
 
     private func untilText(_ date: Date) -> String {
+        if Self.isUntilStopped(date) { return "やめるまで" }
         let formatter = DateFormatter()
         formatter.dateFormat = "H:mm"
         // 24時間を選べるようになったので、今日の4時なのか明日の4時なのかを書き分ける。
@@ -2354,7 +2372,7 @@ final class MeetViewController: UIViewController {
         group = TodayGroup(id: KnownFriends.pairSecret(mine: me, theirs: friend.key),
                            hostKey: host,
                            hostName: host == me ? Self.myDisplayName : friend.name,
-                           expires: shareExpiry(), myMember: me,
+                           expires: Self.untilStopped, myMember: me,
                            approved: [me, friend.key],
                            names: [me: Self.myDisplayName, friend.key: friend.name])
         finderNotice = nil
@@ -2432,8 +2450,7 @@ final class MeetViewController: UIViewController {
     /// 待っているあいだの言い方を変えるために見る。
     private var isFriendRoom: Bool {
         guard let id = group?.id else { return false }
-        let me = SelfIdentity.publicKey
-        return KnownFriends.all().contains { KnownFriends.pairSecret(mine: me, theirs: $0.key) == id }
+        return Self.isFriendRoom(id: id)
     }
 
     /// 相手が遠いあいだの居場所のやりとりを始める。
@@ -4980,7 +4997,7 @@ final class MeetViewController: UIViewController {
             current.names = welcome.names.mapValues(cleanName)
             current.version = welcome.version
             // ホストが期限を変えたら合わせる。上限は同じ（24時間）。
-            let told = min(Date(timeIntervalSince1970: welcome.expires), Self.maxExpiry())
+            let told = min(Date(timeIntervalSince1970: welcome.expires), isFriendRoom ? Self.untilStopped : Self.maxExpiry())
             if told > Date(), abs(told.timeIntervalSince(current.expires)) > 30 {
                 current.expires = told
                 GroupKey.setExpiry(groupID: current.id, expires: told)
