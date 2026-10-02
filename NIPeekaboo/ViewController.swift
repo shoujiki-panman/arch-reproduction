@@ -1548,6 +1548,15 @@ final class MeetViewController: UIViewController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.sendTapped() }
         }
         #if DEBUG
+        if args.contains("-previewErrand") {
+            // 確認用：頼まれたおつかいの見え方（板のいちばん上の行）。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                self.myErrand = ErrandMessage(id: "preview", from: "たぬき", place: "ローソン 川崎駅前店",
+                                              items: ["牛乳", "卵", "食パン"])
+                self.myErrandGot = ["卵"]
+                self.refreshDials()
+            }
+        }
         previewNoRadio = args.contains("-previewNoRadio")
             || ProcessInfo.processInfo.environment["KOKODAYO_NO_RADIO"] == "1"
         print("RECON flags noRadio=\(previewNoRadio) args=\(args.dropFirst().joined(separator: " "))")
@@ -3930,6 +3939,11 @@ final class MeetViewController: UIViewController {
     private func renderHomeSheet() {
         evaluateProactive()
         homeSheet.suggestion = suggestion
+        homeSheet.errand = myErrand.map { errand in
+            HomeSheetView.ErrandCard(from: errand.from, place: errand.placeText,
+                                     left: errand.items.filter { !myErrandGot.contains($0) },
+                                     got: errand.items.filter { myErrandGot.contains($0) })
+        }
         if let fix = theirFix, group != nil {
             let radio = radioIsFresh() ? latestDistance : nil
             let metres = currentMetres()
@@ -6679,6 +6693,7 @@ final class MeetViewController: UIViewController {
         homeSheet.onSearch = { [weak self] in self?.openSearch() }
         homeSheet.onAsk = { [weak self] in self?.openAsk() }
         homeSheet.onSuggestion = { [weak self] in self?.actOnSuggestion() }
+        homeSheet.onErrandOpen = { [weak self] in self?.openErrandList() }
         homeSheet.onSuggestionDismiss = { [weak self] in self?.dismissSuggestion() }
         homeSheet.onExplore = { [weak self] in self?.exploreTapped() }
         homeSheet.onNearbyNow = { [weak self] in self?.openNearbyNow() }
