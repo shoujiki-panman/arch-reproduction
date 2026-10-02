@@ -12,6 +12,7 @@
 import Foundation
 import UIKit
 import MapKit
+import SafariServices
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
@@ -657,10 +658,25 @@ final class PlaceResolver: NSObject, MKLocalSearchCompleterDelegate {
     /// 候補をいくつか（Appleマップの検索結果のように）。center のまわりで探し、近い順。
     /// 種類の言葉（ラーメン・カフェ）は近い順にそのまま。名前（スタバ・ラゾーナ）は、
     /// いちばん当てはまる1つを先頭に、同じ言葉で見つかったほかの場所を後ろに足す。
-    func resolveMany(_ query: String, near center: CLLocation, limit: Int = 5) async -> [MKMapItem] {
+    /// openData: Appleマップが取りこぼす店を OpenPOI API で足す（店の名前に入る種類の言葉のときだけ）。
+    /// 足すのは出典を出せる画面（「AIに頼む」の候補一覧）だけ。
+    func resolveMany(_ query: String, near center: CLLocation, limit: Int = 5,
+                     openData: Bool = false) async -> [MKMapItem] {
+        let useOpen = openData && OpenPOI.usable(for: query)
+        async let openHits: [OpenPOI.Hit] = useOpen ? OpenPOI.search(query, near: center) : []
         // まわりで探した結果でも、5kmより遠いものは並べない（51km先のうどん屋が出ていた）。
-        let around = await nearest(query, near: center).filter {
+        var around = await nearest(query, near: center).filter {
             ($0.placemark.location?.distance(from: center) ?? .greatestFiniteMagnitude) <= 5_000
+        }
+        if useOpen {
+            let known = around.compactMap { item in
+                item.placemark.location.map { (name: item.name ?? "", location: $0) }
+            }
+            let extra = await openHits.filter { !OpenPOI.isDuplicate($0, of: known) }.map(OpenPOI.mapItem)
+            around = (around + extra).sorted {
+                ($0.placemark.location?.distance(from: center) ?? .greatestFiniteMagnitude)
+                    < ($1.placemark.location?.distance(from: center) ?? .greatestFiniteMagnitude)
+            }
         }
         if AskParser.isGeneric(query) { return Array(around.prefix(limit)) }
         let best = await resolve(query, near: center)
@@ -798,9 +814,10 @@ final class AskRun {
         ui?.finish(text, ok: ok)
     }
 
-    func choose(title: String, rows: [(title: String, detail: String)], onPick: @escaping (Int) -> Void) {
+    func choose(title: String, rows: [(title: String, detail: String)], credit: Bool = false,
+                onPick: @escaping (Int) -> Void) {
         guard isLive else { return }
-        ui?.choose(title: title, rows: rows, onPick: onPick)
+        ui?.choose(title: title, rows: rows, credit: credit, onPick: onPick)
     }
 
     func dismiss(animated: Bool, completion: (() -> Void)? = nil) {
@@ -1140,7 +1157,9 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
     }
 
     /// 候補の一覧（Appleマップの検索結果と同じく、名前と「種類・距離」を1行ずつ）。押すとその場所の札へ。
-    func choose(title: String, rows: [(title: String, detail: String)], onPick: @escaping (Int) -> Void) {
+    /// credit: 一覧に OpenPOI API の場所が入っている。出典とそのページへのリンクを下に出す（利用条件）。
+    func choose(title: String, rows: [(title: String, detail: String)], credit: Bool = false,
+                onPick: @escaping (Int) -> Void) {
         stopButton.isHidden = true
         orb.setThinking(false)
         card.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -1177,6 +1196,23 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
             let b = UIButton(configuration: conf)
             b.contentHorizontalAlignment = .fill
             b.addAction(UIAction { _ in onPick(i) }, for: .touchUpInside)
+            card.addArrangedSubview(b)
+        }
+        if credit {
+            var conf = UIButton.Configuration.plain()
+            conf.title = OpenPOI.creditText
+            conf.baseForegroundColor = MeetPalette.secondary
+            conf.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 0, bottom: 0, trailing: 0)
+            conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                var a = attrs
+                a.font = Type.caption
+                return a
+            }
+            let b = UIButton(configuration: conf)
+            b.contentHorizontalAlignment = .leading
+            b.addAction(UIAction { [weak self] _ in
+                self?.present(SFSafariViewController(url: OpenPOI.attributionURL), animated: true)
+            }, for: .touchUpInside)
             card.addArrangedSubview(b)
         }
         card.alpha = 0

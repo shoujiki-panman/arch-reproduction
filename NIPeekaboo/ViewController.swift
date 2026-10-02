@@ -3662,7 +3662,7 @@ final class MeetViewController: UIViewController {
             }
             let finding = ui.addStep(aroundName.map { "\($0)のまわりで「\(query)」を探しています" } ?? "「\(query)」を探しています")
             let items = intent.go ? await resolver.resolve(query, near: center)
-                                  : await resolver.resolveMany(query, near: center)
+                                  : await resolver.resolveMany(query, near: center, limit: 8, openData: true)
             guard let self else { return }
             self.placeResolver = nil
             guard let best = items.first, let bestLoc = best.placemark.location else {
@@ -3706,6 +3706,7 @@ final class MeetViewController: UIViewController {
             }
             ui.choose(title: aroundName.map { "\($0)のまわりの「\(query)」" } ?? "近くの「\(query)」",
                       rows: rows,
+                      credit: items.contains(where: OpenPOI.isFromOpenPOI),
                       onPick: { [weak self] i in
                           ui.dismiss(animated: true)
                           self?.presentPlace(items[i])
