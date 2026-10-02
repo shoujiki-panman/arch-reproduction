@@ -1070,6 +1070,10 @@ final class MeetViewController: UIViewController {
     private var storeCheckedAt = Date.distantPast
     private var storeCheckedFrom: CLLocationCoordinate2D?
     /// 自分が頼んだリストと、相手が買えたと言っている物。
+    /// 「買わずに近づいた」をもう知らせたおつかい（同じおつかいで二度鳴らさない）。
+    private var errandReminded: Set<String> = []
+    /// 遠く（1.2km より先）にいたのを見たおつかい。頼んだとき既に近ければ鳴らさないため。
+    private var errandArmed: Set<String> = []
     private var sentErrand: ErrandMessage?
     private var sentErrandGot: [String] = []
     /// 自分が頼まれたリストと、自分が買えた物。
@@ -1081,7 +1085,10 @@ final class MeetViewController: UIViewController {
     /// 同じリストがMPCと中継の両方から届く。番号で一度だけ受け取る。
     private var seenErrands = Set<String>()
     /// 相手が決めた距離まで近づいたかの見張り。
-    private var approach = ApproachWatcher()
+    /// 近づいた知らせの見張りを忘れる（部屋ごとに残してあるもの）。
+    private func forgetApproach() {
+        if let id = group?.id { ApproachWatcher.forget(room: id) }
+    }
     /// 相手のいまの様子（一言）。
     private var peerMood: String?
     private static let moodKey = "kokodayo.mood"
@@ -1353,6 +1360,8 @@ final class MeetViewController: UIViewController {
     /// 「探す」の全画面。相手のカードの「探す」から入り、×で地図へ戻る。
     private let findScreen = FindScreen()
     private var finding = false
+    /// 近づいて「探す」を自動で開いた。離れるまでは開き直さない。
+    private var autoFindLatched = false
     /// 案内中の帯。経路の「案内開始」から入り、「終了」か相手のすぐそばで終わる。
     private let navOverlay = NavigationOverlay()
     private var navRoute: MKRoute?
@@ -1518,6 +1527,8 @@ final class MeetViewController: UIViewController {
                                                name: .kokodayoKnock, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(pingFromNotification),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(relayWoke(_:)),
+                                               name: BackgroundRelay.didWake, object: nil)
         refreshDials()
         if supportsUWB {
             // A group restored from the last launch waits for the resume prompt.
@@ -1541,6 +1552,15 @@ final class MeetViewController: UIViewController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.sendTapped() }
         }
         #if DEBUG
+        if args.contains("-previewErrand") {
+            // 確認用：頼まれたおつかいの見え方（板のいちばん上の行）。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                self.myErrand = ErrandMessage(id: "preview", from: "たぬき", place: "ローソン 川崎駅前店",
+                                              items: ["牛乳", "卵", "食パン"])
+                self.myErrandGot = ["卵"]
+                self.refreshDials()
+            }
+        }
         previewNoRadio = args.contains("-previewNoRadio")
             || ProcessInfo.processInfo.environment["KOKODAYO_NO_RADIO"] == "1"
         print("RECON flags noRadio=\(previewNoRadio) args=\(args.dropFirst().joined(separator: " "))")
@@ -2009,14 +2029,16 @@ final class MeetViewController: UIViewController {
                                children: limits)
 
         if let current = group {
-            var share: [UIMenuElement] = [limitMenu]
+            // 友だちとのつながりは「やめるまで」なので、期限は出さない（10/3 重複と配置の見直し）。
+            var share: [UIMenuElement] = isFriendRoom ? [] : [limitMenu]
             // One person at a time, without ending it for everyone.
             let people = current.approved.filter { $0 != current.myMember }.map { member in
                 UIAction(title: "\(name(ofMember: member))（\(Badge.of(member))）",
                          image: UIImage(systemName: "person.crop.circle.badge.minus"),
                          attributes: .destructive) { [weak self] _ in self?.stopSharing(with: member) }
             }
-            if !people.isEmpty {
+            // 友だちとの1対1では「この人との共有をやめる」は板の「共有をやめる」と同じなので出さない。
+            if !people.isEmpty, !isFriendRoom {
                 share.append(UIMenu(title: current.isHost ? "グループから外す" : "この人との共有をやめる",
                                     image: UIImage(systemName: "person.crop.circle.badge.minus"),
                                     children: people))
@@ -2033,8 +2055,7 @@ final class MeetViewController: UIViewController {
                 card.subtitle = "アプリがない人にも"
                 share.append(contentsOf: [spot, card])
             }
-            share.append(UIAction(title: "共有をやめる", image: UIImage(systemName: "xmark.circle"),
-                                  attributes: .destructive) { [weak self] _ in self?.finishMeet() })
+            // 「共有をやめる」は板の下にある（同じものを2か所に置かない）。
             let others = current.approved.filter { $0 != current.myMember }.map { name(ofMember: $0) }
             let who = others.isEmpty ? "参加待ち" : others.joined(separator: "、")
             // 誰と・いつまでは中の1行目に書く（外の行は1行で収める）。
@@ -2073,12 +2094,12 @@ final class MeetViewController: UIViewController {
         let toggle = UIAction(title: NearbyAlert.isOn ? "知らせを止める" : "知らせを使う",
                               image: UIImage(systemName: NearbyAlert.isOn ? "bell.slash" : "bell")) { [weak self] _ in
             NearbyAlert.isOn.toggle()
-            if NearbyAlert.isOn { NearbyAlert.ask() } else { self?.approach.reset() }
+            if NearbyAlert.isOn { NearbyAlert.ask() } else { self?.forgetApproach() }
         }
         let distances = NearbyAlert.choices.map { metres in
             let action = UIAction(title: NearbyAlert.text(metres)) { [weak self] _ in
                 NearbyAlert.metres = metres
-                self?.approach.reset()
+                self?.forgetApproach()
             }
             action.state = NearbyAlert.metres == metres ? .on : .off
             return action
@@ -2099,10 +2120,8 @@ final class MeetViewController: UIViewController {
             self?.refreshDials()
         }
         proactive.state = Proactive.isOn ? .on : .off
-        let safety = UIAction(title: "もしものとき・災害", image: UIImage(systemName: "exclamationmark.shield")) { [weak self] _ in
-            self?.openNearbyNow()
-        }
-        items.append(UIMenu(title: "", options: .displayInline, children: [safety, nearMenu, proactive]))
+        // 「もしものとき・災害」は板の「いま近くで」と同じ画面なので、ここには置かない。
+        items.append(UIMenu(title: "", options: .displayInline, children: [nearMenu, proactive]))
 
         // ■ 設定
         let haptics = UIAction(title: hapticsOn ? "振動を止める" : "振動を使う",
@@ -2183,11 +2202,15 @@ final class MeetViewController: UIViewController {
         UserDefaults.standard.removeObject(forKey: Self.groupKey)
         GroupKey.purgeExpired()
         guard let url = Self.groupFileURL, let data = try? Data(contentsOf: url),
-              let saved = try? JSONDecoder().decode(TodayGroup.self, from: data) else { return }
+              let decoded = try? JSONDecoder().decode(TodayGroup.self, from: data) else { return }
         // リンク無しでつないだグループは、グループの鍵ではなく端末の名札で署名している。
         // グループの鍵だけを探していたので、開き直すたびに黙って捨てられていた。
-        let friendKey = saved.myMember == SelfIdentity.publicKey ? SelfIdentity.key() : nil
-        guard saved.expires > Date(), saved.expires <= Self.maxExpiry(),
+        let friendKey = decoded.myMember == SelfIdentity.publicKey ? SelfIdentity.key() : nil
+        // 覚えた友だちとのつながりは、やめるまで続く（前の版で今日の4時までにしたものも延ばす）。
+        var saved = decoded
+        let friendRoom = friendKey != nil && Self.isFriendRoom(id: saved.id)
+        if friendRoom { saved.expires = Self.untilStopped }
+        guard saved.expires > Date(), friendRoom || saved.expires <= Self.maxExpiry(),
               let key = GroupKey.load(groupID: saved.id) ?? friendKey else {
             GroupKey.delete(groupID: saved.id)
             try? FileManager.default.removeItem(at: url)
@@ -2205,7 +2228,9 @@ final class MeetViewController: UIViewController {
         if group != nil { startRemote() } else { stopRemote() }
         if let url = Self.groupFileURL {
             if let group, let data = try? JSONEncoder().encode(group) {
-                try? data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+                // 閉じていても大きく動いたら位置を送るため、ロック中の裏の起動でも読めるようにする
+                // （起動後に一度ロックを外していれば読める。友だちの一覧と同じ守り方）。
+                try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
                 var values = URLResourceValues()
                 values.isExcludedFromBackup = true
                 var target = url
@@ -2214,6 +2239,7 @@ final class MeetViewController: UIViewController {
                 try? FileManager.default.removeItem(at: url)
             }
         }
+        BackgroundRelay.shared.refresh()
         scheduleExpiry()
     }
 
@@ -2237,7 +2263,29 @@ final class MeetViewController: UIViewController {
     }
 
     /// Timers stop in the background, so the expiry is checked on the way back.
+    /// GPSを止めているあいだに、大きな移動の見張りが位置を拾った。距離を見直し、
+    /// 3km以内に入っていたら、近づいた知らせのためにGPSを戻す。
+    @objc private func relayWoke(_ note: Notification) {
+        guard locations.suspended, let location = note.object as? CLLocation else { return }
+        locations.inject(location)
+        if let metres = currentMetres(), metres <= 3_000 { locations.resume() }
+    }
+
+    /// 相手が最後に残した居場所を読む（相手のアプリが閉じていても、最後にいた所が見える）。
+    private func loadLastFix() {
+        guard let channel = remote else { return }
+        Task { [weak self] in
+            guard let fix = await channel.fetchLast() else { return }
+            await MainActor.run {
+                guard let self, self.remote === channel else { return }
+                channel.onFix?(fix)
+            }
+        }
+    }
+
     @objc private func appWillEnterForeground() {
+        locations.resume()
+        loadLastFix()
         mapFloor?.followSystemAppearance()
         // しばらく閉じていたら、地図を「いまの2人」に合わせ直す。指で動かしたあとは合わせ直さない
         // 決まりのせいで、朝の八丁畷のまま赤坂で開いていた（9/27「開くと今と違うエリアに飛ばされる」）。
@@ -2294,7 +2342,26 @@ final class MeetViewController: UIViewController {
     }
 
     /// どれだけ長くしても、ここは越えない。リンクが何と言っていても切り落とす。
+    /// （リンクは知らない人にも届きうるので。覚えた友だちとのつながりは untilStopped）
     static func maxExpiry() -> Date { Date().addingTimeInterval(24 * 3600) }
+
+    /// 覚えた友だちとは、やめるまでつないだまま（10/3 本人「一回繋いだら解除しない限りは繋いでていいよ」）。
+    /// 期限の欄は残すので、ずっと先の日付を入れておく。
+    static let untilStopped = Date(timeIntervalSince1970: 4_102_444_800)   // 2100-01-01
+
+    static func isUntilStopped(_ date: Date) -> Bool { date.timeIntervalSinceNow > 365 * 24 * 3600 }
+
+    /// 保存してあるつながり（画面の無い裏の起動でも読む。BackgroundRelay）。
+    static func savedGroup() -> TodayGroup? {
+        guard let url = groupFileURL, let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(TodayGroup.self, from: data)
+    }
+
+    /// この部屋が、覚えた相手とリンク無しで作ったものか。
+    static func isFriendRoom(id: String) -> Bool {
+        let me = SelfIdentity.publicKey
+        return KnownFriends.all().contains { KnownFriends.pairSecret(mine: me, theirs: $0.key) == id }
+    }
 
     private static func endOfToday() -> Date {
         let calendar = Calendar.current
@@ -2304,6 +2371,7 @@ final class MeetViewController: UIViewController {
     }
 
     private func untilText(_ date: Date) -> String {
+        if Self.isUntilStopped(date) { return "やめるまで" }
         let formatter = DateFormatter()
         formatter.dateFormat = "H:mm"
         // 24時間を選べるようになったので、今日の4時なのか明日の4時なのかを書き分ける。
@@ -2352,7 +2420,7 @@ final class MeetViewController: UIViewController {
         group = TodayGroup(id: KnownFriends.pairSecret(mine: me, theirs: friend.key),
                            hostKey: host,
                            hostName: host == me ? Self.myDisplayName : friend.name,
-                           expires: shareExpiry(), myMember: me,
+                           expires: Self.untilStopped, myMember: me,
                            approved: [me, friend.key],
                            names: [me: Self.myDisplayName, friend.key: friend.name])
         finderNotice = nil
@@ -2363,6 +2431,8 @@ final class MeetViewController: UIViewController {
         if supportsUWB { startup() }
         refreshDials()
         flash("\(friend.name)とつなぎました")
+        // 閉じていても動いたら位置を送れるよう、位置の許可を「常に」にしてもらう。
+        BackgroundRelay.shared.askForAlways()
         // 相手のアプリが閉じていても届くように、Apple のプッシュ通知でも知らせる。
         let myName = Self.myDisplayName
         Task { await PushKnock.ring(friend, from: me, name: myName) }
@@ -2430,8 +2500,7 @@ final class MeetViewController: UIViewController {
     /// 待っているあいだの言い方を変えるために見る。
     private var isFriendRoom: Bool {
         guard let id = group?.id else { return false }
-        let me = SelfIdentity.publicKey
-        return KnownFriends.all().contains { KnownFriends.pairSecret(mine: me, theirs: $0.key) == id }
+        return Self.isFriendRoom(id: id)
     }
 
     /// 相手が遠いあいだの居場所のやりとりを始める。
@@ -2448,9 +2517,11 @@ final class MeetViewController: UIViewController {
         } else {
             seed = group.id
         }
-        let channel = RemoteChannel(groupID: seed)
+        let channel = RemoteChannel(groupID: seed, me: group.myMember)
         channel.onFix = { [weak self] fix in
             guard let self else { return }
+            // 残してあった古い居場所が、いま届いている新しいものを上書きしないように。
+            if let current = self.theirFix, current.at > fix.at { return }
             let first = self.theirFix == nil
             self.theirFix = fix
             self.locations.setPartnerDistance(self.currentMetres())
@@ -2481,6 +2552,7 @@ final class MeetViewController: UIViewController {
         }
         channel.connect()
         remote = channel
+        loadLastFix()
         locations.onHeading = { [weak self] _ in
             self?.pushMyHeading()
             self?.refreshFind()
@@ -2497,6 +2569,8 @@ final class MeetViewController: UIViewController {
             self?.updateNearbyAlert()
             // 閉じているあいだはロック画面の島だけが見える。自分が動いた分も映す。
             self?.syncLiveActivity()
+            // 自分が歩いて近づいたときも、探す画面へ切り替える。
+            self?.considerAutoFind()
             self?.stepNavigation()
         }
         locations.start()
@@ -2697,8 +2771,11 @@ final class MeetViewController: UIViewController {
         let metres = CLLocation(latitude: fix.lat, longitude: fix.lon).distance(from: me)
         if gpsTooClose() {
             // 誤差の内では方位も当てにならない。矢印は出さない。
+            // 電波でつながっていないなら、その理由を言う（相手のアプリが閉じていると電波は使えない）。
             findScreen.update(name: name, distance: "すぐ近く",
-                              detail: "地図では測れない近さです。周りを見てください",
+                              detail: links.isEmpty
+                                  ? "電波で測るには、2人ともここだよを開いたままにしてください"
+                                  : "地図では測れない近さです。周りを見てください",
                               angle: nil, cameraAvailable: true)
             return
         }
@@ -3165,7 +3242,8 @@ final class MeetViewController: UIViewController {
             ? ["\(partner)と中間で会う、カフェで", "遅れるって伝えて", "途中でコーヒー買える所",
                "7時までに来なかったら教えて", "帰りに牛乳と卵を買ってきて"]
             : ["雨でも静かに作業できるところ", "2時間ひまつぶし", "近くのカフェ", "スタバ何時まで？"]
-        let vc = AskViewController(suggestions: suggestions)
+        let vc = AskViewController(suggestions: suggestions, near: locations.last)
+        vc.onPickPlace = { [weak self] item in self?.presentPlace(item) }
         vc.onSubmit = { [weak self, weak vc] text in
             guard let self, let vc else { return }
             self.runAsk(text, in: vc)
@@ -3662,7 +3740,7 @@ final class MeetViewController: UIViewController {
             }
             let finding = ui.addStep(aroundName.map { "\($0)のまわりで「\(query)」を探しています" } ?? "「\(query)」を探しています")
             let items = intent.go ? await resolver.resolve(query, near: center)
-                                  : await resolver.resolveMany(query, near: center)
+                                  : await resolver.resolveMany(query, near: center, limit: 8, openData: true)
             guard let self else { return }
             self.placeResolver = nil
             guard let best = items.first, let bestLoc = best.placemark.location else {
@@ -3706,6 +3784,7 @@ final class MeetViewController: UIViewController {
             }
             ui.choose(title: aroundName.map { "\($0)のまわりの「\(query)」" } ?? "近くの「\(query)」",
                       rows: rows,
+                      credit: items.contains(where: OpenPOI.isFromOpenPOI),
                       onPick: { [weak self] i in
                           ui.dismiss(animated: true)
                           self?.presentPlace(items[i])
@@ -3715,12 +3794,6 @@ final class MeetViewController: UIViewController {
 
     /// 場所の名前を1つに決める係（入力候補の返事を待つあいだ持っておく）。
     private var placeResolver: PlaceResolver?
-
-    private func openSearch() {
-        let vc = SearchPlacesViewController(near: locations.last)
-        vc.onPick = { [weak self] item in self?.presentPlace(item) }
-        presentOnTop(vc)
-    }
 
     // MARK: - 災害の知らせ（気象庁）
 
@@ -3864,6 +3937,11 @@ final class MeetViewController: UIViewController {
     private func renderHomeSheet() {
         evaluateProactive()
         homeSheet.suggestion = suggestion
+        homeSheet.errand = myErrand.map { errand in
+            HomeSheetView.ErrandCard(from: errand.from, place: errand.placeText,
+                                     left: errand.items.filter { !myErrandGot.contains($0) },
+                                     got: errand.items.filter { myErrandGot.contains($0) })
+        }
         if let fix = theirFix, group != nil {
             let radio = radioIsFresh() ? latestDistance : nil
             let metres = currentMetres()
@@ -4369,7 +4447,7 @@ final class MeetViewController: UIViewController {
         meetPin = nil
         storeCheckedFrom = nil
         storeCheckedAt = .distantPast
-        approach.reset()
+        forgetApproach()
     }
 
     // MARK: - 「近くにいるよ」
@@ -4382,9 +4460,57 @@ final class MeetViewController: UIViewController {
 
     /// 決めた距離まで近づいた一度だけ知らせる。画面を見ていれば文字と振動、
     /// 見ていなければ通知。同じことを二重に出さない。
+    /// おつかいが残ったまま近づいたら、頼まれた側にも頼んだ側にも知らせる。
+    private func checkErrandApproach() {
+        let metres = currentMetres()
+        let far = metres.map { NearbyAlert.text($0) } ?? ""
+        /// このおつかいで知らせるか（遠くにいたのを見たか・もう知らせたかを覚える）。
+        func shouldRemind(_ id: String, left: Int) -> Bool {
+            let r = ErrandReminder.step(left: left, metres: metres, armed: errandArmed.contains(id),
+                                        reminded: errandReminded.contains(id))
+            if r.armed { errandArmed.insert(id) }
+            if r.remind { errandReminded.insert(id) }
+            return r.remind
+        }
+        if let errand = myErrand {
+            let left = errand.items.filter { !myErrandGot.contains($0) }
+            if shouldRemind(errand.id, left: left.count) {
+                let list = left.joined(separator: "・")
+                flash("おつかいがまだです：\(list)")
+                if hapticsOn { arrivalGenerator.notificationOccurred(.warning) }
+                NearbyAlert.notify(title: "おつかいがまだです",
+                                   body: "まだ：\(list)（\(errand.from)まであと\(far)）")
+            }
+        }
+        if let sent = sentErrand {
+            let left = sent.items.filter { !sentErrandGot.contains($0) }
+            if shouldRemind(sent.id, left: left.count) {
+                let who = partnerName
+                let list = left.joined(separator: "・")
+                flash("\(who)がまだ買わずに近づいています：\(list)")
+                NearbyAlert.notify(title: "\(who)がまだ買わずに近づいています",
+                                   body: "まだ：\(list)（あと\(far)）")
+            }
+        }
+    }
+
     private func updateNearbyAlert() {
-        guard NearbyAlert.isOn, group != nil, let metres = currentMetres() else { return }
-        guard approach.step(metres: metres, threshold: NearbyAlert.metres) else { return }
+        checkErrandApproach()
+        guard NearbyAlert.isOn, let group, let metres = currentMetres() else { return }
+        // 見張りは部屋ごとに残す。閉じているあいだに裏で起こされた側（BackgroundRelay）と同じものを使い、
+        // 二重に鳴らさない。相手の端末がもう知らせていたら黙る。
+        var watcher = ApproachWatcher.load(room: group.id)
+        let fired = watcher.step(metres: metres, threshold: NearbyAlert.metres)
+        watcher.save(room: group.id)
+        let tell = ApproachWatcher.shouldTell(fired: fired, partnerAlertAt: theirFix?.alert)
+        guard tell.me else { return }
+        if tell.partner, isFriendRoom,
+           let partnerKey = group.approved.first(where: { $0 != group.myMember }),
+           let friend = KnownFriends.all().first(where: { $0.key == partnerKey }) {
+            let myName = Self.myDisplayName
+            Task { await PushKnock.near(friend, name: myName, metres: metres) }
+            if let here = locations.last { remote?.store(here, alert: Date()) }
+        }
         let who = partnerName
         let far = NearbyAlert.text(metres)
         flash("\(who)が近くにいます（あと\(far)）")
@@ -4972,7 +5098,7 @@ final class MeetViewController: UIViewController {
             current.names = welcome.names.mapValues(cleanName)
             current.version = welcome.version
             // ホストが期限を変えたら合わせる。上限は同じ（24時間）。
-            let told = min(Date(timeIntervalSince1970: welcome.expires), Self.maxExpiry())
+            let told = min(Date(timeIntervalSince1970: welcome.expires), isFriendRoom ? Self.untilStopped : Self.maxExpiry())
             if told > Date(), abs(told.timeIntervalSince(current.expires)) > 30 {
                 current.expires = told
                 GroupKey.setExpiry(groupID: current.id, expires: told)
@@ -5194,7 +5320,24 @@ final class MeetViewController: UIViewController {
 
     /// One screen: invite, wait for the yes, then the distance. Nobody outside
     /// today's group ever appears here, and nobody outside it can see this phone.
+    /// 近づいたら、地図のままにせず「探す」（電波の距離・すぐ近く）へ自動で切り替える。
+    private func considerAutoFind() {
+        guard group != nil, UIApplication.shared.applicationState == .active else { return }
+        let radio = radioIsFresh() ? latestDistance.map(Double.init) : nil
+        let map = mapDistance()?.meters
+        let near = (radio.map { $0 < 20 } ?? false) || gpsTooClose()
+        let far = radio == nil && (map.map { $0 > 60 } ?? false)
+        // 一番上が下の板（SheetCarrier）でなければ、ほかの画面を見ている。
+        var top: UIViewController = self
+        while let next = top.presentedViewController { top = next }
+        let busy = finding || navRoute != nil || phase == .guiding || !(top === self || top is SheetCarrier)
+        let decision = NearbyAlert.autoFind(near: near, far: far, latched: autoFindLatched, busy: busy)
+        autoFindLatched = decision.latched
+        if decision.open { openFind() }
+    }
+
     private func refreshDials() {
+        defer { considerAutoFind() }
         refreshDemoButton()
         refreshFriends()
         // グループがあるなら遠いときの層を生かす。保存の時だけでは、
@@ -5318,8 +5461,8 @@ final class MeetViewController: UIViewController {
         // 地図を指で動かしたあとだけ「戻す」を出す。動かしていないのに出すと、
         // 押しても何も変わらないボタンになる。
         recenterButton.isHidden = true
-        // 「まわりを見る」は自分の場所だけで動く。相手を待つあいだこそ使う。
-        exploreButton.isHidden = !(floorUp || dialExplores || ringHidden)
+        // 「まわりを見る」は板の行にある。地図の上の双眼鏡は同じものなので出さない（10/3）。
+        exploreButton.isHidden = true
         // カメラ（実際の道の上に曲がり角と相手を重ねる見え方）へは、右上から一押しで。
         switchButton.isHidden = theirFix == nil || group == nil
 
@@ -6372,8 +6515,13 @@ final class MeetViewController: UIViewController {
         // 閉じたら呼び鈴の線は iOS に切られる。開き直したときに張り直す。
         if group == nil { stopListeningForFriends() }
         locations.pauseHeading()
+        // 相手が3kmより遠い（または分からない）友だちとのつながりなら、GPSを止めて
+        // 大きな移動の見張りだけにする（電池。Zenly・Life360と同じ）。案内中は止めない。
+        if BackgroundRelay.shared.watching, navRoute == nil, (currentMetres() ?? .infinity) > 3_000 {
+            locations.suspend()
+        }
         // 裏でも位置を取り続けるなら、島は地図の居場所で動き続ける。取れないときだけ止まったと言う。
-        syncLiveActivity(markStale: !locations.continuesInBackground)
+        syncLiveActivity(markStale: !locations.continuesInBackground || locations.suspended)
     }
 
     /// An island left over from a run that was killed would show a number nobody
@@ -6575,9 +6723,9 @@ final class MeetViewController: UIViewController {
         homeSheet.onMood = { [weak self] in self?.askMood() }
         homeSheet.onInvite = { [weak self] in self?.callPartnerTapped() }
         homeSheet.onEnd = { [weak self] in self?.finishMeet() }
-        homeSheet.onSearch = { [weak self] in self?.openSearch() }
         homeSheet.onAsk = { [weak self] in self?.openAsk() }
         homeSheet.onSuggestion = { [weak self] in self?.actOnSuggestion() }
+        homeSheet.onErrandOpen = { [weak self] in self?.openErrandList() }
         homeSheet.onSuggestionDismiss = { [weak self] in self?.dismissSuggestion() }
         homeSheet.onExplore = { [weak self] in self?.exploreTapped() }
         homeSheet.onNearbyNow = { [weak self] in self?.openNearbyNow() }

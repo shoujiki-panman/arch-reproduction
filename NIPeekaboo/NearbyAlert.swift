@@ -56,6 +56,16 @@ enum NearbyAlert {
         metres <= max(20, accuracy * 2)
     }
 
+    /// 近づいたら、地図から「探す」（電波の距離）へ自動で切り替えるか（10/3 本人「近くならマップ側ではない機能使ってよ」）。
+    /// near: 電波で20m未満、またはGPSの誤差の内。far: 60m以上離れた（一度閉じたあと、また切り替えてよくなる）。
+    /// busy: ほかの画面（店の札・頼む画面など）を出している、案内中、すでに探す画面にいる。
+    /// 返すのは（いま開くか, 次の latched）。一度開いたら、離れるまでは開き直さない（閉じたのに戻されないように）。
+    static func autoFind(near: Bool, far: Bool, latched: Bool, busy: Bool) -> (open: Bool, latched: Bool) {
+        if far { return (false, false) }
+        if latched || busy || !near { return (false, latched) }
+        return (true, true)
+    }
+
     /// 歩いた見込み。分速80mは地図の画面と同じ値にそろえる。
     static func walkText(_ metres: Double) -> String {
         "歩いて約\(max(1, Int((metres / 80).rounded())))分"
@@ -108,7 +118,7 @@ extension Notification.Name {
 ///
 /// 決めた距離をまたいだ瞬間に1回だけ「はい」と答える。境目で行ったり来たりしても
 /// 鳴り続けないよう、いったん3割ぶん離れるまで次は鳴らない。
-struct ApproachWatcher {
+struct ApproachWatcher: Codable {
     /// 遠くから来たことが分かっている状態。起動時に既に近い場合は鳴らさないので false から始める。
     private var armed = false
     /// 一度でも距離が分かったか。分かる前は何も決められない。
@@ -130,6 +140,31 @@ struct ApproachWatcher {
         armed = false
         lastFire = Date()
         return true
+    }
+
+    /// 閉じていても近づいたら知らせる（10/3 段3）ために、見張りの状態を部屋ごとに残す。
+    /// 画面のある側も、裏で起こされた側も、同じものを読み書きする（二重に鳴らさない）。
+    static func load(room: String) -> ApproachWatcher {
+        guard let data = UserDefaults.standard.data(forKey: "kokodayo.near.watch.\(room)"),
+              let w = try? JSONDecoder().decode(ApproachWatcher.self, from: data) else { return ApproachWatcher() }
+        return w
+    }
+
+    func save(room: String) {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        UserDefaults.standard.set(data, forKey: "kokodayo.near.watch.\(room)")
+    }
+
+    static func forget(room: String) {
+        UserDefaults.standard.removeObject(forKey: "kokodayo.near.watch.\(room)")
+    }
+
+    /// 相手の端末がもう2人に知らせていたら（2時間以内）、こちらは黙る。
+    /// 返すのは（自分に出すか, 相手に送るか）。
+    static func shouldTell(fired: Bool, partnerAlertAt: Double?, now: Date = Date()) -> (me: Bool, partner: Bool) {
+        guard fired else { return (false, false) }
+        if let at = partnerAlertAt, now.timeIntervalSince1970 - at / 1000 < 2 * 3600 { return (false, false) }
+        return (true, true)
     }
 
     /// 相手が変わった・グループが終わったときに忘れる。

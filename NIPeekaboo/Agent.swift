@@ -12,6 +12,7 @@
 import Foundation
 import UIKit
 import MapKit
+import SafariServices
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
@@ -77,8 +78,8 @@ enum AskParser {
     }
 
     private static func hasStrongSignal(_ text: String) -> Bool {
-        ["伝えて", "言っといて", "と言って", "って言って", "と伝え", "って伝え", "行き方", "どう行け", "どう行く", "道順"]
-            .contains { text.contains($0) }
+        (["伝えて", "言っといて", "と言って", "って言って", "と伝え", "って伝え", "行き方", "どう行け", "どう行く", "道順"]
+            + sendWords).contains { text.contains($0) }
     }
 
     /// iPhoneの中のAIが使えるか（画面に「AIで読みます／かんたんに読みます」を出すため）。
@@ -172,8 +173,8 @@ enum AskParser {
             for m in nearbyMarkers { q = q.replacingOccurrences(of: m, with: "") }
             return AskIntent(kind: .place, placeKind: placeWord(in: text) ?? "", query: searchWords(q))
         }
-        if has(["伝えて", "様子", "って言って", "と言って", "言っといて", "と伝え", "って伝え"]) {
-            return AskIntent(kind: .mood, mood: quoted(text) ?? String(before(text, ["って伝え", "と伝え", "って言っ", "と言っ"]).prefix(20)))
+        if has(["伝えて", "様子", "って言って", "と言って", "言っといて", "と伝え", "って伝え"] + sendWords) {
+            return AskIntent(kind: .mood, mood: quoted(text) ?? String(before(text, ["って伝え", "と伝え", "って言っ", "と言っ", "って送っ", "送っといて", "送っておいて"]).prefix(20)))
         }
         if has(["行き方", "どう行", "向かう", "案内して", "のところへ", "道順"]) {
             return AskIntent(kind: .route)
@@ -187,6 +188,9 @@ enum AskParser {
         var query = searchWords(text)
         // 「充電できるカフェ」「静かなカフェ」は、最後の種類の言葉（カフェ）で探す。
         if !isGeneric(query), let kind = genericWords.first(where: { query.hasSuffix($0) }) { query = kind }
+        // 「お腹ぺこぺこ、なんか食べたい」は、食べ物の種類が無くても「ごはん」を探す。
+        // AIに回すと、おつかいの頼みと取り違えた（10/2 Macで測定）。
+        if !isGeneric(query), has(hungerWords) { query = "ごはん" }
         // 「雨でも静かに作業できるところ」のように種類の言葉が無いときは、条件を探す言葉に言い換える。
         if !isGeneric(query), !AskSkills.conditionWords(text).isEmpty {
             return AskIntent(kind: .place, query: query, words: AskSkills.conditionWords(text))
@@ -267,6 +271,11 @@ enum AskParser {
                                       "どこか", "どっか", "近くで", "この辺で", "近くの", "近くに"]
 
     private static let placeWords = ["カフェ", "喫茶", "ごはん", "ランチ", "食事", "レストラン", "駅", "公園", "コンビニ"]
+    /// 「店の前にいるねって送っといて」も、相手に伝える頼み（10/2 Macで測定：AIは待ち合わせと取り違えた）。
+    /// 「駅まで送って」（車で送る）と混ざらないよう、「って」付きか「送っといて」だけ。
+    static let sendWords = ["って送っ", "送っといて", "送っておいて"]
+    /// おなかが空いた言い方。
+    static let hungerWords = ["食べたい", "お腹", "おなか", "腹減", "腹へ", "はらへ", "はらぺこ", "腹ぺこ"]
     static let nearbyMarkers = ["近くの", "いちばん近い", "一番近い", "最寄りの", "この辺の", "この辺で"]
 
     /// 種類の言葉（ある1つの店ではない）。これで探すときは近い順にする。
@@ -288,7 +297,8 @@ enum AskParser {
 
     /// 行き先。「ラゾーナに案内して」→「ラゾーナ」。
     private static func destination(in text: String) -> String? {
-        let pattern = "^(.+?)(に|まで|へ)(案内|連れて|行きたい|行こう|行って|行く|向かいたい)"
+        // 「ドンキまで道案内お願い」も（10/2 Macで測定：たぬきへの行き方と取り違えた）。
+        let pattern = "^(.+?)(に|まで|へ)(道案内|案内|連れて|行きたい|行こう|行って|行く|向かいたい)"
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let m = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let r = Range(m.range(at: 1), in: text) else { return nil }
@@ -657,10 +667,25 @@ final class PlaceResolver: NSObject, MKLocalSearchCompleterDelegate {
     /// 候補をいくつか（Appleマップの検索結果のように）。center のまわりで探し、近い順。
     /// 種類の言葉（ラーメン・カフェ）は近い順にそのまま。名前（スタバ・ラゾーナ）は、
     /// いちばん当てはまる1つを先頭に、同じ言葉で見つかったほかの場所を後ろに足す。
-    func resolveMany(_ query: String, near center: CLLocation, limit: Int = 5) async -> [MKMapItem] {
+    /// openData: Appleマップが取りこぼす店を OpenPOI API で足す（店の名前に入る種類の言葉のときだけ）。
+    /// 足すのは出典を出せる画面（「AIに頼む」の候補一覧）だけ。
+    func resolveMany(_ query: String, near center: CLLocation, limit: Int = 5,
+                     openData: Bool = false) async -> [MKMapItem] {
+        let useOpen = openData && OpenPOI.usable(for: query)
+        async let openHits: [OpenPOI.Hit] = useOpen ? OpenPOI.search(query, near: center) : []
         // まわりで探した結果でも、5kmより遠いものは並べない（51km先のうどん屋が出ていた）。
-        let around = await nearest(query, near: center).filter {
+        var around = await nearest(query, near: center).filter {
             ($0.placemark.location?.distance(from: center) ?? .greatestFiniteMagnitude) <= 5_000
+        }
+        if useOpen {
+            let known = around.compactMap { item in
+                item.placemark.location.map { (name: item.name ?? "", location: $0) }
+            }
+            let extra = await openHits.filter { !OpenPOI.isDuplicate($0, of: known) }.map(OpenPOI.mapItem)
+            around = (around + extra).sorted {
+                ($0.placemark.location?.distance(from: center) ?? .greatestFiniteMagnitude)
+                    < ($1.placemark.location?.distance(from: center) ?? .greatestFiniteMagnitude)
+            }
         }
         if AskParser.isGeneric(query) { return Array(around.prefix(limit)) }
         let best = await resolve(query, near: center)
@@ -798,9 +823,10 @@ final class AskRun {
         ui?.finish(text, ok: ok)
     }
 
-    func choose(title: String, rows: [(title: String, detail: String)], onPick: @escaping (Int) -> Void) {
+    func choose(title: String, rows: [(title: String, detail: String)], credit: Bool = false,
+                onPick: @escaping (Int) -> Void) {
         guard isLive else { return }
-        ui?.choose(title: title, rows: rows, onPick: onPick)
+        ui?.choose(title: title, rows: rows, credit: credit, onPick: onPick)
     }
 
     func dismiss(animated: Bool, completion: (() -> Void)? = nil) {
@@ -812,7 +838,7 @@ final class AskRun {
 // MARK: - 頼む画面
 
 /// 一文を打つ（声でもいい。キーボードのマイク）→ 手順が1行ずつ進む → 送る前に確認の札。
-final class AskViewController: UIViewController, UITextFieldDelegate {
+final class AskViewController: UIViewController, UITextFieldDelegate, MKLocalSearchCompleterDelegate {
 
     var onSubmit: ((String) -> Void)?
     private let suggestions: [String]
@@ -830,7 +856,17 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
     private let card = UIStackView()
     private var stepRows: [(icon: UIImageView, label: UILabel)] = []
 
-    init(suggestions: [String]) {
+    /// 打っているあいだに出す場所の候補（🔍の検索をここにまとめた。10/3 本人「まとめて」）。
+    /// 候補を押せば場所の札、決定キーならAIが一文として読む。
+    private let places = UIStackView()
+    private let completer = MKLocalSearchCompleter()
+    private var placeResults: [MKLocalSearchCompletion] = []
+    private let near: CLLocation?
+    /// 候補の場所が選ばれた（閉じてから札を出す）。
+    var onPickPlace: ((MKMapItem) -> Void)?
+
+    init(suggestions: [String], near: CLLocation? = nil) {
+        self.near = near
         self.suggestions = suggestions
         super.init(nibName: nil, bundle: nil)
     }
@@ -923,9 +959,20 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         recents.spacing = 0
         reloadRecents()
 
+        places.axis = .vertical
+        places.spacing = 0
+        places.isHidden = true
+        completer.delegate = self
+        completer.resultTypes = [.pointOfInterest, .address]
+        if let near {
+            completer.region = MKCoordinateRegion(center: near.coordinate,
+                                                  latitudinalMeters: 5000, longitudinalMeters: 5000)
+        }
+        field.addTarget(self, action: #selector(fieldChanged), for: .editingChanged)
+
         // 結果（題・手順・確かめる札）を上に、候補と最近頼んだことをその下に。
         // 候補が上にあると、終わったときに結果が画面の外へ押し出される（9/26）。
-        let column = UIStackView(arrangedSubviews: [inputRow, modeLabel, titleLabel, steps, card, chips, recents])
+        let column = UIStackView(arrangedSubviews: [inputRow, places, modeLabel, titleLabel, steps, card, chips, recents])
         column.axis = .vertical
         column.spacing = 12
         column.setCustomSpacing(6, after: inputRow)
@@ -966,9 +1013,82 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
         return true
     }
 
+    // MARK: 打っているあいだの場所の候補
+
+    @objc private func fieldChanged() {
+        let text = (field.text ?? "").trimmingCharacters(in: .whitespaces)
+        // 頼みごとを進めているあいだは、候補を出さない（結果の上に被せない）。
+        guard titleLabel.isHidden, !text.isEmpty else {
+            completer.cancel()
+            showPlaces([])
+            return
+        }
+        completer.queryFragment = text
+    }
+
+    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        guard titleLabel.isHidden, !(field.text ?? "").isEmpty else { return }
+        showPlaces(Array(completer.results.prefix(5)))
+    }
+
+    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {}
+
+    /// 候補を並べる。打っているあいだは、例と最近頼んだことを隠す（Googleマップと同じ）。
+    private func showPlaces(_ results: [MKLocalSearchCompletion]) {
+        placeResults = results
+        places.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        places.isHidden = results.isEmpty
+        let typing = !(field.text ?? "").isEmpty
+        if titleLabel.isHidden {
+            chips.isHidden = typing
+            recents.isHidden = typing || AskHistory.shown(AskHistory.items, excluding: suggestions).isEmpty
+        }
+        for (index, r) in results.enumerated() {
+            var conf = UIButton.Configuration.plain()
+            conf.title = r.title
+            conf.subtitle = r.subtitle.isEmpty ? nil : r.subtitle
+            conf.image = UIImage(systemName: "mappin.circle.fill")
+            conf.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 20)
+            conf.imagePadding = 12
+            conf.baseForegroundColor = MeetPalette.primary
+            conf.imageColorTransformer = UIConfigurationColorTransformer { _ in MeetPalette.action }
+            conf.titleLineBreakMode = .byTruncatingTail
+            conf.subtitleLineBreakMode = .byTruncatingTail
+            conf.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 0, bottom: 10, trailing: 0)
+            conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                var a = attrs
+                a.font = Type.font(16, .semibold, .body)
+                return a
+            }
+            conf.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                var a = attrs
+                a.font = Type.caption
+                a.foregroundColor = MeetPalette.secondary
+                return a
+            }
+            let row = UIButton(configuration: conf)
+            row.contentHorizontalAlignment = .leading
+            row.addAction(UIAction { [weak self] _ in self?.pickPlace(at: index) }, for: .touchUpInside)
+            places.addArrangedSubview(row)
+        }
+    }
+
+    private func pickPlace(at index: Int) {
+        guard placeResults.indices.contains(index) else { return }
+        // 閉じるのと、場所を引くのを同時に（通信を待ってから閉じると、押してから間が空く）。
+        let onPick = onPickPlace
+        MKLocalSearch(request: MKLocalSearch.Request(completion: placeResults[index])).start { response, _ in
+            guard let item = response?.mapItems.first else { return }
+            onPick?(item)
+        }
+        dismiss(animated: true)
+    }
+
     private func submit() {
         let text = (field.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        completer.cancel()
+        showPlaces([])
         field.resignFirstResponder()
         AskHistory.record(text)
         onSubmit?(text)
@@ -1140,7 +1260,9 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
     }
 
     /// 候補の一覧（Appleマップの検索結果と同じく、名前と「種類・距離」を1行ずつ）。押すとその場所の札へ。
-    func choose(title: String, rows: [(title: String, detail: String)], onPick: @escaping (Int) -> Void) {
+    /// credit: 一覧に OpenPOI API の場所が入っている。出典とそのページへのリンクを下に出す（利用条件）。
+    func choose(title: String, rows: [(title: String, detail: String)], credit: Bool = false,
+                onPick: @escaping (Int) -> Void) {
         stopButton.isHidden = true
         orb.setThinking(false)
         card.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -1177,6 +1299,23 @@ final class AskViewController: UIViewController, UITextFieldDelegate {
             let b = UIButton(configuration: conf)
             b.contentHorizontalAlignment = .fill
             b.addAction(UIAction { _ in onPick(i) }, for: .touchUpInside)
+            card.addArrangedSubview(b)
+        }
+        if credit {
+            var conf = UIButton.Configuration.plain()
+            conf.title = OpenPOI.creditText
+            conf.baseForegroundColor = MeetPalette.secondary
+            conf.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 0, bottom: 0, trailing: 0)
+            conf.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
+                var a = attrs
+                a.font = Type.caption
+                return a
+            }
+            let b = UIButton(configuration: conf)
+            b.contentHorizontalAlignment = .leading
+            b.addAction(UIAction { [weak self] _ in
+                self?.present(SFSafariViewController(url: OpenPOI.attributionURL), animated: true)
+            }, for: .touchUpInside)
             card.addArrangedSubview(b)
         }
         card.alpha = 0

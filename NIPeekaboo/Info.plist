@@ -44,18 +44,18 @@
 	<string>合流ガイドで相手の方向を実空間に表示するためにカメラを使用します</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>近くの相手を見つけて合流するために使用します</string>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>友だちとつないでいるあいだ、アプリを閉じていても、大きく動いたときだけ居場所を友だちに送ります。電池のため、遠いあいだはGPSを止めて、携帯の電波とWi-Fiで大まかに見張ります。居場所は端末の中で鍵をかけて、友だちにだけ送ります。</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>待ち合わせの相手までの距離と方向を出すために、いまいる場所を使います。相手が近づいたことを画面を閉じていてもお知らせするあいだだけ、背景でも使います。相手にだけ、端末の中で鍵をかけて送ります。</string>
 	<key>NSMotionUsageDescription</key>
 	<string>歩いているか止まっているかを判定して、どちらが相手に近づくかを案内するために使います。</string>
 	<key>NSNearbyInteractionAllowOnceUsageDescription</key>
 	<string>相手との距離と方向を測って合流するために使用します</string>
 	<key>NSNearbyInteractionUsageDescription</key>
 	<string>相手との距離と方向を測って合流するために使用します</string>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>location</string>
-	</array>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -75,6 +75,10 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIRequiredDeviceCapabilities</key>
@@ -92,7 +96,5 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>待ち合わせの相手までの距離と方向を出すために、いまいる場所を使います。相手が近づいたことを画面を閉じていてもお知らせするあいだだけ、背景でも使います。相手にだけ、端末の中で鍵をかけて送ります。</string>
 </dict>
 </plist>

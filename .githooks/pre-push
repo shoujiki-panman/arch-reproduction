@@ -1,0 +1,11 @@
+#!/bin/sh
+# main へ直接 push しない（10/3 本人：ブランチ→PR→CI→マージの流れに戻す）。
+# 非公開リポジトリの無料プランでは GitHub のブランチ保護が使えないので、この Mac の手元で止める。
+# main に入れるのは、PR を GitHub でマージしたときだけ。どうしても必要なときだけ ALLOW_MAIN_PUSH=1 で通す。
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ] && [ "$ALLOW_MAIN_PUSH" != "1" ]; then
+    echo "main への直接 push は止めています。ブランチを切って PR を出してください（CI が通ったらマージ）。" >&2
+    exit 1
+  fi
+done
+exit 0
