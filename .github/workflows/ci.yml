@@ -1,0 +1,43 @@
+# ここだよ：PRと main へのpushで、ビルドと「決め方」のテスト（NIPeekabooTests）を回す。
+# 「AIに頼む」をAIで読む部分は、iPhoneと同じ内蔵AIが要るのでここでは回さない（手元で tools/ask-eval/run.sh）。
+# Macのランナーは無料枠を10倍の速さで使う（非公開リポジトリ）。同じブランチの古い実行は止め、30分で打ち切る。
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode
+        run: |
+          xcodebuild -version
+          xcrun simctl list devices available | grep -E "iPhone 17 " | head -3
+
+      - name: Build and test (simulator)
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project NIPeekaboo.xcodeproj \
+            -scheme NIPeekaboo \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee build.log | grep -E "error:|warning: unreachable|Test Suite '.*' (passed|failed)|Executed [0-9]+ tests|\*\* (TEST|BUILD)" || true
+          grep -q "\*\* TEST SUCCEEDED \*\*" build.log
+
+      - name: Keep the log when it fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log

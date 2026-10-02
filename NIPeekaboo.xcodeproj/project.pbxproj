@@ -7,17 +7,27 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		KD0000000000000000000E02 /* station_exits.json in Resources */ = {isa = PBXBuildFile; fileRef = KD0000000000000000000E01 /* station_exits.json */; };
-		KD0000000000000000000002 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = KD0000000000000000000001 /* PrivacyInfo.xcprivacy */; };
 		0A7C6E61248C5CEE00DEC871 /* MathUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7C6E60248C5CEE00DEC871 /* MathUtilities.swift */; };
+		0DDFE8A87E6C4E2E8109ADC6 /* MeetMapViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A8116F9B05C4B78A773E259 /* MeetMapViewController.swift */; };
+		23DA9FE5C5624984902A2315 /* RemoteMeet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */; };
 		71418B3224949358007DAB1C /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 71418B3124949358007DAB1C /* README.md */; };
+		7BD7F493E12AE962018B3811 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2BF5D6CC06DE639412954735 /* Foundation.framework */; };
 		AD026E6B248E77B10016A2B6 /* MPCSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD026E6A248E77B10016A2B6 /* MPCSession.swift */; };
 		AD026E6E248E77F60016A2B6 /* MultipeerConnectivity.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AD026E6D248E77F60016A2B6 /* MultipeerConnectivity.framework */; };
 		AD026E70248E77FD0016A2B6 /* NearbyInteraction.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AD026E6F248E77FD0016A2B6 /* NearbyInteraction.framework */; };
 		ADDB28FE24897F7D00F72056 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDB28FD24897F7D00F72056 /* AppDelegate.swift */; };
-		0DDFE8A87E6C4E2E8109ADC6 /* MeetMapViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A8116F9B05C4B78A773E259 /* MeetMapViewController.swift */; };
-		D825F6971B8948E88BCA8019 /* KnownFriends.swift in Sources */ = {isa = PBXBuildFile; fileRef = E84A6429FA7F49D8A55CB184 /* KnownFriends.swift */; };
 		ADDB290224897F7D00F72056 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDB290124897F7D00F72056 /* ViewController.swift */; };
+		ADDB290524897F7D00F72056 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290324897F7D00F72056 /* Main.storyboard */; };
+		ADDB290724897F7E00F72056 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290624897F7E00F72056 /* Assets.xcassets */; };
+		ADDB290A24897F7E00F72056 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290824897F7E00F72056 /* LaunchScreen.storyboard */; };
+		ADDB29FF24897F7D00F72056 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDB29FE24897F7D00F72056 /* SceneDelegate.swift */; };
+		B7A63EDF34FC1F0B21B347DD /* DecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 406638FD455C1500E38B3A1F /* DecisionTests.swift */; };
+		C0FFEE0000000000000000B1 /* MeetActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0000000000000000A1 /* MeetActivityAttributes.swift */; };
+		C0FFEE0000000000000000B2 /* MeetLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0000000000000000A2 /* MeetLiveActivity.swift */; };
+		C0FFEE0000000000000000B3 /* KokodayoIslandBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0000000000000000A3 /* KokodayoIslandBundle.swift */; };
+		C0FFEE0000000000000000B4 /* MeetActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0000000000000000A1 /* MeetActivityAttributes.swift */; };
+		C0FFEE0000000000000000B5 /* KokodayoIsland.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C0FFEE0000000000000000A5 /* KokodayoIsland.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D825F6971B8948E88BCA8019 /* KnownFriends.swift in Sources */ = {isa = PBXBuildFile; fileRef = E84A6429FA7F49D8A55CB184 /* KnownFriends.swift */; };
 		EE00000000000000000000B1 /* Errand.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000000000000000000A1 /* Errand.swift */; };
 		EE00000000000000000000B2 /* NearbyAlert.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000000000000000000A2 /* NearbyAlert.swift */; };
 		EE00000000000000000000B3 /* Explore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000000000000000000A3 /* Explore.swift */; };
@@ -27,16 +37,8 @@
 		EE00000000000000000000B7 /* Safety.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000000000000000000A7 /* Safety.swift */; };
 		EE000000000000000000F0B1 /* OpenPOI.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE000000000000000000F0A1 /* OpenPOI.swift */; };
 		EE000000000000000000F0B2 /* BackgroundRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE000000000000000000F0A2 /* BackgroundRelay.swift */; };
-		23DA9FE5C5624984902A2315 /* RemoteMeet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */; };
-		ADDB290524897F7D00F72056 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290324897F7D00F72056 /* Main.storyboard */; };
-		ADDB290724897F7E00F72056 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290624897F7E00F72056 /* Assets.xcassets */; };
-		ADDB290A24897F7E00F72056 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290824897F7E00F72056 /* LaunchScreen.storyboard */; };
-		ADDB29FF24897F7D00F72056 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDB29FE24897F7D00F72056 /* SceneDelegate.swift */; };
-		C0FFEE0000000000000000B1 /* MeetActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0000000000000000A1 /* MeetActivityAttributes.swift */; };
-		C0FFEE0000000000000000B2 /* MeetLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0000000000000000A2 /* MeetLiveActivity.swift */; };
-		C0FFEE0000000000000000B3 /* KokodayoIslandBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0000000000000000A3 /* KokodayoIslandBundle.swift */; };
-		C0FFEE0000000000000000B4 /* MeetActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0000000000000000A1 /* MeetActivityAttributes.swift */; };
-		C0FFEE0000000000000000B5 /* KokodayoIsland.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C0FFEE0000000000000000A5 /* KokodayoIsland.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		KD0000000000000000000002 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = KD0000000000000000000001 /* PrivacyInfo.xcprivacy */; };
+		KD0000000000000000000E02 /* station_exits.json in Resources */ = {isa = PBXBuildFile; fileRef = KD0000000000000000000E01 /* station_exits.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -46,6 +48,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = C0FFEE0000000000000000D1;
 			remoteInfo = KokodayoIsland;
+		};
+		FD6F7016B75210BDE7956274 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = ADDB28F224897F7D00F72056 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = ADDB28F924897F7D00F72056;
+			remoteInfo = NIPeekaboo;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -64,9 +73,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		KD0000000000000000000E01 /* station_exits.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = station_exits.json; sourceTree = "<group>"; };
-		KD0000000000000000000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		0A7C6E60248C5CEE00DEC871 /* MathUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathUtilities.swift; sourceTree = "<group>"; };
+		1A8116F9B05C4B78A773E259 /* MeetMapViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetMapViewController.swift; sourceTree = "<group>"; };
+		2BF5D6CC06DE639412954735 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMeet.swift; sourceTree = "<group>"; };
+		406638FD455C1500E38B3A1F /* DecisionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DecisionTests.swift; sourceTree = "<group>"; };
 		43D6B566D60E1D86FC1BA04C /* SampleCode.xcconfig */ = {isa = PBXFileReference; name = SampleCode.xcconfig; path = Configuration/SampleCode.xcconfig; sourceTree = "<group>"; };
 		62C8A7F1105E38E9FB343714 /* LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; path = LICENSE.txt; sourceTree = "<group>"; };
 		71418B3124949358007DAB1C /* README.md */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
@@ -76,8 +87,18 @@
 		ADDB28FA24897F7D00F72056 /* NIPeekaboo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NIPeekaboo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		ADDB28FD24897F7D00F72056 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		ADDB290124897F7D00F72056 /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
+		ADDB290424897F7D00F72056 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
+		ADDB290624897F7E00F72056 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		ADDB290924897F7E00F72056 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		ADDB290B24897F7E00F72056 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		ADDB29FE24897F7D00F72056 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
+		B5F7569383D628530A758DC0 /* NIPeekabooTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NIPeekabooTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C0FFEE0000000000000000A1 /* MeetActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetActivityAttributes.swift; sourceTree = "<group>"; };
+		C0FFEE0000000000000000A2 /* MeetLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetLiveActivity.swift; sourceTree = "<group>"; };
+		C0FFEE0000000000000000A3 /* KokodayoIslandBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokodayoIslandBundle.swift; sourceTree = "<group>"; };
+		C0FFEE0000000000000000A4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		C0FFEE0000000000000000A5 /* KokodayoIsland.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = KokodayoIsland.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E84A6429FA7F49D8A55CB184 /* KnownFriends.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnownFriends.swift; sourceTree = "<group>"; };
-		1A8116F9B05C4B78A773E259 /* MeetMapViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetMapViewController.swift; sourceTree = "<group>"; };
 		EE00000000000000000000A1 /* Errand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Errand.swift; sourceTree = "<group>"; };
 		EE00000000000000000000A2 /* NearbyAlert.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyAlert.swift; sourceTree = "<group>"; };
 		EE00000000000000000000A3 /* Explore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Explore.swift; sourceTree = "<group>"; };
@@ -87,17 +108,8 @@
 		EE00000000000000000000A7 /* Safety.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Safety.swift; sourceTree = "<group>"; };
 		EE000000000000000000F0A1 /* OpenPOI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenPOI.swift; sourceTree = "<group>"; };
 		EE000000000000000000F0A2 /* BackgroundRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRelay.swift; sourceTree = "<group>"; };
-		2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMeet.swift; sourceTree = "<group>"; };
-		ADDB290424897F7D00F72056 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
-		ADDB290624897F7E00F72056 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		ADDB290924897F7E00F72056 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
-		ADDB290B24897F7E00F72056 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		ADDB29FE24897F7D00F72056 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
-		C0FFEE0000000000000000A1 /* MeetActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetActivityAttributes.swift; sourceTree = "<group>"; };
-		C0FFEE0000000000000000A2 /* MeetLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetLiveActivity.swift; sourceTree = "<group>"; };
-		C0FFEE0000000000000000A3 /* KokodayoIslandBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokodayoIslandBundle.swift; sourceTree = "<group>"; };
-		C0FFEE0000000000000000A4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		C0FFEE0000000000000000A5 /* KokodayoIsland.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = KokodayoIsland.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		KD0000000000000000000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		KD0000000000000000000E01 /* station_exits.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = station_exits.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -117,6 +129,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DCD06126D14BB68FF9ED3FB9 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7BD7F493E12AE962018B3811 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -126,6 +146,15 @@
 				43D6B566D60E1D86FC1BA04C /* SampleCode.xcconfig */,
 			);
 			name = Configuration;
+			sourceTree = "<group>";
+		};
+		4FEB641819CCAEC447E073EC /* NIPeekabooTests */ = {
+			isa = PBXGroup;
+			children = (
+				406638FD455C1500E38B3A1F /* DecisionTests.swift */,
+			);
+			name = NIPeekabooTests;
+			path = NIPeekabooTests;
 			sourceTree = "<group>";
 		};
 		5107B12C7A20237EBA28F2DD /* LICENSE */ = {
@@ -142,6 +171,7 @@
 			children = (
 				AD026E6F248E77FD0016A2B6 /* NearbyInteraction.framework */,
 				AD026E6D248E77F60016A2B6 /* MultipeerConnectivity.framework */,
+				AF922DE3F63818FDDCDC2464 /* iOS */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -164,6 +194,7 @@
 				AD026E6C248E77F60016A2B6 /* Frameworks */,
 				427FE0B6B15E6C5D7BF8E009 /* Configuration */,
 				5107B12C7A20237EBA28F2DD /* LICENSE */,
+				4FEB641819CCAEC447E073EC /* NIPeekabooTests */,
 			);
 			sourceTree = "<group>";
 		};
@@ -172,19 +203,9 @@
 			children = (
 				ADDB28FA24897F7D00F72056 /* NIPeekaboo.app */,
 				C0FFEE0000000000000000A5 /* KokodayoIsland.appex */,
+				B5F7569383D628530A758DC0 /* NIPeekabooTests.xctest */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		C0FFEE0000000000000000C1 /* KokodayoIsland */ = {
-			isa = PBXGroup;
-			children = (
-				C0FFEE0000000000000000A3 /* KokodayoIslandBundle.swift */,
-				C0FFEE0000000000000000A2 /* MeetLiveActivity.swift */,
-				C0FFEE0000000000000000A1 /* MeetActivityAttributes.swift */,
-				C0FFEE0000000000000000A4 /* Info.plist */,
-			);
-			path = KokodayoIsland;
 			sourceTree = "<group>";
 		};
 		ADDB28FC24897F7D00F72056 /* NIPeekaboo */ = {
@@ -217,9 +238,46 @@
 			path = NIPeekaboo;
 			sourceTree = "<group>";
 		};
+		AF922DE3F63818FDDCDC2464 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				2BF5D6CC06DE639412954735 /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		C0FFEE0000000000000000C1 /* KokodayoIsland */ = {
+			isa = PBXGroup;
+			children = (
+				C0FFEE0000000000000000A3 /* KokodayoIslandBundle.swift */,
+				C0FFEE0000000000000000A2 /* MeetLiveActivity.swift */,
+				C0FFEE0000000000000000A1 /* MeetActivityAttributes.swift */,
+				C0FFEE0000000000000000A4 /* Info.plist */,
+			);
+			path = KokodayoIsland;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		3D48DED924D7C4E0481B22AC /* NIPeekabooTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1BAEB03982EA7571828A5BDF /* Build configuration list for PBXNativeTarget "NIPeekabooTests" */;
+			buildPhases = (
+				ECCE60D6A3CAB9AE7F345A5F /* Sources */,
+				DCD06126D14BB68FF9ED3FB9 /* Frameworks */,
+				378C806A66F6592E732A8E33 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				72C95FEA67AD3E9D5622554D /* PBXTargetDependency */,
+			);
+			name = NIPeekabooTests;
+			productName = NIPeekabooTests;
+			productReference = B5F7569383D628530A758DC0 /* NIPeekabooTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		ADDB28F924897F7D00F72056 /* NIPeekaboo */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = ADDB292424897F7F00F72056 /* Build configuration list for PBXNativeTarget "NIPeekaboo" */;
@@ -258,14 +316,6 @@
 		};
 /* End PBXNativeTarget section */
 
-/* Begin PBXTargetDependency section */
-		C0FFEE0000000000000000F2 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = C0FFEE0000000000000000D1 /* KokodayoIsland */;
-			targetProxy = C0FFEE0000000000000000F1 /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
-
 /* Begin PBXProject section */
 		ADDB28F224897F7D00F72056 /* Project object */ = {
 			isa = PBXProject;
@@ -299,11 +349,19 @@
 			targets = (
 				ADDB28F924897F7D00F72056 /* NIPeekaboo */,
 				C0FFEE0000000000000000D1 /* KokodayoIsland */,
+				3D48DED924D7C4E0481B22AC /* NIPeekabooTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		378C806A66F6592E732A8E33 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		ADDB28F824897F7D00F72056 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -362,7 +420,29 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		ECCE60D6A3CAB9AE7F345A5F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B7A63EDF34FC1F0B21B347DD /* DecisionTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		72C95FEA67AD3E9D5622554D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = NIPeekaboo;
+			target = ADDB28F924897F7D00F72056 /* NIPeekaboo */;
+			targetProxy = FD6F7016B75210BDE7956274 /* PBXContainerItemProxy */;
+		};
+		C0FFEE0000000000000000F2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C0FFEE0000000000000000D1 /* KokodayoIsland */;
+			targetProxy = C0FFEE0000000000000000F1 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
 		ADDB290324897F7D00F72056 /* Main.storyboard */ = {
@@ -384,6 +464,43 @@
 /* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
+		22198C57487770C9A6C27EC4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 59FNRWS2H8;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
+				PRODUCT_BUNDLE_IDENTIFIER = jp.shutanuma.kokodayo.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/NIPeekaboo.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/NIPeekaboo";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		525A8881CB3F133120F32716 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 59FNRWS2H8;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
+				PRODUCT_BUNDLE_IDENTIFIER = jp.shutanuma.kokodayo.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/NIPeekaboo.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/NIPeekaboo";
+			};
+			name = Debug;
+		};
 		ADDB292224897F7F00F72056 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 43D6B566D60E1D86FC1BA04C /* SampleCode.xcconfig */;
@@ -419,6 +536,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -437,15 +555,14 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-weak_framework",
 					FoundationModels,
 				);
-				CURRENT_PROJECT_VERSION = 2;
-				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
-				MTL_FAST_MATH = YES;
-				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -488,6 +605,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -500,14 +618,13 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-weak_framework",
 					FoundationModels,
 				);
-				CURRENT_PROJECT_VERSION = 2;
-				MTL_ENABLE_DEBUG_INFO = NO;
-				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -522,8 +639,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_ENTITLEMENTS = NIPeekaboo/NIPeekaboo.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 59FNRWS2H8;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -549,8 +666,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_ENTITLEMENTS = NIPeekaboo/NIPeekaboo.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 59FNRWS2H8;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -627,6 +744,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		1BAEB03982EA7571828A5BDF /* Build configuration list for PBXNativeTarget "NIPeekabooTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				22198C57487770C9A6C27EC4 /* Release */,
+				525A8881CB3F133120F32716 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		ADDB28F524897F7D00F72056 /* Build configuration list for PBXProject "NIPeekaboo" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
