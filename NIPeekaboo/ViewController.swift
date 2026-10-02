@@ -2256,8 +2256,21 @@ final class MeetViewController: UIViewController {
         if let metres = currentMetres(), metres <= 3_000 { locations.resume() }
     }
 
+    /// 相手が最後に残した居場所を読む（相手のアプリが閉じていても、最後にいた所が見える）。
+    private func loadLastFix() {
+        guard let channel = remote else { return }
+        Task { [weak self] in
+            guard let fix = await channel.fetchLast() else { return }
+            await MainActor.run {
+                guard let self, self.remote === channel else { return }
+                channel.onFix?(fix)
+            }
+        }
+    }
+
     @objc private func appWillEnterForeground() {
         locations.resume()
+        loadLastFix()
         mapFloor?.followSystemAppearance()
         // しばらく閉じていたら、地図を「いまの2人」に合わせ直す。指で動かしたあとは合わせ直さない
         // 決まりのせいで、朝の八丁畷のまま赤坂で開いていた（9/27「開くと今と違うエリアに飛ばされる」）。
@@ -2489,9 +2502,11 @@ final class MeetViewController: UIViewController {
         } else {
             seed = group.id
         }
-        let channel = RemoteChannel(groupID: seed)
+        let channel = RemoteChannel(groupID: seed, me: group.myMember)
         channel.onFix = { [weak self] fix in
             guard let self else { return }
+            // 残してあった古い居場所が、いま届いている新しいものを上書きしないように。
+            if let current = self.theirFix, current.at > fix.at { return }
             let first = self.theirFix == nil
             self.theirFix = fix
             self.locations.setPartnerDistance(self.currentMetres())
@@ -2522,6 +2537,7 @@ final class MeetViewController: UIViewController {
         }
         channel.connect()
         remote = channel
+        loadLastFix()
         locations.onHeading = { [weak self] _ in
             self?.pushMyHeading()
             self?.refreshFind()

@@ -60,10 +60,12 @@ final class BackgroundRelay: NSObject, CLLocationManagerDelegate {
     }
 
     /// 保存してある部屋が、覚えた友だちとの部屋で、まだ続いているなら、その ID。
-    static func roomID() -> String? {
+    static func roomID() -> String? { friendGroup()?.id }
+
+    private static func friendGroup() -> TodayGroup? {
         guard let group = MeetViewController.savedGroup(), group.expires > Date(),
               MeetViewController.isFriendRoom(id: group.id) else { return nil }
-        return group.id
+        return group
     }
 
     // MARK: - CLLocationManagerDelegate
@@ -85,13 +87,15 @@ final class BackgroundRelay: NSObject, CLLocationManagerDelegate {
     // MARK: - 1回だけ送る
 
     private func send(_ location: CLLocation) {
-        guard let id = Self.roomID() else { refresh(); return }
+        guard let group = Self.friendGroup() else { refresh(); return }
         channel?.disconnect()
         let app = UIApplication.shared
         if task == .invalid {
             task = app.beginBackgroundTask(withName: "kokodayo.relay") { [weak self] in self?.finish() }
         }
-        let channel = RemoteChannel(groupID: id)
+        let channel = RemoteChannel(groupID: group.id, me: group.myMember)
+        // まず最後の居場所として残す（相手のアプリが閉じていても、開けば見える）。
+        channel.store(location)
         channel.onState = { [weak self, weak channel] joined in
             guard joined, let channel else { return }
             DispatchQueue.main.async {

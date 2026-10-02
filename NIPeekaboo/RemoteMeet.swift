@@ -8,6 +8,8 @@
 //  - 鍵は今日のグループの秘密 ID から作る。招待リンクを渡した時点で両方が持っている
 //    （新しい鍵を別経路で配らない = 渡す経路が増えない）
 //  - 中継は部屋に流すだけ。保存しない。グループが終われば部屋も消える
+//  - ただし「最後の居場所」だけは、暗号文のまま部屋ごと・人ごとに1つ残す（関数 lastfix）。
+//    相手のアプリが閉じていても、開けば最後にいた所が見えるように（10/3 Zenlyと同じ）
 import Foundation
 import CoreLocation
 import CryptoKit
@@ -32,6 +34,10 @@ final class RemoteChannel: NSObject {
 
     private let topic: String
     private let key: SymmetricKey
+    /// 最後の居場所を残す部屋の名前（中継の部屋と同じもの）と、自分の名乗り（部屋ごとに作り直したもの）。
+    private let room: String
+    private let sender: String?
+    private var lastStoreAt = Date.distantPast
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
     private var heartbeat: Timer?
@@ -50,12 +56,17 @@ final class RemoteChannel: NSObject {
     var isJoined: Bool { joined }
 
     /// - Parameter groupID: 今日のグループの秘密 ID。これ以外のものを外に出さない。
-    init(groupID: String) {
+    /// - Parameter me: 自分の会員ID（名札）。最後の居場所を残すときの名乗りを作る。無ければ残さない。
+    init(groupID: String, me: String? = nil) {
         // 部屋の名前は ID そのものではなく、その名前用に作り直したもの。
         // 中継業者に ID をそのまま渡さないため。
         let room = Self.derive(groupID, label: "room").prefix(16).map { String(format: "%02x", $0) }.joined()
+        self.room = room
         self.topic = "realtime:kk-\(room)"
         self.key = SymmetricKey(data: Self.derive(groupID, label: "key"))
+        self.sender = me.map { me in
+            SHA256.hash(data: Data("sender|\(room)|\(me)".utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+        }
         super.init()
     }
 
@@ -97,19 +108,71 @@ final class RemoteChannel: NSObject {
 
     /// 自分の居場所を包んで流す。相手が近くにいて UWB が効いているときは呼ばない。
     func send(_ location: CLLocation) {
-        guard joined else { return }
         let fix = RemoteFix(lat: location.coordinate.latitude,
                             lon: location.coordinate.longitude,
                             acc: max(1, location.horizontalAccuracy),
                             at: Date().timeIntervalSince1970 * 1000)
         guard let plain = try? JSONEncoder().encode(fix),
               let sealed = try? AES.GCM.seal(plain, using: key).combined else { return }
+        // 開いているあいだは20秒に1回だけ残す（流すのは毎回）。
+        if Date().timeIntervalSince(lastStoreAt) > 20 { store(sealed: sealed) }
+        guard joined else { return }
         sentCount += 1
         push(event: "broadcast", payload: [
             "type": "broadcast",
             "event": "p",
             "payload": ["b": sealed.base64EncodedString()],
         ])
+    }
+
+    // MARK: - 最後の居場所（暗号文のまま残す・読む）
+
+    private static let lastFixURL = URL(string: "https://dmewybltarntlapasoiz.supabase.co/functions/v1/lastfix")!
+
+    /// 閉じていても起こされたとき（BackgroundRelay）は、間を空けずに必ず残す。
+    func store(_ location: CLLocation) {
+        let fix = RemoteFix(lat: location.coordinate.latitude, lon: location.coordinate.longitude,
+                            acc: max(1, location.horizontalAccuracy), at: Date().timeIntervalSince1970 * 1000)
+        guard let plain = try? JSONEncoder().encode(fix),
+              let sealed = try? AES.GCM.seal(plain, using: key).combined else { return }
+        store(sealed: sealed)
+    }
+
+    private func store(sealed: Data, completion: (() -> Void)? = nil) {
+        guard let sender else { completion?(); return }
+        lastStoreAt = Date()
+        var request = URLRequest(url: Self.lastFixURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.setValue(apiKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "room": room, "sender": sender, "blob": sealed.base64EncodedString(),
+        ])
+        URLSession.shared.dataTask(with: request) { _, _, _ in completion?() }.resume()
+    }
+
+    /// 相手が最後に残した居場所（自分のものは除く・いちばん新しいもの）。
+    func fetchLast() async -> RemoteFix? {
+        var c = URLComponents(url: Self.lastFixURL, resolvingAgainstBaseURL: false)!
+        c.queryItems = [URLQueryItem(name: "room", value: room)]
+        guard let url = c.url else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue(apiKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = obj["rows"] as? [[String: Any]] else { return nil }
+        return rows.compactMap { row -> RemoteFix? in
+            guard (row["sender"] as? String) != sender,
+                  let b64 = row["blob"] as? String, let sealed = Data(base64Encoded: b64),
+                  let box = try? AES.GCM.SealedBox(combined: sealed),
+                  let plain = try? AES.GCM.open(box, using: key) else { return nil }
+            return try? JSONDecoder().decode(RemoteFix.self, from: plain)
+        }.max { $0.at < $1.at }
     }
 
     /// 居場所以外の便りを流す。鍵は居場所と同じ（中継は中身を読めない）。
