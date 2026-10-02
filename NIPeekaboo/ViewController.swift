@@ -1070,6 +1070,10 @@ final class MeetViewController: UIViewController {
     private var storeCheckedAt = Date.distantPast
     private var storeCheckedFrom: CLLocationCoordinate2D?
     /// 自分が頼んだリストと、相手が買えたと言っている物。
+    /// 「買わずに近づいた」をもう知らせたおつかい（同じおつかいで二度鳴らさない）。
+    private var errandReminded: Set<String> = []
+    /// 遠く（1.2km より先）にいたのを見たおつかい。頼んだとき既に近ければ鳴らさないため。
+    private var errandArmed: Set<String> = []
     private var sentErrand: ErrandMessage?
     private var sentErrandGot: [String] = []
     /// 自分が頼まれたリストと、自分が買えた物。
@@ -4462,7 +4466,42 @@ final class MeetViewController: UIViewController {
 
     /// 決めた距離まで近づいた一度だけ知らせる。画面を見ていれば文字と振動、
     /// 見ていなければ通知。同じことを二重に出さない。
+    /// おつかいが残ったまま近づいたら、頼まれた側にも頼んだ側にも知らせる。
+    private func checkErrandApproach() {
+        let metres = currentMetres()
+        let far = metres.map { NearbyAlert.text($0) } ?? ""
+        /// このおつかいで知らせるか（遠くにいたのを見たか・もう知らせたかを覚える）。
+        func shouldRemind(_ id: String, left: Int) -> Bool {
+            let r = ErrandReminder.step(left: left, metres: metres, armed: errandArmed.contains(id),
+                                        reminded: errandReminded.contains(id))
+            if r.armed { errandArmed.insert(id) }
+            if r.remind { errandReminded.insert(id) }
+            return r.remind
+        }
+        if let errand = myErrand {
+            let left = errand.items.filter { !myErrandGot.contains($0) }
+            if shouldRemind(errand.id, left: left.count) {
+                let list = left.joined(separator: "・")
+                flash("おつかいがまだです：\(list)")
+                if hapticsOn { arrivalGenerator.notificationOccurred(.warning) }
+                NearbyAlert.notify(title: "おつかいがまだです",
+                                   body: "まだ：\(list)（\(errand.from)まであと\(far)）")
+            }
+        }
+        if let sent = sentErrand {
+            let left = sent.items.filter { !sentErrandGot.contains($0) }
+            if shouldRemind(sent.id, left: left.count) {
+                let who = partnerName
+                let list = left.joined(separator: "・")
+                flash("\(who)がまだ買わずに近づいています：\(list)")
+                NearbyAlert.notify(title: "\(who)がまだ買わずに近づいています",
+                                   body: "まだ：\(list)（あと\(far)）")
+            }
+        }
+    }
+
     private func updateNearbyAlert() {
+        checkErrandApproach()
         guard NearbyAlert.isOn, let group, let metres = currentMetres() else { return }
         // 見張りは部屋ごとに残す。閉じているあいだに裏で起こされた側（BackgroundRelay）と同じものを使い、
         // 二重に鳴らさない。相手の端末がもう知らせていたら黙る。

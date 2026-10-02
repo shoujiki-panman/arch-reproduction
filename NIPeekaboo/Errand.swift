@@ -13,6 +13,23 @@ import MapKit
 
 // MARK: - やりとりする中身
 
+/// 買わずに近づいたら知らせる（10/3 本人「買わずに近づいたら通知して欲しい」）。
+/// 頼まれた側には「まだです」、頼んだ側には「まだ買わずに近づいています」。どちらも端末の中で決める。
+enum ErrandReminder {
+    /// これより近づいたら知らせる。まだ途中の店に寄れる距離にしておく。
+    static let metres: Double = 1000
+
+    /// 知らせるか。頼んだとき既に近かったら鳴らさない（頼んだ直後に「まだです」と言わない）。
+    /// いったん1.2倍より遠くにいたことを見てから（armed）、決めた距離に入ったときに1回だけ。
+    /// 返すのは（いま知らせるか, 次の armed）。
+    static func step(left: Int, metres distance: Double?, armed: Bool, reminded: Bool) -> (remind: Bool, armed: Bool) {
+        guard let distance else { return (false, armed) }
+        let nowArmed = armed || distance > metres * 1.2
+        guard left > 0, !reminded, nowArmed, distance <= metres else { return (false, nowArmed) }
+        return (true, nowArmed)
+    }
+}
+
 /// 買ってきてほしい物リスト。
 struct ErrandMessage: Codable {
     var type: String = "errand"
