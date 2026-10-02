@@ -124,6 +124,15 @@ final class HomeSheetView: UIView {
     var onAsk: (() -> Void)?
     /// 先回りの提案。あるときだけ、板のいちばん上に出す。
     var suggestion: Suggestion?
+    /// 頼まれているおつかい。板のいちばん上に、品物の名前まで出す（10/3 本人「買い物依頼されたら分かりやすく表示しておいて」）。
+    struct ErrandCard: Equatable {
+        var from: String
+        var place: String
+        var left: [String]
+        var got: [String]
+    }
+    var errand: ErrandCard?
+    var onErrandOpen: (() -> Void)?
     var onSuggestion: (() -> Void)?
     var onSuggestionDismiss: (() -> Void)?
 
@@ -194,9 +203,10 @@ final class HomeSheetView: UIView {
     }
 
     /// 板の形（どの行が並ぶか）。距離の一行（歩くたびに変わる）は入れない。
-    static func shape(of mode: Mode, suggestion: Suggestion?) -> String {
+    static func shape(of mode: Mode, suggestion: Suggestion?, errand: ErrandCard? = nil) -> String {
         func faceKey(_ image: UIImage?) -> String { image.map { "\(ObjectIdentifier($0))" } ?? "-" }
         var parts: [String] = []
+        if let e = errand { parts += ["e", e.from, e.place] + e.left + ["|"] + e.got }
         if let s = suggestion { parts += ["s", s.kind.rawValue, s.title, s.detail, s.primary] }
         switch mode {
         case let .peer(p, canInvite):
@@ -216,7 +226,7 @@ final class HomeSheetView: UIView {
     func render(_ mode: Mode) {
         // 形が同じなら作り直さない。作り直すと、押している最中のボタンが消えて押しが空振りする
         // （電波の距離は1秒に何度も届くので、ほとんどの押しが消えていた）。
-        let shape = Self.shape(of: mode, suggestion: suggestion)
+        let shape = Self.shape(of: mode, suggestion: suggestion, errand: errand)
         if shape == lastShape {
             self.mode = mode
             if case let .peer(peer, _) = mode, peerDetailLabel?.text != peer.detail {
@@ -234,13 +244,20 @@ final class HomeSheetView: UIView {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         body.arrangedSubviews.forEach { $0.removeFromSuperview() }
         more.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        if let errand {
+            stack.addArrangedSubview(errandRow(errand))
+            // 頼まれたら、下げていても板を「ふだん」に戻す（見落とさないように）。
+            if level == .minimized { level = .normal }
+        }
         if let suggestion { stack.addArrangedSubview(suggestionRow(suggestion)) }
         // いちばん上は検索（Appleマップ・Googleマップと同じ）。つないでいなくても使える。
         stack.addArrangedSubview(searchRow())
         switch mode {
         case let .peer(peer, canInvite):
             body.addArrangedSubview(peerRow(peer))
-            for line in [peer.pinName.map { "待ち合わせ：\($0)" }, peer.errandText.map { "おつかい：\($0)" }] {
+            // 頼まれているおつかいは上の行に品物まで出しているので、ここでは頼んでいる側のときだけ。
+            for line in [peer.pinName.map { "待ち合わせ：\($0)" },
+                         errand == nil ? peer.errandText.map { "おつかい：\($0)" } : nil] {
                 guard let line else { continue }
                 body.addArrangedSubview(statusLine(line))
             }
@@ -256,12 +273,7 @@ final class HomeSheetView: UIView {
             }
             more.addArrangedSubview(moreRow("共有をやめる", symbol: "xmark.circle", action: onEnd, danger: true))
         case let .friends(friends, waitingLine, canInvite, canEnd):
-            body.addArrangedSubview(moreRow("まわりを見る（カフェ・ごはん・公園）", symbol: "binoculars",
-                                             action: onExplore))
-            body.addArrangedSubview(moreRow("いまの話題（X・リアルタイム）", symbol: "bubble.left.and.text.bubble.right",
-                                             action: onTalk))
-            body.addArrangedSubview(moreRow("いま近くで（災害・警察・もしものとき）", symbol: "exclamationmark.shield",
-                                             action: onNearbyNow))
+            // いちばんの用事（友だちとつなぐ）を先に、まわりのことはその下に（10/3 配置の見直し）。
             body.addArrangedSubview(sectionTitle(!friends.isEmpty ? "友だち"
                                                   : waitingLine != nil ? "待っています" : "人と会う"))
             if let waitingLine { body.addArrangedSubview(statusLine(waitingLine)) }
@@ -276,6 +288,13 @@ final class HomeSheetView: UIView {
             if canEnd {
                 body.addArrangedSubview(moreRow("やめる", symbol: "xmark.circle", action: onEnd, danger: true))
             }
+            body.addArrangedSubview(sectionTitle("まわり"))
+            body.addArrangedSubview(moreRow("まわりを見る（カフェ・ごはん・公園）", symbol: "binoculars",
+                                             action: onExplore))
+            body.addArrangedSubview(moreRow("いまの話題（X・リアルタイム）", symbol: "bubble.left.and.text.bubble.right",
+                                             action: onTalk))
+            body.addArrangedSubview(moreRow("いま近くで（災害・警察・もしものとき）", symbol: "exclamationmark.shield",
+                                             action: onNearbyNow))
         }
         if !body.arrangedSubviews.isEmpty { stack.addArrangedSubview(body) }
         if !more.arrangedSubviews.isEmpty { stack.addArrangedSubview(more) }
@@ -405,6 +424,63 @@ final class HomeSheetView: UIView {
     }
 
     /// 先回りの提案の行。✨・一言・理由、「頼む」と「いい」。
+    /// 頼まれているおつかい。先回りの提案と同じ部品で、品物の名前・買った数・店まで見せる。
+    private func errandRow(_ e: ErrandCard) -> UIView {
+        let icon = UIImageView(image: UIImage(systemName: "cart.fill"))
+        icon.tintColor = .systemOrange
+        icon.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        let title = UILabel()
+        title.font = Type.font(15, .bold, .headline)
+        title.textColor = MeetPalette.primary
+        title.numberOfLines = 2
+        let total = e.left.count + e.got.count
+        title.text = e.left.isEmpty ? "\(e.from)のおつかい　全部買いました"
+                                    : "\(e.from)からおつかい（あと\(e.left.count)/\(total)個）"
+        let detail = UILabel()
+        detail.font = Type.font(15, .regular, .body)
+        detail.textColor = MeetPalette.primary
+        detail.numberOfLines = 0
+        let lines = e.left.map { "□ \($0)" } + e.got.map { "☑︎ \($0)" }
+        detail.text = lines.joined(separator: "\n")
+        let place = UILabel()
+        place.font = Type.caption
+        place.textColor = MeetPalette.secondary
+        place.text = "\(e.place)で"
+
+        var open = UIButton.Configuration.filled()
+        open.title = "リストを開く"
+        open.baseBackgroundColor = .systemOrange
+        open.baseForegroundColor = .white
+        open.cornerStyle = .capsule
+        open.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16)
+        let openButton = UIButton(type: .system)
+        openButton.configuration = open
+        openButton.addAction(UIAction { [weak self] _ in self?.onErrandOpen?() }, for: .touchUpInside)
+        let buttons = UIStackView(arrangedSubviews: [openButton, UIView()])
+        buttons.axis = .horizontal
+
+        let texts = UIStackView(arrangedSubviews: [title, detail, place, buttons])
+        texts.axis = .vertical
+        texts.spacing = 4
+        texts.setCustomSpacing(8, after: place)
+        let row = UIStackView(arrangedSubviews: [icon, texts])
+        row.axis = .horizontal
+        row.alignment = .top
+        row.spacing = 10
+        row.isLayoutMarginsRelativeArrangement = true
+        row.layoutMargins = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        row.backgroundColor = MeetPalette.raised
+        row.layer.cornerRadius = 16
+        row.layer.borderWidth = 1
+        row.layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.7).cgColor
+        // 行のどこを押してもリストが開く。
+        row.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(errandRowTapped)))
+        return row
+    }
+
+    @objc private func errandRowTapped() { onErrandOpen?() }
+
     private func suggestionRow(_ s: Suggestion) -> UIView {
         let icon = UIImageView(image: UIImage(systemName: "sparkles"))
         icon.tintColor = .systemPurple
