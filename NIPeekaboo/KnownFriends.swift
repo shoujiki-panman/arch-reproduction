@@ -8,6 +8,7 @@
 // だからリンクも合言葉も要らないし、こちらから相手に何かを送る必要もない。
 import Foundation
 import UIKit
+import UserNotifications
 import CryptoKit
 
 /// この端末の名札。グループごとの鍵と違って作り直さない。
@@ -226,6 +227,29 @@ enum PushKnock {
         guard let token = myToken else { return "まだ通知の宛先がありません。通知を許可してから開き直してください。" }
         UIPasteboard.general.string = "\(token) \(environment)"
         return "通知の宛先をコピーしました"
+    }
+
+    // MARK: 家のアレクサからの買い物（おつかい MCP）
+
+    /// 買い物の通知に付く「済んだ」ボタン。押すとアプリを開かずに、おつかい MCP に済んだを返す。
+    static let errandCategory = "ERRAND"
+    static let errandDoneAction = "ERRAND_DONE"
+    private static let errandServer = "https://otsukai-mcp.shoujiki-panman.workers.dev/errands"
+
+    static var errandNotificationCategory: UNNotificationCategory {
+        let done = UNNotificationAction(identifier: errandDoneAction, title: "済んだ", options: [])
+        return UNNotificationCategory(identifier: errandCategory, actions: [done], intentIdentifiers: [], options: [])
+    }
+
+    /// 済んだを返す。本人確認は「この iPhone の通知の宛先」で行う（届け先と同じ宛先だけが済んだにできる）。
+    @discardableResult
+    static func reportErrandDone(id: String) async -> Bool {
+        guard let token = myToken, id.count == 36, let url = URL(string: "\(errandServer)/\(id)/done") else { return false }
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.httpMethod = "POST"
+        request.setValue(token, forHTTPHeaderField: "x-push-token")
+        guard let (_, response) = try? await URLSession.shared.data(for: request) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
     static func save(token: Data) {

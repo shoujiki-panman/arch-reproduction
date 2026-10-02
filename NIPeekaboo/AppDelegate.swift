@@ -44,6 +44,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler:
                                     @escaping (UNNotificationPresentationOptions) -> Void) {
+        // 家のアレクサからの買い物は、アプリを見ていても上に出す（画面の中には出る場所が無いため）。
+        if notification.request.content.userInfo["errand"] != nil {
+            completionHandler([.banner, .list, .sound])
+            return
+        }
         completionHandler([.sound])
     }
 
@@ -55,6 +60,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
             NearbyAlert.pendingPing = true
             NotificationCenter.default.post(name: .kokodayoPingRequested, object: nil)
         }
+        // 家のアレクサからの買い物。「済んだ」はアプリを開かずに返す。通知そのものを押したら、開いてから聞く。
+        let info = response.notification.request.content.userInfo
+        if let id = info["errandId"] as? String, let item = info["errand"] as? String {
+            if response.actionIdentifier == PushKnock.errandDoneAction {
+                Task {
+                    await PushKnock.reportErrandDone(id: id)
+                    completionHandler()
+                }
+                return
+            }
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Self.askErrandDone(id: id, item: item) }
+            }
+        }
         // 呼び鈴（友だちが「つなぐ」を押した）の通知から開いた。画面ができてから渡す。
         if let key = response.notification.request.content.userInfo["knock"] as? String {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -62,5 +81,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
             }
         }
         completionHandler()
+    }
+
+    /// 買い物の通知から開いたときに、買えたかを聞く（iOS 標準の確認の札）。
+    private static func askErrandDone(id: String, item: String) {
+        let scene = UIApplication.shared.connectedScenes.first { $0.activationState == .foregroundActive } as? UIWindowScene
+        guard let root = scene?.keyWindow?.rootViewController else { return }
+        let top = root.presentedViewController ?? root
+        let alert = UIAlertController(title: "🛒 \(item)", message: "買えたら「済んだ」を押してください。頼んだ人に伝わります。", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "あとで", style: .cancel))
+        alert.addAction(UIAlertAction(title: "済んだ", style: .default) { _ in
+            Task { await PushKnock.reportErrandDone(id: id) }
+        })
+        top.present(alert, animated: true)
     }
 }

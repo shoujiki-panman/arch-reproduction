@@ -86,7 +86,7 @@ enum NearbyAlert {
                                         options: [.foreground])
         let group = UNNotificationCategory(identifier: category, actions: [ping],
                                            intentIdentifiers: [], options: [])
-        UNUserNotificationCenter.current().setNotificationCategories([group])
+        UNUserNotificationCenter.current().setNotificationCategories([group, PushKnock.errandNotificationCategory])
     }
 
     /// 許可を聞く。グループができた時に一度だけ呼ぶ（起動直後に聞かない）。
