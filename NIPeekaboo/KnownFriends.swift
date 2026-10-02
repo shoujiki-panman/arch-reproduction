@@ -233,6 +233,20 @@ enum PushKnock {
         return text[r.upperBound...].prefix(80).contains("development") ? "sandbox" : "production"
     }()
 
+    /// 相手に「〇〇が近くにいます（あと◯km）」を送る。文面はサーバーが決める（送るのは距離の数字だけ）。
+    static func near(_ friend: KnownFriend, name: String, metres: Double) async {
+        guard let to = friend.push else { return }
+        var request = URLRequest(url: endpoint, timeoutInterval: 10)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let body: [String: Any] = ["to": to, "env": friend.pushEnv ?? "production", "name": name,
+                                   "kind": "near", "metres": Int(metres.rounded())]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
     /// 相手に「〇〇がつなごうとしています」を送る。宛先を知らなければ何もしない（アプリを開いていれば呼び鈴Aで届く）。
     static func ring(_ friend: KnownFriend, from me: String, name: String) async {
         guard let to = friend.push else { return }

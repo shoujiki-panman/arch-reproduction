@@ -1,5 +1,7 @@
 // 呼び鈴：友だちが「つなぐ」を押したとき、相手の iPhone に Apple のプッシュ通知で知らせる。
 // 受け取るのは 宛先（device token）・環境・送り主の名札・名前 だけ。居場所は来ない。
+// kind=near（10/3）：閉じていても近づいたら「〇〇が近くにいます（あと◯km）」。来るのは距離の数字だけで、
+// 文面はここで決める（アプリから好きな文を流させない）。
 // 鍵（.p8）は Supabase の Secrets（APNS_KEY_ID / APNS_TEAM_ID / APNS_PRIVATE_KEY）に置き、ここには書かない。
 import { importPKCS8, SignJWT } from "npm:jose@5.9.6";
 
@@ -33,7 +35,7 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
   // アプリからの呼び出しだけを通す（公開してよい鍵だが、でたらめな呼び出しは弾く）。
   if (req.headers.get("apikey") !== PUBLISHABLE) return json({ error: "forbidden" }, 403);
-  let input: { to?: string; env?: string; from?: string; name?: string };
+  let input: { to?: string; env?: string; from?: string; name?: string; kind?: string; metres?: number };
   try {
     input = await req.json();
   } catch {
@@ -41,21 +43,32 @@ Deno.serve(async (req: Request) => {
   }
   const to = String(input.to ?? "");
   if (!/^[0-9a-f]{64,200}$/.test(to)) return json({ error: "bad token" }, 400);
-  // 同じ相手に20秒に1回まで（押し間違いの連打で相手の電話を鳴らし続けない）。
+  const kind = input.kind === "near" ? "near" : "knock";
+  // 同じ相手・同じ種類は20秒に1回まで（押し間違いの連打で相手の電話を鳴らし続けない）。
   const now = Date.now();
-  if (now - (lastSent.get(to) ?? 0) < 20_000) return json({ ok: true, skipped: "too soon" });
-  lastSent.set(to, now);
+  const limitKey = `${kind}:${to}`;
+  if (now - (lastSent.get(limitKey) ?? 0) < 20_000) return json({ ok: true, skipped: "too soon" });
+  lastSent.set(limitKey, now);
 
   const name = String(input.name ?? "友だち").slice(0, 20);
   const from = String(input.from ?? "").slice(0, 64);
   const host = input.env === "sandbox" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
-  const payload = {
-    aps: {
-      alert: { title: `${name}がつなごうとしています`, body: "開いて「つなぐ」を押すと、お互いの居場所が見えます" },
-      sound: "default",
-    },
-    knock: from,
-  };
+  let payload: Record<string, unknown>;
+  if (kind === "near") {
+    const m = Math.max(0, Math.min(1_000_000, Number(input.metres) || 0));
+    const far = m >= 1000 ? `${(m / 1000).toFixed(1).replace(/\.0$/, "")}km` : `${Math.round(m)}m`;
+    payload = {
+      aps: { alert: { title: `${name}が近くにいます`, body: `あと${far}。開くとお互いの居場所が見えます` }, sound: "default" },
+    };
+  } else {
+    payload = {
+      aps: {
+        alert: { title: `${name}がつなごうとしています`, body: "開いて「つなぐ」を押すと、お互いの居場所が見えます" },
+        sound: "default",
+      },
+      knock: from,
+    };
+  }
   const res = await fetch(`https://${host}/3/device/${to}`, {
     method: "POST",
     headers: {

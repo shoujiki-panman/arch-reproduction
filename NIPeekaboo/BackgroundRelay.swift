@@ -26,6 +26,8 @@ final class BackgroundRelay: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var channel: RemoteChannel?
     private var task: UIBackgroundTaskIdentifier = .invalid
+    /// 終わっていない仕事の数（流す・近さを見る）。0になったら切る。
+    private var pendingWork = 0
     private(set) var watching = false
 
     /// 大きく動いて起きた（画面のある側が、相手との距離を見直すため）。
@@ -96,21 +98,57 @@ final class BackgroundRelay: NSObject, CLLocationManagerDelegate {
         let channel = RemoteChannel(groupID: group.id, me: group.myMember)
         // まず最後の居場所として残す（相手のアプリが閉じていても、開けば見える）。
         channel.store(location)
+        pendingWork = 2
         channel.onState = { [weak self, weak channel] joined in
             guard joined, let channel else { return }
             DispatchQueue.main.async {
                 channel.send(location)
                 // 送ったものが出ていくのを少し待ってから切る。
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self?.finish() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self?.workDone() }
             }
         }
         self.channel = channel
         channel.connect()
+        // 相手の最後の居場所と比べて、決めた距離（はじめは3km）に入っていたら2人に知らせる（段3）。
+        Task { @MainActor [weak self] in
+            await self?.checkNear(location, group: group, channel: channel)
+            self?.workDone()
+        }
         // つながらなくても、20秒で諦める（iOSにもらった時間を使い切らない）。
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.finish() }
     }
 
+    private func workDone() {
+        pendingWork -= 1
+        if pendingWork <= 0 { finish() }
+    }
+
+    /// 閉じているあいだに近づいたら、自分にはこの端末で、相手には呼び鈴と同じ通知で知らせる。
+    /// 見張りの状態は画面のある側と同じもの（部屋ごとに残してある）を使い、二重に鳴らさない。
+    @MainActor
+    private func checkNear(_ location: CLLocation, group: TodayGroup, channel: RemoteChannel) async {
+        guard NearbyAlert.isOn, NearbyAlert.runsInBackground,
+              let partner = await channel.fetchLast(), partner.age < 12 * 3600 else { return }
+        let metres = location.distance(from: CLLocation(latitude: partner.lat, longitude: partner.lon))
+        var watcher = ApproachWatcher.load(room: group.id)
+        let fired = watcher.step(metres: metres, threshold: NearbyAlert.metres)
+        watcher.save(room: group.id)
+        let tell = ApproachWatcher.shouldTell(fired: fired, partnerAlertAt: partner.alert)
+        guard tell.me else { return }
+        let partnerKey = group.approved.first { $0 != group.myMember }
+        let friend = KnownFriends.all().first { $0.key == partnerKey }
+        let who = friend?.name ?? partnerKey.flatMap { group.names[$0] } ?? "相手"
+        NearbyAlert.notify(title: "\(who)が近くにいます",
+                           body: "あと\(NearbyAlert.text(metres))・\(NearbyAlert.walkText(metres))", withPing: true)
+        // 知らせたことを残す（相手の端末が、同じ知らせをもう一度出さないように）。
+        channel.store(location, alert: Date())
+        if tell.partner, let friend {
+            await PushKnock.near(friend, name: MeetViewController.myDisplayName, metres: metres)
+        }
+    }
+
     private func finish() {
+        pendingWork = 0
         channel?.disconnect()
         channel = nil
         if task != .invalid {

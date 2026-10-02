@@ -20,6 +20,8 @@ struct RemoteFix: Codable {
     let lon: Double
     let acc: Double
     let at: Double          // 相手の端末の時計（ミリ秒）
+    /// この人が「近くにいます」を2人に知らせた時刻（ミリ秒）。もう一方が二重に鳴らさないため。
+    var alert: Double? = nil
 
     var coordinate: CLLocationCoordinate2D { .init(latitude: lat, longitude: lon) }
     var age: TimeInterval { max(0, Date().timeIntervalSince1970 - at / 1000) }
@@ -130,9 +132,11 @@ final class RemoteChannel: NSObject {
     private static let lastFixURL = URL(string: "https://dmewybltarntlapasoiz.supabase.co/functions/v1/lastfix")!
 
     /// 閉じていても起こされたとき（BackgroundRelay）は、間を空けずに必ず残す。
-    func store(_ location: CLLocation) {
+    /// alert: 「近くにいます」を知らせた時刻を添える（相手が同じ知らせを二重に出さないため）。
+    func store(_ location: CLLocation, alert: Date? = nil) {
         let fix = RemoteFix(lat: location.coordinate.latitude, lon: location.coordinate.longitude,
-                            acc: max(1, location.horizontalAccuracy), at: Date().timeIntervalSince1970 * 1000)
+                            acc: max(1, location.horizontalAccuracy), at: Date().timeIntervalSince1970 * 1000,
+                            alert: alert.map { $0.timeIntervalSince1970 * 1000 })
         guard let plain = try? JSONEncoder().encode(fix),
               let sealed = try? AES.GCM.seal(plain, using: key).combined else { return }
         store(sealed: sealed)

@@ -1081,7 +1081,10 @@ final class MeetViewController: UIViewController {
     /// 同じリストがMPCと中継の両方から届く。番号で一度だけ受け取る。
     private var seenErrands = Set<String>()
     /// 相手が決めた距離まで近づいたかの見張り。
-    private var approach = ApproachWatcher()
+    /// 近づいた知らせの見張りを忘れる（部屋ごとに残してあるもの）。
+    private func forgetApproach() {
+        if let id = group?.id { ApproachWatcher.forget(room: id) }
+    }
     /// 相手のいまの様子（一言）。
     private var peerMood: String?
     private static let moodKey = "kokodayo.mood"
@@ -2077,12 +2080,12 @@ final class MeetViewController: UIViewController {
         let toggle = UIAction(title: NearbyAlert.isOn ? "知らせを止める" : "知らせを使う",
                               image: UIImage(systemName: NearbyAlert.isOn ? "bell.slash" : "bell")) { [weak self] _ in
             NearbyAlert.isOn.toggle()
-            if NearbyAlert.isOn { NearbyAlert.ask() } else { self?.approach.reset() }
+            if NearbyAlert.isOn { NearbyAlert.ask() } else { self?.forgetApproach() }
         }
         let distances = NearbyAlert.choices.map { metres in
             let action = UIAction(title: NearbyAlert.text(metres)) { [weak self] _ in
                 NearbyAlert.metres = metres
-                self?.approach.reset()
+                self?.forgetApproach()
             }
             action.state = NearbyAlert.metres == metres ? .on : .off
             return action
@@ -4432,7 +4435,7 @@ final class MeetViewController: UIViewController {
         meetPin = nil
         storeCheckedFrom = nil
         storeCheckedAt = .distantPast
-        approach.reset()
+        forgetApproach()
     }
 
     // MARK: - 「近くにいるよ」
@@ -4446,8 +4449,21 @@ final class MeetViewController: UIViewController {
     /// 決めた距離まで近づいた一度だけ知らせる。画面を見ていれば文字と振動、
     /// 見ていなければ通知。同じことを二重に出さない。
     private func updateNearbyAlert() {
-        guard NearbyAlert.isOn, group != nil, let metres = currentMetres() else { return }
-        guard approach.step(metres: metres, threshold: NearbyAlert.metres) else { return }
+        guard NearbyAlert.isOn, let group, let metres = currentMetres() else { return }
+        // 見張りは部屋ごとに残す。閉じているあいだに裏で起こされた側（BackgroundRelay）と同じものを使い、
+        // 二重に鳴らさない。相手の端末がもう知らせていたら黙る。
+        var watcher = ApproachWatcher.load(room: group.id)
+        let fired = watcher.step(metres: metres, threshold: NearbyAlert.metres)
+        watcher.save(room: group.id)
+        let tell = ApproachWatcher.shouldTell(fired: fired, partnerAlertAt: theirFix?.alert)
+        guard tell.me else { return }
+        if tell.partner, isFriendRoom,
+           let partnerKey = group.approved.first(where: { $0 != group.myMember }),
+           let friend = KnownFriends.all().first(where: { $0.key == partnerKey }) {
+            let myName = Self.myDisplayName
+            Task { await PushKnock.near(friend, name: myName, metres: metres) }
+            if let here = locations.last { remote?.store(here, alert: Date()) }
+        }
         let who = partnerName
         let far = NearbyAlert.text(metres)
         flash("\(who)が近くにいます（あと\(far)）")
