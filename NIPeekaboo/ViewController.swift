@@ -1353,6 +1353,8 @@ final class MeetViewController: UIViewController {
     /// 「探す」の全画面。相手のカードの「探す」から入り、×で地図へ戻る。
     private let findScreen = FindScreen()
     private var finding = false
+    /// 近づいて「探す」を自動で開いた。離れるまでは開き直さない。
+    private var autoFindLatched = false
     /// 案内中の帯。経路の「案内開始」から入り、「終了」か相手のすぐそばで終わる。
     private let navOverlay = NavigationOverlay()
     private var navRoute: MKRoute?
@@ -2497,6 +2499,8 @@ final class MeetViewController: UIViewController {
             self?.updateNearbyAlert()
             // 閉じているあいだはロック画面の島だけが見える。自分が動いた分も映す。
             self?.syncLiveActivity()
+            // 自分が歩いて近づいたときも、探す画面へ切り替える。
+            self?.considerAutoFind()
             self?.stepNavigation()
         }
         locations.start()
@@ -2697,8 +2701,11 @@ final class MeetViewController: UIViewController {
         let metres = CLLocation(latitude: fix.lat, longitude: fix.lon).distance(from: me)
         if gpsTooClose() {
             // 誤差の内では方位も当てにならない。矢印は出さない。
+            // 電波でつながっていないなら、その理由を言う（相手のアプリが閉じていると電波は使えない）。
             findScreen.update(name: name, distance: "すぐ近く",
-                              detail: "地図では測れない近さです。周りを見てください",
+                              detail: links.isEmpty
+                                  ? "電波で測るには、2人ともここだよを開いたままにしてください"
+                                  : "地図では測れない近さです。周りを見てください",
                               angle: nil, cameraAvailable: true)
             return
         }
@@ -5195,7 +5202,24 @@ final class MeetViewController: UIViewController {
 
     /// One screen: invite, wait for the yes, then the distance. Nobody outside
     /// today's group ever appears here, and nobody outside it can see this phone.
+    /// 近づいたら、地図のままにせず「探す」（電波の距離・すぐ近く）へ自動で切り替える。
+    private func considerAutoFind() {
+        guard group != nil, UIApplication.shared.applicationState == .active else { return }
+        let radio = radioIsFresh() ? latestDistance.map(Double.init) : nil
+        let map = mapDistance()?.meters
+        let near = (radio.map { $0 < 20 } ?? false) || gpsTooClose()
+        let far = radio == nil && (map.map { $0 > 60 } ?? false)
+        // 一番上が下の板（SheetCarrier）でなければ、ほかの画面を見ている。
+        var top: UIViewController = self
+        while let next = top.presentedViewController { top = next }
+        let busy = finding || navRoute != nil || phase == .guiding || !(top === self || top is SheetCarrier)
+        let decision = NearbyAlert.autoFind(near: near, far: far, latched: autoFindLatched, busy: busy)
+        autoFindLatched = decision.latched
+        if decision.open { openFind() }
+    }
+
     private func refreshDials() {
+        defer { considerAutoFind() }
         refreshDemoButton()
         refreshFriends()
         // グループがあるなら遠いときの層を生かす。保存の時だけでは、

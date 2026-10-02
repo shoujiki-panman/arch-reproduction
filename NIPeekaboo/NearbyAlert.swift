@@ -56,6 +56,16 @@ enum NearbyAlert {
         metres <= max(20, accuracy * 2)
     }
 
+    /// 近づいたら、地図から「探す」（電波の距離）へ自動で切り替えるか（10/3 本人「近くならマップ側ではない機能使ってよ」）。
+    /// near: 電波で20m未満、またはGPSの誤差の内。far: 60m以上離れた（一度閉じたあと、また切り替えてよくなる）。
+    /// busy: ほかの画面（店の札・頼む画面など）を出している、案内中、すでに探す画面にいる。
+    /// 返すのは（いま開くか, 次の latched）。一度開いたら、離れるまでは開き直さない（閉じたのに戻されないように）。
+    static func autoFind(near: Bool, far: Bool, latched: Bool, busy: Bool) -> (open: Bool, latched: Bool) {
+        if far { return (false, false) }
+        if latched || busy || !near { return (false, latched) }
+        return (true, true)
+    }
+
     /// 歩いた見込み。分速80mは地図の画面と同じ値にそろえる。
     static func walkText(_ metres: Double) -> String {
         "歩いて約\(max(1, Int((metres / 80).rounded())))分"
