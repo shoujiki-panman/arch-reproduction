@@ -78,8 +78,8 @@ enum AskParser {
     }
 
     private static func hasStrongSignal(_ text: String) -> Bool {
-        ["伝えて", "言っといて", "と言って", "って言って", "と伝え", "って伝え", "行き方", "どう行け", "どう行く", "道順"]
-            .contains { text.contains($0) }
+        (["伝えて", "言っといて", "と言って", "って言って", "と伝え", "って伝え", "行き方", "どう行け", "どう行く", "道順"]
+            + sendWords).contains { text.contains($0) }
     }
 
     /// iPhoneの中のAIが使えるか（画面に「AIで読みます／かんたんに読みます」を出すため）。
@@ -173,8 +173,8 @@ enum AskParser {
             for m in nearbyMarkers { q = q.replacingOccurrences(of: m, with: "") }
             return AskIntent(kind: .place, placeKind: placeWord(in: text) ?? "", query: searchWords(q))
         }
-        if has(["伝えて", "様子", "って言って", "と言って", "言っといて", "と伝え", "って伝え"]) {
-            return AskIntent(kind: .mood, mood: quoted(text) ?? String(before(text, ["って伝え", "と伝え", "って言っ", "と言っ"]).prefix(20)))
+        if has(["伝えて", "様子", "って言って", "と言って", "言っといて", "と伝え", "って伝え"] + sendWords) {
+            return AskIntent(kind: .mood, mood: quoted(text) ?? String(before(text, ["って伝え", "と伝え", "って言っ", "と言っ", "って送っ", "送っといて", "送っておいて"]).prefix(20)))
         }
         if has(["行き方", "どう行", "向かう", "案内して", "のところへ", "道順"]) {
             return AskIntent(kind: .route)
@@ -188,6 +188,9 @@ enum AskParser {
         var query = searchWords(text)
         // 「充電できるカフェ」「静かなカフェ」は、最後の種類の言葉（カフェ）で探す。
         if !isGeneric(query), let kind = genericWords.first(where: { query.hasSuffix($0) }) { query = kind }
+        // 「お腹ぺこぺこ、なんか食べたい」は、食べ物の種類が無くても「ごはん」を探す。
+        // AIに回すと、おつかいの頼みと取り違えた（10/2 Macで測定）。
+        if !isGeneric(query), has(hungerWords) { query = "ごはん" }
         // 「雨でも静かに作業できるところ」のように種類の言葉が無いときは、条件を探す言葉に言い換える。
         if !isGeneric(query), !AskSkills.conditionWords(text).isEmpty {
             return AskIntent(kind: .place, query: query, words: AskSkills.conditionWords(text))
@@ -268,6 +271,11 @@ enum AskParser {
                                       "どこか", "どっか", "近くで", "この辺で", "近くの", "近くに"]
 
     private static let placeWords = ["カフェ", "喫茶", "ごはん", "ランチ", "食事", "レストラン", "駅", "公園", "コンビニ"]
+    /// 「店の前にいるねって送っといて」も、相手に伝える頼み（10/2 Macで測定：AIは待ち合わせと取り違えた）。
+    /// 「駅まで送って」（車で送る）と混ざらないよう、「って」付きか「送っといて」だけ。
+    static let sendWords = ["って送っ", "送っといて", "送っておいて"]
+    /// おなかが空いた言い方。
+    static let hungerWords = ["食べたい", "お腹", "おなか", "腹減", "腹へ", "はらへ", "はらぺこ", "腹ぺこ"]
     static let nearbyMarkers = ["近くの", "いちばん近い", "一番近い", "最寄りの", "この辺の", "この辺で"]
 
     /// 種類の言葉（ある1つの店ではない）。これで探すときは近い順にする。
@@ -289,7 +297,8 @@ enum AskParser {
 
     /// 行き先。「ラゾーナに案内して」→「ラゾーナ」。
     private static func destination(in text: String) -> String? {
-        let pattern = "^(.+?)(に|まで|へ)(案内|連れて|行きたい|行こう|行って|行く|向かいたい)"
+        // 「ドンキまで道案内お願い」も（10/2 Macで測定：たぬきへの行き方と取り違えた）。
+        let pattern = "^(.+?)(に|まで|へ)(道案内|案内|連れて|行きたい|行こう|行って|行く|向かいたい)"
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let m = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let r = Range(m.range(at: 1), in: text) else { return nil }
