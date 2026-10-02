@@ -268,6 +268,29 @@ final class LocationSource: NSObject, CLLocationManagerDelegate {
         stopHeading()
     }
 
+    /// 画面を閉じて相手が遠いあいだは、GPSを止める（電池）。大きく動いたら BackgroundRelay が起こす。
+    private(set) var suspended = false
+
+    func suspend() {
+        guard sharing, !suspended else { return }
+        suspended = true
+        manager.stopUpdatingLocation()
+    }
+
+    func resume() {
+        guard suspended else { return }
+        suspended = false
+        applyBackground()
+        manager.startUpdatingLocation()
+    }
+
+    /// 大きな移動の見張りが拾った位置を、いつもの位置として渡す（GPSを止めているあいだの代わり）。
+    func inject(_ location: CLLocation) {
+        guard location.horizontalAccuracy >= 0 else { return }
+        last = location
+        onFix?(location)
+    }
+
     /// 方角は電気を食うので、その画面を見ているあいだだけ回す。
     /// シミュレータには磁石が無いので、ここは何も返さない。
     func startHeading() {

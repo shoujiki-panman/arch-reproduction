@@ -26,6 +26,7 @@
 		EE00000000000000000000B6 /* Agent.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000000000000000000A6 /* Agent.swift */; };
 		EE00000000000000000000B7 /* Safety.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000000000000000000A7 /* Safety.swift */; };
 		EE000000000000000000F0B1 /* OpenPOI.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE000000000000000000F0A1 /* OpenPOI.swift */; };
+		EE000000000000000000F0B2 /* BackgroundRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE000000000000000000F0A2 /* BackgroundRelay.swift */; };
 		23DA9FE5C5624984902A2315 /* RemoteMeet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */; };
 		ADDB290524897F7D00F72056 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290324897F7D00F72056 /* Main.storyboard */; };
 		ADDB290724897F7E00F72056 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = ADDB290624897F7E00F72056 /* Assets.xcassets */; };
@@ -85,6 +86,7 @@
 		EE00000000000000000000A6 /* Agent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Agent.swift; sourceTree = "<group>"; };
 		EE00000000000000000000A7 /* Safety.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Safety.swift; sourceTree = "<group>"; };
 		EE000000000000000000F0A1 /* OpenPOI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenPOI.swift; sourceTree = "<group>"; };
+		EE000000000000000000F0A2 /* BackgroundRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRelay.swift; sourceTree = "<group>"; };
 		2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMeet.swift; sourceTree = "<group>"; };
 		ADDB290424897F7D00F72056 /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		ADDB290624897F7E00F72056 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -198,6 +200,7 @@
 				2F4B7FF58A56477D9AB85C8F /* RemoteMeet.swift */,
 				EE00000000000000000000A7 /* Safety.swift */,
 				EE000000000000000000F0A1 /* OpenPOI.swift */,
+				EE000000000000000000F0A2 /* BackgroundRelay.swift */,
 				EE00000000000000000000A6 /* Agent.swift */,
 				EE00000000000000000000A5 /* HomeSheet.swift */,
 				EE00000000000000000000A4 /* Transitions.swift */,
@@ -334,6 +337,7 @@
 				23DA9FE5C5624984902A2315 /* RemoteMeet.swift in Sources */,
 				EE00000000000000000000B7 /* Safety.swift in Sources */,
 				EE000000000000000000F0B1 /* OpenPOI.swift in Sources */,
+				EE000000000000000000F0B2 /* BackgroundRelay.swift in Sources */,
 				EE00000000000000000000B6 /* Agent.swift in Sources */,
 				EE00000000000000000000B5 /* HomeSheet.swift in Sources */,
 				EE00000000000000000000B4 /* Transitions.swift in Sources */,

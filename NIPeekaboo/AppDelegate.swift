@@ -18,6 +18,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         NearbyAlert.registerCategory()
         // 閉じていても届く呼び鈴のために、通知の宛先をもらう（許可のダイアログは近くの知らせと同じもの）。
         application.registerForRemoteNotifications()
+        // 閉じていても大きく動いたら起こしてもらう見張り。起こされた起動でも、ここで受け手を決める。
+        BackgroundRelay.shared.refresh()
         return true
     }
 

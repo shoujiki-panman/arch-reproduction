@@ -1520,6 +1520,8 @@ final class MeetViewController: UIViewController {
                                                name: .kokodayoKnock, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(pingFromNotification),
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(relayWoke(_:)),
+                                               name: BackgroundRelay.didWake, object: nil)
         refreshDials()
         if supportsUWB {
             // A group restored from the last launch waits for the resume prompt.
@@ -2211,7 +2213,9 @@ final class MeetViewController: UIViewController {
         if group != nil { startRemote() } else { stopRemote() }
         if let url = Self.groupFileURL {
             if let group, let data = try? JSONEncoder().encode(group) {
-                try? data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+                // 閉じていても大きく動いたら位置を送るため、ロック中の裏の起動でも読めるようにする
+                // （起動後に一度ロックを外していれば読める。友だちの一覧と同じ守り方）。
+                try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
                 var values = URLResourceValues()
                 values.isExcludedFromBackup = true
                 var target = url
@@ -2220,6 +2224,7 @@ final class MeetViewController: UIViewController {
                 try? FileManager.default.removeItem(at: url)
             }
         }
+        BackgroundRelay.shared.refresh()
         scheduleExpiry()
     }
 
@@ -2243,7 +2248,16 @@ final class MeetViewController: UIViewController {
     }
 
     /// Timers stop in the background, so the expiry is checked on the way back.
+    /// GPSを止めているあいだに、大きな移動の見張りが位置を拾った。距離を見直し、
+    /// 3km以内に入っていたら、近づいた知らせのためにGPSを戻す。
+    @objc private func relayWoke(_ note: Notification) {
+        guard locations.suspended, let location = note.object as? CLLocation else { return }
+        locations.inject(location)
+        if let metres = currentMetres(), metres <= 3_000 { locations.resume() }
+    }
+
     @objc private func appWillEnterForeground() {
+        locations.resume()
         mapFloor?.followSystemAppearance()
         // しばらく閉じていたら、地図を「いまの2人」に合わせ直す。指で動かしたあとは合わせ直さない
         // 決まりのせいで、朝の八丁畷のまま赤坂で開いていた（9/27「開くと今と違うエリアに飛ばされる」）。
@@ -2309,8 +2323,14 @@ final class MeetViewController: UIViewController {
 
     static func isUntilStopped(_ date: Date) -> Bool { date.timeIntervalSinceNow > 365 * 24 * 3600 }
 
+    /// 保存してあるつながり（画面の無い裏の起動でも読む。BackgroundRelay）。
+    static func savedGroup() -> TodayGroup? {
+        guard let url = groupFileURL, let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(TodayGroup.self, from: data)
+    }
+
     /// この部屋が、覚えた相手とリンク無しで作ったものか。
-    private static func isFriendRoom(id: String) -> Bool {
+    static func isFriendRoom(id: String) -> Bool {
         let me = SelfIdentity.publicKey
         return KnownFriends.all().contains { KnownFriends.pairSecret(mine: me, theirs: $0.key) == id }
     }
@@ -2383,6 +2403,8 @@ final class MeetViewController: UIViewController {
         if supportsUWB { startup() }
         refreshDials()
         flash("\(friend.name)とつなぎました")
+        // 閉じていても動いたら位置を送れるよう、位置の許可を「常に」にしてもらう。
+        BackgroundRelay.shared.askForAlways()
         // 相手のアプリが閉じていても届くように、Apple のプッシュ通知でも知らせる。
         let myName = Self.myDisplayName
         Task { await PushKnock.ring(friend, from: me, name: myName) }
@@ -6414,8 +6436,13 @@ final class MeetViewController: UIViewController {
         // 閉じたら呼び鈴の線は iOS に切られる。開き直したときに張り直す。
         if group == nil { stopListeningForFriends() }
         locations.pauseHeading()
+        // 相手が3kmより遠い（または分からない）友だちとのつながりなら、GPSを止めて
+        // 大きな移動の見張りだけにする（電池。Zenly・Life360と同じ）。案内中は止めない。
+        if BackgroundRelay.shared.watching, navRoute == nil, (currentMetres() ?? .infinity) > 3_000 {
+            locations.suspend()
+        }
         // 裏でも位置を取り続けるなら、島は地図の居場所で動き続ける。取れないときだけ止まったと言う。
-        syncLiveActivity(markStale: !locations.continuesInBackground)
+        syncLiveActivity(markStale: !locations.continuesInBackground || locations.suspended)
     }
 
     /// An island left over from a run that was killed would show a number nobody
