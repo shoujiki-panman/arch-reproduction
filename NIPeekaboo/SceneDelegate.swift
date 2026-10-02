@@ -24,6 +24,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         if let url = URLContexts.first?.url { open(url) }
     }
 
+    /// 買い物の通知から開いたとき、画面が前に出てから「済んだ？」を聞く。
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        AppDelegate.askPendingErrandIfReady()
+    }
+
     private func open(_ url: URL) {
         if url.scheme == "kokodayo", url.host == "push-token" {
             let alert = UIAlertController(title: PushKnock.copyMyToken(), message: nil, preferredStyle: .alert)

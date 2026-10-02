@@ -236,6 +236,9 @@ enum PushKnock {
     static let errandDoneAction = "ERRAND_DONE"
     private static let errandServer = "https://otsukai-mcp.shoujiki-panman.workers.dev/errands"
 
+    /// 通知そのものを押して開いたとき、画面が出そろってから「済んだ？」を聞くために預けておく。
+    @MainActor static var pendingErrand: (id: String, item: String)?
+
     static var errandNotificationCategory: UNNotificationCategory {
         let done = UNNotificationAction(identifier: errandDoneAction, title: "済んだ", options: [])
         return UNNotificationCategory(identifier: errandCategory, actions: [done], intentIdentifiers: [], options: [])
@@ -245,6 +248,9 @@ enum PushKnock {
     @discardableResult
     static func reportErrandDone(id: String) async -> Bool {
         guard let token = myToken, id.count == 36, let url = URL(string: "\(errandServer)/\(id)/done") else { return false }
+        // 閉じた状態で「済んだ」を押すと、アプリは裏で一瞬だけ起こされる。送り終わるまで止めないよう時間をもらう。
+        let task = await UIApplication.shared.beginBackgroundTask(withName: "errand-done")
+        defer { Task { @MainActor in UIApplication.shared.endBackgroundTask(task) } }
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.httpMethod = "POST"
         request.setValue(token, forHTTPHeaderField: "x-push-token")
