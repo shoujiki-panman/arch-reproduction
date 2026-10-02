@@ -25,6 +25,12 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     private func open(_ url: URL) {
+        if url.scheme == "kokodayo", url.host == "push-token" {
+            let alert = UIAlertController(title: PushKnock.copyMyToken(), message: nil, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            window?.rootViewController?.present(alert, animated: true)
+            return
+        }
         #if DEBUG
         print("INVITE scene got \(url) root=\(String(describing: window?.rootViewController))")
         #endif

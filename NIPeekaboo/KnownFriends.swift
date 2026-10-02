@@ -7,6 +7,7 @@
 // 再開のときの部屋名は、2人の鍵から毎回その場で計算する（下の pairRoom）。
 // だからリンクも合言葉も要らないし、こちらから相手に何かを送る必要もない。
 import Foundation
+import UIKit
 import CryptoKit
 
 /// この端末の名札。グループごとの鍵と違って作り直さない。
@@ -218,6 +219,14 @@ enum PushKnock {
     private static let apiKey = "sb_publishable_iT6waNVeHj-Kb0Rp_Ux90w_1VCCk-WK"
 
     static var myToken: String? { UserDefaults.standard.string(forKey: tokenKey) }
+
+    /// 家のアレクサから買い物を届けるために、自分の宛先と環境をコピーする（kokodayo://push-token で開く）。
+    /// コピーするのは通知の宛先だけで、居場所や友だちの情報は入らない。
+    static func copyMyToken() -> String {
+        guard let token = myToken else { return "まだ通知の宛先がありません。通知を許可してから開き直してください。" }
+        UIPasteboard.general.string = "\(token) \(environment)"
+        return "通知の宛先をコピーしました"
+    }
 
     static func save(token: Data) {
         UserDefaults.standard.set(token.map { String(format: "%02x", $0) }.joined(), forKey: tokenKey)

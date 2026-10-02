@@ -1,5 +1,6 @@
 // 呼び鈴：友だちが「つなぐ」を押したとき、相手の iPhone に Apple のプッシュ通知で知らせる。
-// 受け取るのは 宛先（device token）・環境・送り主の名札・名前 だけ。居場所は来ない。
+// kind が "errand" のときは、家のアレクサに言った買い物（text）を知らせる（10/3 追加）。
+// 受け取るのは 宛先（device token）・環境・送り主の名札・名前・買い物の言葉 だけ。居場所は来ない。
 // 鍵（.p8）は Supabase の Secrets（APNS_KEY_ID / APNS_TEAM_ID / APNS_PRIVATE_KEY）に置き、ここには書かない。
 import { importPKCS8, SignJWT } from "npm:jose@5.9.6";
 
@@ -33,7 +34,7 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
   // アプリからの呼び出しだけを通す（公開してよい鍵だが、でたらめな呼び出しは弾く）。
   if (req.headers.get("apikey") !== PUBLISHABLE) return json({ error: "forbidden" }, 403);
-  let input: { to?: string; env?: string; from?: string; name?: string };
+  let input: { to?: string; env?: string; from?: string; name?: string; kind?: string; text?: string };
   try {
     input = await req.json();
   } catch {
@@ -41,21 +42,30 @@ Deno.serve(async (req: Request) => {
   }
   const to = String(input.to ?? "");
   if (!/^[0-9a-f]{64,200}$/.test(to)) return json({ error: "bad token" }, 400);
-  // 同じ相手に20秒に1回まで（押し間違いの連打で相手の電話を鳴らし続けない）。
+  const errand = input.kind === "errand";
+  const text = String(input.text ?? "").trim().slice(0, 60);
+  if (errand && !text) return json({ error: "no text" }, 400);
+  // 同じ相手に、呼び鈴は20秒・買い物は5秒に1回まで（連打で相手の電話を鳴らし続けない）。
   const now = Date.now();
-  if (now - (lastSent.get(to) ?? 0) < 20_000) return json({ ok: true, skipped: "too soon" });
-  lastSent.set(to, now);
+  const slot = `${errand ? "errand" : "knock"}:${to}`;
+  if (now - (lastSent.get(slot) ?? 0) < (errand ? 5_000 : 20_000)) return json({ ok: true, skipped: "too soon" });
+  lastSent.set(slot, now);
 
   const name = String(input.name ?? "友だち").slice(0, 20);
   const from = String(input.from ?? "").slice(0, 64);
   const host = input.env === "sandbox" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
-  const payload = {
-    aps: {
-      alert: { title: `${name}がつなごうとしています`, body: "開いて「つなぐ」を押すと、お互いの居場所が見えます" },
-      sound: "default",
-    },
-    knock: from,
-  };
+  const payload = errand
+    ? {
+        aps: { alert: { title: `🛒 ${text}`, body: `${name}からの買い物のお願いです` }, sound: "default" },
+        errand: text,
+      }
+    : {
+        aps: {
+          alert: { title: `${name}がつなごうとしています`, body: "開いて「つなぐ」を押すと、お互いの居場所が見えます" },
+          sound: "default",
+        },
+        knock: from,
+      };
   const res = await fetch(`https://${host}/3/device/${to}`, {
     method: "POST",
     headers: {
