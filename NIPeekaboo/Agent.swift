@@ -981,6 +981,13 @@ final class AskViewController: UIViewController, UITextFieldDelegate, MKLocalSea
         column.setCustomSpacing(16, after: chips)
         let scroll = UIScrollView()
         scroll.keyboardDismissMode = .interactive
+        // 板の高さが動くたびに安全域の余白が変わり、スクロールが自分で余白を直して位置を動かす。
+        // それがまたレイアウトを呼んで、板を指で動かすと止まらなくなっていた（10/2 シミュレータ・10/11 実機で強制終了）。
+        // 自動の余白を切ると止まることを、シミュレータで切る・切らないの両方で確かめた（10/11）。
+        // 下のホームバーの分は、安全域を読まずに決まった値で空ける（読むとまた同じ繰り返しになる）。
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.contentInset.bottom = 34
+        scroll.verticalScrollIndicatorInsets.bottom = 34
         scroll.addSubview(column)
         view.addSubview(scroll)
         scroll.translatesAutoresizingMaskIntoConstraints = false
