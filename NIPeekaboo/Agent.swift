@@ -168,6 +168,12 @@ enum AskParser {
             return AskIntent(kind: .onTheWay, query: AskSkills.onTheWayWhat(text))
         }
         // 「そこ何時まで？」「スタバの電話番号」
+        // 「八丁畷駅の周りに10時過ぎまでやってるお弁当屋さんとかある？」は、営業時間を聞いているのではなく、
+        // まわりで探してほしい頼み（10/11 実機：駅の営業時間として読んでいた）。種類の言葉を取り出して、まわりで探す。
+        if has(["とかある", "ある？", "ある?", "ないかな", "ない？", "ない?"]), let a = anchored(text),
+           let kind = genericWords.filter({ a.what.contains($0) }).max(by: { $0.count < $1.count }) {
+            return AskIntent(kind: .place, query: kind, near: a.near)
+        }
         if let topic = AskSkills.placeTopic(text) {
             return AskIntent(kind: .placeInfo, query: AskSkills.placeInfoTarget(text), topic: topic)
         }
@@ -190,6 +196,13 @@ enum AskParser {
         if has(["行き方", "どう行", "向かう", "案内して", "のところへ", "道順"]) {
             return AskIntent(kind: .route)
         }
+        // 「お弁当を買いたいんよ」は自分で買いに行く店探し（10/11 実機：AIはおつかいと読んだ）。
+        // 相手に頼むのは「買ってきて」「おつかい」「頼んで」のときだけ。
+        if has(["買いたい", "買える所", "買えるところ", "買える店"]),
+           !has(["買ってきて", "買って来て", "おつかい", "お使い", "頼んで", "頼む"]) {
+            let what = searchWords(before(text, ["を買", "が買", "買いたい", "買える"]))
+            if !what.isEmpty { return AskIntent(kind: .place, query: what) }
+        }
         if has(["買って", "おつかい", "お使い", "買い物", "頼んで"]) {
             return AskIntent(kind: .errand, items: items(in: text))
         }
@@ -202,7 +215,19 @@ enum AskParser {
         // 「お腹ぺこぺこ、なんか食べたい」は、食べ物の種類が無くても「ごはん」を探す。
         // AIに回すと、おつかいの頼みと取り違えた（10/2 Macで測定）。
         // ただし「一蘭食べたい」のように店の名前があれば、名前のまま探す（10/11 実機：一蘭が「ごはん」に化けた）。
-        if !isGeneric(query), has(hungerWords), hungerWords.contains(where: { query.contains($0) }) { query = "ごはん" }
+        if !isGeneric(query), has(hungerWords), hungerWords.contains(where: { query.contains($0) }) {
+            // 「ラーメン食べたい一蘭」：お腹の言葉と種類の言葉を抜いて、残りが名前なら名前で探す（10/11 実機）。
+            var rest = query
+            for w in hungerWords + genericWords.sorted(by: { $0.count > $1.count }) { rest = rest.replacingOccurrences(of: w, with: "") }
+            rest = rest.trimmingCharacters(in: .whitespaces)
+            if looksLikeName(rest) {
+                query = rest
+            } else if let kind = genericWords.filter({ query.contains($0) }).max(by: { $0.count < $1.count }) {
+                query = kind
+            } else {
+                query = "ごはん"
+            }
+        }
         // 「雨でも静かに作業できるところ」のように種類の言葉が無いときは、条件を探す言葉に言い換える。
         if !isGeneric(query), !AskSkills.conditionWords(text).isEmpty {
             return AskIntent(kind: .place, query: query, words: AskSkills.conditionWords(text))
@@ -297,7 +322,7 @@ enum AskParser {
                                "ATM", "銀行", "病院", "本屋", "書店", "ホテル", "駐車場", "駐輪場", "休憩",
                                "カラオケ", "ボウリング", "映画館", "ゲームセンター", "ゲーセン", "ネットカフェ",
                                "漫画喫茶", "銭湯", "サウナ", "ジム", "牛丼", "カレー", "ピザ", "焼き鳥", "中華",
-                               "餃子", "とんかつ", "ケーキ", "スイーツ", "バー",
+                               "餃子", "とんかつ", "ケーキ", "スイーツ", "バー", "弁当", "お弁当",
                                "コワーキングスペース", "図書館", "ファストフード", "ショッピングモール", "美術館", "博物館"]
 
     /// 言葉そのもの（「カフェ」「ラーメン屋」）のときだけ。「東京駅」は駅という種類ではなく
@@ -397,7 +422,8 @@ enum AskSkills {
             add(has(["静か"]) ? ["図書館", "カフェ", "コワーキングスペース"] : ["カフェ", "コワーキングスペース", "図書館"])
         }
         if has(["子連れ", "子ども", "子供", "ベビーカー", "キッズ", "赤ちゃん"]) { add(["ファミレス", "ショッピングモール", "公園"]) }
-        if has(["休憩", "休みたい", "座りたい", "一息", "ひと息", "涼み", "暖まり", "温まり"]) {
+        // 「ねむい」も休める所の頼み（10/11 実機：AIは「駅で会う」と読んだ）。
+        if has(["休憩", "休みたい", "座りたい", "一息", "ひと息", "涼み", "暖まり", "温まり", "眠い", "ねむい", "眠たい", "疲れた", "つかれた"]) {
             add(has(["雨", "寒", "暑", "涼", "暖", "温"]) ? ["カフェ", "ファミレス"] : ["カフェ", "公園", "ファミレス"])
         }
         if has(["飲みたい", "飲める", "お酒", "一杯"]) { add(["居酒屋", "バー"]) }

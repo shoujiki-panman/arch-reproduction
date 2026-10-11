@@ -200,4 +200,15 @@ final class AskRuleTests: XCTestCase {
         XCTAssertFalse(AskParser.looksLikeName("で落ち合おう"))
         XCTAssertFalse(AskParser.looksLikeName("疲れたから座って休めるとこ"))
     }
+
+    /// 10/11 本人が実際に頼んだ言葉。
+    func testRealRequestsOn1011() {
+        XCTAssertEqual(read("ラーメン食べたい一蘭").query, "一蘭")
+        let bento = read("お弁当を買いたいんよ")
+        XCTAssertEqual(bento.kind, .place); XCTAssertEqual(bento.query, "お弁当")
+        let hacchou = read("八丁畷駅の周りに10時過ぎまでやってるお弁当屋さんとかある？")
+        XCTAssertEqual(hacchou.kind, .place); XCTAssertEqual(hacchou.near, "八丁畷駅"); XCTAssertTrue(hacchou.query.contains("弁当"))
+        XCTAssertFalse(read("ねむい").words.isEmpty, "休める所を探す")
+        XCTAssertEqual(read("帰りにパンとお茶買ってきて").kind, .errand, "買ってきてはおつかいのまま")
+    }
 }

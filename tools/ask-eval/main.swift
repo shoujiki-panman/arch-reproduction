@@ -51,6 +51,12 @@ let cases: [Case] = [
     Case(text: "一蘭食べたい", kind: .place, check: q("一蘭"), group: "名"),
     Case(text: "一蘭行きたい", kind: .place, check: q("一蘭"), group: "名"),
     Case(text: "スタバ", kind: .place, check: q("スタバ"), group: "名"),
+    // 10/11 本人が実際に頼んだ言葉（端末の「最近頼んだこと」から）。
+    Case(text: "ラーメン食べたい一蘭", kind: .place, check: q("一蘭"), group: "実"),
+    Case(text: "お弁当を買いたいんよ", kind: .place, check: q("弁当"), group: "実"),
+    Case(text: "八丁畷駅の周りに10時過ぎまでやってるお弁当屋さんとかある？", kind: .place, check: near("弁当", "八丁畷"), group: "実"),
+    Case(text: "ねむい", kind: .place, group: "実"),
+    Case(text: "おなかすいた", kind: .place, check: q("ごはん"), group: "実"),
     // 守り：足した言葉が、別の頼みを横取りしないか。
     Case(text: "パン食べたいから買ってきて", kind: .errand, check: items(["パン"]), group: "守"),
     // 車で送ってほしい頼み。アプリにその機能は無いが、相手への伝言（mood）に化けないこと。
@@ -72,7 +78,7 @@ Task {
             print("[\(c.group)] \(c.text)\n  A\(ok(ra, c) ? "○" : "×") \(show(ra))\n  B\(ok(rb, c) ? "○" : "×")\(usedAI ? "(AI)" : "") \(show(rb))")
         }
     }
-    for g in ["前", "新", "名", "守"] {
+    for g in ["前", "新", "名", "実", "守"] {
         print("\(g): A \(a[g, default: 0])/\(n[g]!)  B \(b[g, default: 0])/\(n[g]!)")
     }
     done.signal()
