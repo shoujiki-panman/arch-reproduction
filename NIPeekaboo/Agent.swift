@@ -66,6 +66,9 @@ enum AskParser {
         // 「ラーメン食べたい」「カラオケ行きたい」のように種類の言葉が取れたら、AIに聞かずに決める。
         // AIは「ボウリング場」（15km先を選ぶ）や「めん」を返すことがあり、待つぶん遅い（9/26 実測）。
         if rule.kind == .place, isGeneric(rule.query) { return (rule, false) }
+        // 「一蘭」「一蘭どこ」のように、頼みが店や場所の名前だけなら、AIに聞かずに名前で探す。
+        // AIは「一蘭」を「駅で会う」、「一蘭どこ」を「東京駅で会う」と読んだ（10/11 実機・Macで測定）。
+        if rule.kind == .place, rule.words.isEmpty, looksLikeName(rule.query) { return (rule, false) }
         // 「雨でも静かに作業できるところ」は、条件を探す言葉（図書館・カフェ…）に言い換えて決める。
         if rule.kind == .place, !rule.words.isEmpty { return (rule, false) }
         #if canImport(FoundationModels)
@@ -75,6 +78,14 @@ enum AskParser {
         }
         #endif
         return (keywordParse(text, partner: partner), false)
+    }
+
+    /// 店や場所の名前らしいか。短く、ひらがなで終わらない（「で落ち合おう」「休めるとこ」は名前ではない）。
+    static func looksLikeName(_ query: String) -> Bool {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty, q.count <= 15, !q.contains("、"), !q.contains("。"),
+              let last = q.unicodeScalars.last else { return false }
+        return !(0x3041...0x309F).contains(Int(last.value))
     }
 
     private static func hasStrongSignal(_ text: String) -> Bool {
@@ -190,7 +201,8 @@ enum AskParser {
         if !isGeneric(query), let kind = genericWords.first(where: { query.hasSuffix($0) }) { query = kind }
         // 「お腹ぺこぺこ、なんか食べたい」は、食べ物の種類が無くても「ごはん」を探す。
         // AIに回すと、おつかいの頼みと取り違えた（10/2 Macで測定）。
-        if !isGeneric(query), has(hungerWords) { query = "ごはん" }
+        // ただし「一蘭食べたい」のように店の名前があれば、名前のまま探す（10/11 実機：一蘭が「ごはん」に化けた）。
+        if !isGeneric(query), has(hungerWords), hungerWords.contains(where: { query.contains($0) }) { query = "ごはん" }
         // 「雨でも静かに作業できるところ」のように種類の言葉が無いときは、条件を探す言葉に言い換える。
         if !isGeneric(query), !AskSkills.conditionWords(text).isEmpty {
             return AskIntent(kind: .place, query: query, words: AskSkills.conditionWords(text))

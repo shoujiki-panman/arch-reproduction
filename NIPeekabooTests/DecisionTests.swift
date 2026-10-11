@@ -188,4 +188,16 @@ final class AskRuleTests: XCTestCase {
         XCTAssertNotEqual(read("駅まで送って").kind, .mood, "送っては伝言に化けない")
         XCTAssertEqual(read("パン食べたいから買ってきて").kind, .errand, "食べたいがおつかいを横取りしない")
     }
+
+    /// 10/11 実機：「一蘭」を探しても出てこなかった。店の名前は名前のまま探す。
+    func testShopNames() {
+        XCTAssertEqual(read("一蘭").query, "一蘭")
+        XCTAssertEqual(read("一蘭どこ").query, "一蘭")
+        XCTAssertEqual(read("一蘭食べたい").query, "一蘭", "食べたいで「ごはん」に化けない")
+        XCTAssertEqual(read("お腹ぺこぺこ、なんか食べたい").query, "ごはん")
+        XCTAssertTrue(AskParser.looksLikeName("一蘭"))
+        XCTAssertTrue(AskParser.looksLikeName("ラゾーナ川崎"))
+        XCTAssertFalse(AskParser.looksLikeName("で落ち合おう"))
+        XCTAssertFalse(AskParser.looksLikeName("疲れたから座って休めるとこ"))
+    }
 }
