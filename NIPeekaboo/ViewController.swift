@@ -1357,6 +1357,8 @@ final class MeetViewController: UIViewController {
     private let errandButton = UIButton(type: .system)
     /// ホームの下の板（「探す」やLife360と同じ形）。相手の行と、できることのタイル。
     private let homeSheet = HomeSheetView()
+    /// 今日歩いた分（板の検索の下に1行）。
+    private let todayWalk = TodayWalk()
     /// 「探す」の全画面。相手のカードの「探す」から入り、×で地図へ戻る。
     private let findScreen = FindScreen()
     private var finding = false
@@ -1529,6 +1531,8 @@ final class MeetViewController: UIViewController {
                                                name: UIApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(relayWoke(_:)),
                                                name: BackgroundRelay.didWake, object: nil)
+        todayWalk.onChange = { [weak self] line in self?.homeSheet.todayWalk = line }
+        todayWalk.start()
         refreshDials()
         if supportsUWB {
             // A group restored from the last launch waits for the resume prompt.

@@ -263,3 +263,14 @@ final class WalkFollowTests: XCTestCase {
         XCTAssertLessThan(metres(next, far), 0.01)
     }
 }
+
+/// 10/12 本人「歩数とかで距離とかわかるといいかも」（今日歩いた分）。
+final class TodayWalkTests: XCTestCase {
+    func testText() {
+        XCTAssertEqual(TodayWalk.text(steps: 7938, metres: 5612), "今日 7,938歩・5.6km")
+        XCTAssertEqual(TodayWalk.text(steps: 812, metres: 590.4), "今日 812歩・590m")
+        // 距離を iPhone が持っていなければ、歩数だけ（こちらで歩幅を掛けて作らない）。
+        XCTAssertEqual(TodayWalk.text(steps: 120, metres: nil), "今日 120歩")
+        XCTAssertNil(TodayWalk.text(steps: 0, metres: 0), "まだ歩いていなければ行を出さない")
+    }
+}

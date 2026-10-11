@@ -132,6 +132,19 @@ final class HomeSheetView: UIView {
     }
     var errand: ErrandCard?
     var onErrandOpen: (() -> Void)?
+    /// 今日歩いた分（「今日 7,938歩・5.6km」）。検索の下に1行で出す。歩くたびに変わるので、
+    /// 板は作り直さず字だけ書き換える。出す・出さないが変わったときだけ並べ直す。
+    var todayWalk: String? {
+        didSet {
+            guard todayWalk != oldValue else { return }
+            if (todayWalk == nil) == (oldValue == nil) {
+                todayWalkLabel?.text = todayWalk
+            } else if let mode {
+                render(mode)
+            }
+        }
+    }
+    private weak var todayWalkLabel: UILabel?
     var onSuggestion: (() -> Void)?
     var onSuggestionDismiss: (() -> Void)?
 
@@ -202,11 +215,13 @@ final class HomeSheetView: UIView {
     }
 
     /// 板の形（どの行が並ぶか）。距離の一行（歩くたびに変わる）は入れない。
-    static func shape(of mode: Mode, suggestion: Suggestion?, errand: ErrandCard? = nil) -> String {
+    static func shape(of mode: Mode, suggestion: Suggestion?, errand: ErrandCard? = nil,
+                      walking: Bool = false) -> String {
         func faceKey(_ image: UIImage?) -> String { image.map { "\(ObjectIdentifier($0))" } ?? "-" }
         var parts: [String] = []
         if let e = errand { parts += ["e", e.from, e.place] + e.left + ["|"] + e.got }
         if let s = suggestion { parts += ["s", s.kind.rawValue, s.title, s.detail, s.primary] }
+        if walking { parts += ["w"] }
         switch mode {
         case let .peer(p, canInvite):
             parts += ["p", p.name, faceKey(p.face), p.mood ?? "", "\(p.radioNear)", p.pinName ?? "",
@@ -225,7 +240,7 @@ final class HomeSheetView: UIView {
     func render(_ mode: Mode) {
         // 形が同じなら作り直さない。作り直すと、押している最中のボタンが消えて押しが空振りする
         // （電波の距離は1秒に何度も届くので、ほとんどの押しが消えていた）。
-        let shape = Self.shape(of: mode, suggestion: suggestion, errand: errand)
+        let shape = Self.shape(of: mode, suggestion: suggestion, errand: errand, walking: todayWalk != nil)
         if shape == lastShape {
             self.mode = mode
             if case let .peer(peer, _) = mode, peerDetailLabel?.text != peer.detail {
@@ -251,6 +266,7 @@ final class HomeSheetView: UIView {
         if let suggestion { stack.addArrangedSubview(suggestionRow(suggestion)) }
         // いちばん上は検索（Appleマップ・Googleマップと同じ）。つないでいなくても使える。
         stack.addArrangedSubview(searchRow())
+        if let todayWalk { stack.addArrangedSubview(todayWalkRow(todayWalk)) }
         switch mode {
         case let .peer(peer, canInvite):
             body.addArrangedSubview(peerRow(peer))
@@ -559,6 +575,22 @@ final class HomeSheetView: UIView {
         return ask
     }
 
+
+    private func todayWalkRow(_ text: String) -> UIView {
+        let icon = UIImageView(image: UIImage(systemName: "figure.walk"))
+        icon.tintColor = MeetPalette.secondary
+        icon.preferredSymbolConfiguration = UIImage.SymbolConfiguration(font: Type.caption)
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+        let label = UILabel()
+        label.font = Type.caption
+        label.textColor = MeetPalette.secondary
+        label.text = text
+        todayWalkLabel = label
+        let row = UIStackView(arrangedSubviews: [icon, label])
+        row.spacing = 6
+        row.alignment = .center
+        return row
+    }
 
     private func statusLine(_ text: String) -> UIView {
         let label = UILabel()
