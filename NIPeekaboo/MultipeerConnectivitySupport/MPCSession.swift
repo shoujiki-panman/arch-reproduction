@@ -120,6 +120,9 @@ class MPCSession: NSObject, MCSessionDelegate, MCNearbyServiceBrowserDelegate, M
 
     // MARK: - `MCSessionDelegate`.
     internal func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        #if DEBUG
+        print("MPC state \(peerID.displayName) \(["notConnected", "connecting", "connected"][min(state.rawValue, 2)])")
+        #endif
         switch state {
         case .connected:
             peerConnected(peerID: peerID)
@@ -167,7 +170,30 @@ class MPCSession: NSObject, MCSessionDelegate, MCNearbyServiceBrowserDelegate, M
         guard identityValue == identityString,
               info?[MPCSessionConstants.kKeyTag] == discoveryTag,
               mcSession.connectedPeers.count < maxNumPeers else { return }
-        browser.invitePeer(peerID, to: mcSession, withContext: joinProof, timeout: 10)
+        // 2台が同時に見つけ合い、両方が招待を送ると、招待が行き違ってつながりが落ち着かない
+        // （10/11 実機：つながってはすぐ切れ、UWBの鍵が渡ってもすぐ消えた）。招待は名前の小さい側だけが送る。
+        // 相手が古い版だったり、相手の招待が失敗したときのために、大きい側も8秒待ってつながっていなければ送る。
+        let now = Self.shouldInvite(local: localPeerID.displayName, remote: peerID.displayName)
+        #if DEBUG
+        print("MPC found \(peerID.displayName) invite=\(now ? "now" : "after 8s if still apart")")
+        #endif
+        if now {
+            browser.invitePeer(peerID, to: mcSession, withContext: joinProof, timeout: 10)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self, weak browser] in
+                guard let self, let browser, !self.mcSession.connectedPeers.contains(peerID),
+                      self.mcSession.connectedPeers.count < self.maxNumPeers else { return }
+                #if DEBUG
+                print("MPC fallback invite \(peerID.displayName)")
+                #endif
+                browser.invitePeer(peerID, to: self.mcSession, withContext: self.joinProof, timeout: 10)
+            }
+        }
+    }
+
+    /// 招待を送る側か。2台で必ず片方だけが「はい」になる（名前は起動ごとに作るランダムな文字列）。
+    static func shouldInvite(local: String, remote: String) -> Bool {
+        local < remote
     }
 
     internal func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
@@ -181,9 +207,15 @@ class MPCSession: NSObject, MCSessionDelegate, MCNearbyServiceBrowserDelegate, M
                              invitationHandler: @escaping (Bool, MCSession?) -> Void) {
         // Only a phone holding the same invitation, and only while there is room.
         guard context == joinProof, mcSession.connectedPeers.count < maxNumPeers else {
+            #if DEBUG
+            print("MPC invitation from \(peerID.displayName) declined")
+            #endif
             invitationHandler(false, nil)
             return
         }
+        #if DEBUG
+        print("MPC invitation from \(peerID.displayName) accepted")
+        #endif
         invitationHandler(true, mcSession)
     }
 }
