@@ -530,6 +530,9 @@ final class MeetMapViewController: UIViewController {
 
     /// 向きが届くたびに一気に回すとカクカクする（本人 9/28「向きに合わせて動くのがカクカク」）。
     /// 目標の向きだけ受け取り、画面の書き換えごとに少しずつ近づける。追いついたら止まる（電池）。
+    /// 10/11 本人「歩くとカクカクする」：中心は向きが変わったときにしか自分に合わせておらず、
+    /// まっすぐ歩くと地図が付いてこず、向きが少し変わった瞬間に5m以上一気に飛んでいた。
+    /// 中心も向きと同じように、位置が届くたびに少しずつ近づける。
     private var targetHeading: CLLocationDirection?
     private var turnLink: CADisplayLink?
 
@@ -540,12 +543,14 @@ final class MeetMapViewController: UIViewController {
         }
         targetHeading = h
         guard turnLink == nil else { return }
-        let link = CADisplayLink(target: self, selector: #selector(turnStep))
+        let link = CADisplayLink(target: self, selector: #selector(turnStep(_:)))
+        // 120回/秒は要らない（地図の描き直しが重くなるだけ）。
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
         link.add(to: .main, forMode: .common)
         turnLink = link
     }
 
-    @objc private func turnStep() {
+    @objc private func turnStep(_ link: CADisplayLink) {
         guard followHeading, !userMoved, !navigating, peer == nil,
               let target = targetHeading, let me = map.userLocation.location else {
             stopTurning()
@@ -553,15 +558,36 @@ final class MeetMapViewController: UIViewController {
         }
         let now = map.camera.heading
         let diff = Self.angleDiff(target, now)
-        guard abs(diff) > 0.3 else {
+        let center = map.camera.centerCoordinate
+        let gap = MKMapPoint(center).distance(to: MKMapPoint(me.coordinate))
+        guard abs(diff) > 0.3 || gap > 0.3 else {
             stopTurning()
             return
         }
-        // 残りの2割ずつ近づける（最初は速く、終わりはゆっくり）。拡大・縮小はいまのまま。
-        let camera = MKMapCamera(lookingAtCenter: me.coordinate,
+        // 残りの一定の割合ずつ近づける（最初は速く、終わりはゆっくり）。拡大・縮小はいまのまま。
+        // 割合は時間で決める（1秒に何回描き直すかで速さが変わらないように）。
+        let dt = link.targetTimestamp - link.timestamp
+        let heading = now + diff * Self.ease(dt: dt, tau: 0.075)
+        let next = Self.followCenter(from: center, to: me.coordinate, fraction: Self.ease(dt: dt, tau: 0.25))
+        let camera = MKMapCamera(lookingAtCenter: next,
                                  fromDistance: map.camera.centerCoordinateDistance,
-                                 pitch: map.camera.pitch, heading: now + diff * 0.2)
+                                 pitch: map.camera.pitch, heading: heading)
         map.setCamera(camera, animated: false)
+    }
+
+    /// 1回の描き直しで、残りのどれだけ近づけるか。tau 秒で残りが約4割になる。
+    static func ease(dt: CFTimeInterval, tau: CFTimeInterval) -> Double {
+        guard dt > 0, tau > 0 else { return 1 }
+        return 1 - exp(-min(dt, 0.1) / tau)
+    }
+
+    /// 地図の中心を自分へ近づける。遠く離れていたら（開き直した直後など）一気に合わせる。
+    static func followCenter(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D,
+                             fraction: Double) -> CLLocationCoordinate2D {
+        guard MKMapPoint(from).distance(to: MKMapPoint(to)) < 200 else { return to }
+        let f = max(0, min(1, fraction))
+        return CLLocationCoordinate2D(latitude: from.latitude + (to.latitude - from.latitude) * f,
+                                      longitude: from.longitude + (to.longitude - from.longitude) * f)
     }
 
     private func stopTurning() {
@@ -577,12 +603,16 @@ final class MeetMapViewController: UIViewController {
     private func applyMeLook(to view: MKAnnotationView) {
         guard let arrow = view.subviews.first(where: { $0.tag == Self.navArrowTag }) as? UIImageView else { return }
         let size = view.bounds.width
+        // 地図が動くたびに呼ばれるので、絵は種類が変わったときだけ差し替える（毎回作ると重い）。
+        let kind = myHeading == nil ? "dot" : "arrow"
+        if arrow.accessibilityIdentifier != kind || arrow.image == nil {
+            arrow.image = myHeading == nil ? NavArrow.dot(size: size) : NavArrow.image(size: size)
+            arrow.accessibilityIdentifier = kind
+        }
         if let h = myHeading {
-            arrow.image = NavArrow.image(size: size)
             let angle = (h - map.camera.heading) * .pi / 180
             arrow.transform = CGAffineTransform(rotationAngle: CGFloat(angle))
         } else {
-            arrow.image = NavArrow.dot(size: size)
             arrow.transform = .identity
         }
     }
