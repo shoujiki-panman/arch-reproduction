@@ -189,3 +189,14 @@ final class AskRuleTests: XCTestCase {
         XCTAssertEqual(read("パン食べたいから買ってきて").kind, .errand, "食べたいがおつかいを横取りしない")
     }
 }
+
+final class NearbyConnectionTests: XCTestCase {
+    /// 10/11 実機：2台が同時に招待し合うとつながりが落ち着かない。招待するのは必ず片方だけ。
+    func testExactlyOneSideInvites() {
+        let pairs = [("k1A2B3C4D", "k5ECBB103"), ("kFFFFFFFF", "k00000000"), ("kabc", "kabd")]
+        for (a, b) in pairs {
+            XCTAssertNotEqual(MPCSession.shouldInvite(local: a, remote: b), MPCSession.shouldInvite(local: b, remote: a),
+                              "\(a) と \(b) のどちらか一方だけが招待する")
+        }
+    }
+}
