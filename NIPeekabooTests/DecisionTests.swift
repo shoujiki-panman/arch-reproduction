@@ -223,3 +223,43 @@ final class NearbyConnectionTests: XCTestCase {
         }
     }
 }
+
+/// 10/11 本人「歩くとカクカクする」：1人のとき、地図の中心が自分に少しずつ付いていく。
+final class WalkFollowTests: XCTestCase {
+    private let start = CLLocationCoordinate2D(latitude: 35.5313, longitude: 139.6966)
+
+    private func metres(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+        CLLocation(latitude: a.latitude, longitude: a.longitude)
+            .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+    }
+
+    func testEaseDoesNotDependOnFrameRate() {
+        // 60回/秒で1秒と、120回/秒で1秒は、ほぼ同じだけ近づく。
+        var at60 = 1.0, at120 = 1.0
+        for _ in 0..<60 { at60 *= 1 - MeetMapViewController.ease(dt: 1.0 / 60, tau: 0.25) }
+        for _ in 0..<120 { at120 *= 1 - MeetMapViewController.ease(dt: 1.0 / 120, tau: 0.25) }
+        XCTAssertEqual(at60, at120, accuracy: 0.001)
+        XCTAssertEqual(MeetMapViewController.ease(dt: 0, tau: 0.25), 1)
+    }
+
+    func testWalkingStepIsSpreadOverFrames() {
+        // 歩いて5m先の位置が届いても、1回の描き直しで飛ぶのは1m未満。
+        let target = MeetMapViewController.offset(start, bearing: 0, metres: 5)
+        var center = start
+        let k = MeetMapViewController.ease(dt: 1.0 / 60, tau: 0.25)
+        var biggest = 0.0
+        for _ in 0..<60 {
+            let next = MeetMapViewController.followCenter(from: center, to: target, fraction: k)
+            biggest = max(biggest, metres(center, next))
+            center = next
+        }
+        XCTAssertLessThan(biggest, 1)
+        XCTAssertLessThan(metres(center, target), 0.3, "1秒で追いつく")
+    }
+
+    func testFarAwayJumpsAtOnce() {
+        let far = MeetMapViewController.offset(start, bearing: 90, metres: 500)
+        let next = MeetMapViewController.followCenter(from: start, to: far, fraction: 0.1)
+        XCTAssertLessThan(metres(next, far), 0.01)
+    }
+}
