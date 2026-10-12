@@ -49,7 +49,7 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>待ち合わせの相手までの距離と方向を出すために、いまいる場所を使います。相手が近づいたことを画面を閉じていてもお知らせするあいだだけ、背景でも使います。相手にだけ、端末の中で鍵をかけて送ります。</string>
 	<key>NSMotionUsageDescription</key>
-	<string>歩いているか止まっているかを判定して、どちらが相手に近づくかを案内するために使います。</string>
+	<string>歩いているか止まっているかを判定して、どちらが相手に近づくかを案内するためと、今日歩いた歩数と距離を出すために使います。</string>
 	<key>NSNearbyInteractionAllowOnceUsageDescription</key>
 	<string>相手との距離と方向を測って合流するために使用します</string>
 	<key>NSNearbyInteractionUsageDescription</key>
