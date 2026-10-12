@@ -274,3 +274,34 @@ final class TodayWalkTests: XCTestCase {
         XCTAssertNil(TodayWalk.text(steps: 0, metres: 0), "まだ歩いていなければ行を出さない")
     }
 }
+
+/// 10/13：相手の位置が届くたびに板を丸ごと作り直していた（提案の見出しに「あと◯km」が入っていて、
+/// 「形が同じなら作り直さない」がすり抜けていた）。歩いて距離が変わっただけなら、形は同じ。
+final class SheetShapeTests: XCTestCase {
+    private let home = CLLocation(latitude: 35.5313, longitude: 139.6966)
+
+    private func state(apart metres: Double) -> ProactiveState {
+        let c = MeetMapViewController.offset(home.coordinate, bearing: 0, metres: metres)
+        return ProactiveState(partner: "たぬき", connected: true, me: home,
+                              peer: CLLocation(latitude: c.latitude, longitude: c.longitude),
+                              peerAge: 10, store: nil, errandActive: false, pin: nil, radioNear: false)
+    }
+
+    private func shape(_ s: Suggestion?, detail: String) -> String {
+        let peer = HomeSheetView.Peer(name: "たぬき", face: nil, detail: detail, mood: nil,
+                                      radioNear: false, pinName: nil, errandText: nil)
+        return HomeSheetView.shape(of: .peer(peer, canInvite: false), suggestion: s)
+    }
+
+    func testWalkingCloserKeepsShape() {
+        let far = Proactive.decide(state(apart: 1_200))
+        let near = Proactive.decide(state(apart: 900))
+        XCTAssertNotNil(far)
+        XCTAssertNotEqual(far?.title, near?.title, "見出しの距離は変わる")
+        XCTAssertEqual(shape(far, detail: "1.2km"), shape(near, detail: "900m"), "形は同じ（作り直さない）")
+    }
+
+    func testSuggestionAppearingChangesShape() {
+        XCTAssertNotEqual(shape(nil, detail: "1.2km"), shape(Proactive.decide(state(apart: 1_200)), detail: "1.2km"))
+    }
+}
