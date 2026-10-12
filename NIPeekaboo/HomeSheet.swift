@@ -220,7 +220,10 @@ final class HomeSheetView: UIView {
         func faceKey(_ image: UIImage?) -> String { image.map { "\(ObjectIdentifier($0))" } ?? "-" }
         var parts: [String] = []
         if let e = errand { parts += ["e", e.from, e.place] + e.left + ["|"] + e.got }
-        if let s = suggestion { parts += ["s", s.kind.rawValue, s.title, s.detail, s.primary] }
+        // 提案の見出しと説明は入れない。「あと1.2km」「3分ほど先に」のように歩くたびに変わるので、
+        // 入れると相手の位置が届くたびに板を丸ごと作り直していた（10/13：歩くと重い・押しが空振りする元）。
+        // 字は作り直さずに書き換える。
+        if let s = suggestion { parts += ["s", s.kind.rawValue, s.primary] }
         if walking { parts += ["w"] }
         switch mode {
         case let .peer(p, canInvite):
@@ -236,6 +239,8 @@ final class HomeSheetView: UIView {
     /// 前に並べた形と、相手の距離の一行（形が同じなら、ここだけ書き換える）。
     private var lastShape: String?
     private weak var peerDetailLabel: UILabel?
+    private weak var suggestionTitleLabel: UILabel?
+    private weak var suggestionDetailLabel: UILabel?
 
     func render(_ mode: Mode) {
         // 形が同じなら作り直さない。作り直すと、押している最中のボタンが消えて押しが空振りする
@@ -245,6 +250,10 @@ final class HomeSheetView: UIView {
             self.mode = mode
             if case let .peer(peer, _) = mode, peerDetailLabel?.text != peer.detail {
                 peerDetailLabel?.text = peer.detail
+            }
+            if let suggestion {
+                if suggestionTitleLabel?.text != suggestion.title { suggestionTitleLabel?.text = suggestion.title }
+                if suggestionDetailLabel?.text != suggestion.detail { suggestionDetailLabel?.text = suggestion.detail }
             }
             return
         }
@@ -511,6 +520,8 @@ final class HomeSheetView: UIView {
         detail.textColor = MeetPalette.secondary
         detail.numberOfLines = 3
         detail.text = s.detail
+        suggestionTitleLabel = title
+        suggestionDetailLabel = detail
 
         var go = UIButton.Configuration.filled()
         go.title = s.primary
