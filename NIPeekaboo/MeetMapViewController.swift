@@ -440,7 +440,6 @@ final class MeetMapViewController: UIViewController {
     func startFollowing() {
         navigating = true
         navPaused = false
-        lastNavHeading = -1
         userMoved = true
         fitted = true
         map.setUserTrackingMode(.none, animated: false)
@@ -451,6 +450,7 @@ final class MeetMapViewController: UIViewController {
     func stopFollowing() {
         navigating = false
         navPaused = false
+        stopNavCamera()
         map.setUserTrackingMode(.none, animated: false)
         refreshNavLook()
         refit()
@@ -469,26 +469,90 @@ final class MeetMapViewController: UIViewController {
     /// 案内中。指で地図を動かしたら、カメラは止める（「中央に戻す」で戻る）。
     private(set) var navigating = false
     private(set) var navPaused = false
-    private var lastNavCamera = Date.distantPast
-    private var lastNavHeading: CLLocationDirection = -1
     /// 案内中に指で動かされた（上の画面が「中央に戻す」を出すため）。
     var onNavPaused: (() -> Void)?
 
     func resumeNavCamera() {
         navPaused = false
-        lastNavHeading = -1
     }
 
+    /// カメラの見え方（どこを・どの向きで・どれだけ傾けて・どの高さから）。
+    struct CameraPose: Equatable {
+        var center: CLLocationCoordinate2D
+        var heading: CLLocationDirection
+        var pitch: Double
+        var distance: Double
+
+        static func == (a: CameraPose, b: CameraPose) -> Bool {
+            a.center.latitude == b.center.latitude && a.center.longitude == b.center.longitude
+                && a.heading == b.heading && a.pitch == b.pitch && a.distance == b.distance
+        }
+    }
+
+    /// 案内中のカメラの行き先と、最後に行き先が変わった時刻。
+    private var navGoal: CameraPose?
+    private var navGoalAt = Date.distantPast
+    private var navLink: CADisplayLink?
+
     /// 案内中のカメラ。heading は「上にしたい向き」（北から時計回りの度）。
+    /// 10/13：前は0.8秒ごと・向きが4度変わるごとに、動きつきでカメラを付け直していた。
+    /// 前の動きが終わる前に次の動きで上書きされ、カクカクして見えた（10/11 本人「歩くとカクカクする」）。
+    /// いまは行き先だけを受け取り、描き直しごとに少しずつ寄せる（1人のときの地図と同じやり方）。
     func navCamera(me: CLLocation, heading: CLLocationDirection) {
         guard navigating, !navPaused else { return }
-        let turned = lastNavHeading < 0 || abs(Self.angleDiff(heading, lastNavHeading)) > 4
-        guard turned || Date().timeIntervalSince(lastNavCamera) > 0.8 else { return }
-        lastNavCamera = Date()
-        lastNavHeading = heading
         let ahead = Self.offset(me.coordinate, bearing: heading, metres: 45)
-        let camera = MKMapCamera(lookingAtCenter: ahead, fromDistance: 300, pitch: 55, heading: heading)
-        map.setCamera(camera, animated: true)
+        navGoal = CameraPose(center: ahead, heading: heading, pitch: 55, distance: 300)
+        navGoalAt = Date()
+        guard navLink == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(navStep(_:)))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+        link.add(to: .main, forMode: .common)
+        navLink = link
+    }
+
+    @objc private func navStep(_ link: CADisplayLink) {
+        // 行き先が3秒変わらなければ止める（地図が傾きを丸めて行き先に届かないときも、回し続けない）。
+        guard navigating, !navPaused, let goal = navGoal, Date().timeIntervalSince(navGoalAt) < 3 else {
+            stopNavCamera()
+            return
+        }
+        let camera = map.camera
+        let now = CameraPose(center: camera.centerCoordinate, heading: camera.heading,
+                             pitch: camera.pitch, distance: camera.centerCoordinateDistance)
+        guard !Self.settled(now, goal) else {
+            stopNavCamera()
+            return
+        }
+        let next = Self.approach(now, goal, dt: link.targetTimestamp - link.timestamp)
+        map.setCamera(MKMapCamera(lookingAtCenter: next.center, fromDistance: next.distance,
+                                  pitch: next.pitch, heading: next.heading), animated: false)
+    }
+
+    private func stopNavCamera() {
+        navLink?.invalidate()
+        navLink = nil
+    }
+
+    /// 1回の描き直しで、カメラを行き先へ寄せる。向きは磁石が揺れるので少しゆっくり、
+    /// 位置・傾き・高さは歩く速さに付いていける速さ。100m以上離れていたら位置は一気に合わせる。
+    static func approach(_ now: CameraPose, _ goal: CameraPose, dt: CFTimeInterval) -> CameraPose {
+        let move = ease(dt: dt, tau: 0.3)
+        let turn = ease(dt: dt, tau: 0.2)
+        let center = MKMapPoint(now.center).distance(to: MKMapPoint(goal.center)) < 100
+            ? followCenter(from: now.center, to: goal.center, fraction: move) : goal.center
+        var heading = now.heading + angleDiff(goal.heading, now.heading) * turn
+        heading = (heading.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360)
+        return CameraPose(center: center, heading: heading,
+                          pitch: now.pitch + (goal.pitch - now.pitch) * move,
+                          distance: now.distance + (goal.distance - now.distance) * move)
+    }
+
+    /// 行き先に着いたとみなせるか（ここで止めて、描き直しを休ませる）。
+    static func settled(_ now: CameraPose, _ goal: CameraPose) -> Bool {
+        MKMapPoint(now.center).distance(to: MKMapPoint(goal.center)) < 0.3
+            && abs(angleDiff(goal.heading, now.heading)) < 0.3
+            && abs(goal.pitch - now.pitch) < 0.5
+            && abs(goal.distance - now.distance) < goal.distance * 0.01
     }
 
     static func angleDiff(_ a: Double, _ b: Double) -> Double {
