@@ -6,6 +6,7 @@ Abstract:
 */
 
 import Foundation
+import ARKit
 import NearbyInteraction
 import QuartzCore
 import simd
@@ -22,8 +23,15 @@ import simd
 final class RelayRanger: NSObject, NISessionDelegate {
     /// 中継へ便りを流す（中身は暗号化される）。
     var send: ((Data) -> Void)?
-    /// 測れた（主スレッドで呼ぶ）。
-    var onReading: ((Float?, simd_float3?) -> Void)?
+    /// 測れた（主スレッドで呼ぶ）。world はカメラ補助のときだけ（向きの矢印はここから出す）。
+    var onReading: ((Float?, simd_float3?, simd_float4x4?) -> Void)?
+    /// カメラ補助で使う ARSession（画面に映すために自前のものを渡す）。nil なら NI が自分で作る。
+    var prepareAR: (() -> ARSession?)?
+    /// この iPhone ではカメラ補助が使えなかった（-5883）。距離だけで続けている。
+    var onCameraFailed: (() -> Void)?
+    /// いまのセッションがカメラ補助で測っているか。
+    private(set) var camera = false
+    private var arAttached = false
 
     private var session: NISession?
     private var peerToken: NIDiscoveryToken?
@@ -54,6 +62,7 @@ final class RelayRanger: NSObject, NISessionDelegate {
         let s = NISession()
         s.delegate = self
         session = s
+        arAttached = false
         sendMyToken()
         if peerToken != nil { run() }
     }
@@ -64,6 +73,18 @@ final class RelayRanger: NSObject, NISessionDelegate {
         peerToken = nil
         peerTokenData = nil
         lastReadingAt = 0
+        camera = false
+    }
+
+    /// カメラ補助に切り替える・戻す。ARSession は動き出す前のセッションにしか渡せないので
+    /// （渡すと -5883。ROADMAP 9/12）、切り替えは新しいセッションと新しい鍵で始め直す。
+    /// 相手の鍵は持ったまま始め直すので、こちらはすぐ測り始め、相手には新しい鍵が届く。
+    func setCamera(_ on: Bool) {
+        guard on != camera, session != nil else { return }
+        camera = on
+        session?.invalidate()
+        session = nil
+        start()
     }
 
     /// 中継から相手の鍵が届いた。新しい鍵なら測り直し、こちらの鍵を1回だけ返す。
@@ -91,6 +112,14 @@ final class RelayRanger: NSObject, NISessionDelegate {
         // そばのつなぎの測り方（runConfig）と同じく、両方が対応していれば遠距離で測る。
         if #available(iOS 17.0, *), NISession.deviceCapabilities.supportsExtendedDistanceMeasurement {
             config.isExtendedDistanceMeasurementEnabled = true
+        }
+        if #available(iOS 16.0, *), camera {
+            config.isCameraAssistanceEnabled = true
+            // 渡すのはこのセッションで1回だけ（測り直しのたびに渡すと -5883）。
+            if !arAttached, let ar = prepareAR?() {
+                session.setARSession(ar)
+            }
+            arAttached = true
         }
         session.run(config)
     }
@@ -123,16 +152,19 @@ final class RelayRanger: NSObject, NISessionDelegate {
               let object = nearbyObjects.first(where: { $0.discoveryToken == peerToken }) else { return }
         let distance = object.distance
         let direction = object.direction
+        var world: simd_float4x4?
+        if #available(iOS 16.0, *), camera { world = session.worldTransform(for: object) }
         DispatchQueue.main.async { [weak self] in
             guard let self, session === self.session else { return }
             if distance != nil { self.lastReadingAt = CACurrentMediaTime() }
-            self.onReading?(distance, direction)
+            self.onReading?(distance, direction, world)
         }
     }
 
     func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject],
                  reason: NINearbyObject.RemovalReason) {
         guard session === self.session else { return }
+        let removed = nearbyObjects.map(\.discoveryToken)
         DispatchQueue.main.async { [weak self] in
             guard let self, session === self.session else { return }
             switch reason {
@@ -141,6 +173,9 @@ final class RelayRanger: NSObject, NISessionDelegate {
                 self.run()
             case .peerEnded:
                 // 相手が測るのをやめた。次に相手が始めたら、新しい鍵が届く。
+                // 相手がカメラに切り替えたときは、新しい鍵が「やめた」の知らせより先に着くことがある。
+                // 消すのは、やめた相手の鍵がいま持っている鍵と同じときだけ（新しい鍵まで消さない）。
+                guard let current = self.peerToken, removed.contains(current) else { return }
                 self.peerToken = nil
                 self.peerTokenData = nil
             @unknown default:
@@ -155,11 +190,18 @@ final class RelayRanger: NSObject, NISessionDelegate {
     }
 
     func session(_ session: NISession, didInvalidateWith error: Error) {
+        let ns = error as NSError
         DispatchQueue.main.async { [weak self] in
             guard let self, session === self.session else { return }
-            // 次に条件がそろったとき、新しいセッションと新しい鍵で始め直す。
             self.session = nil
             self.lastReadingAt = 0
+            // -5883 = カメラ補助がこの組み合わせでは使えない。距離だけで、すぐ始め直す。
+            if self.camera, ns.domain == NIErrorDomain, ns.code == -5883 {
+                self.camera = false
+                self.start()
+                self.onCameraFailed?()
+            }
+            // それ以外は、次に条件がそろったとき、新しいセッションと新しい鍵で始め直す。
         }
     }
 }

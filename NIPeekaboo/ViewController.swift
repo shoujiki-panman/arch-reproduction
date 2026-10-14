@@ -1536,10 +1536,24 @@ final class MeetViewController: UIViewController {
         todayWalk.onChange = { [weak self] line in self?.homeSheet.todayWalk = line }
         todayWalk.start()
         relayRanger.send = { [weak self] note in self?.remote?.send(note: note) }
-        relayRanger.onReading = { [weak self] distance, direction in
+        relayRanger.onReading = { [weak self] distance, direction, world in
             // そばのつなぎで測れているあいだは、そちらを使う（2つの値を混ぜない）。
             guard let self, self.groupPeers.isEmpty else { return }
-            self.updateMeasurement(distance: distance, direction: direction, world: nil)
+            self.updateMeasurement(distance: distance, direction: direction, world: world)
+        }
+        // カメラの画面に映すため、そばのつなぎのときと同じく自前の ARSession を渡す。
+        relayRanger.prepareAR = { [weak self] in
+            guard let self, self.provideOwnARSession else { return nil }
+            self.startARIfNeeded()
+            return self.sceneView.session
+        }
+        relayRanger.onCameraFailed = { [weak self] in
+            guard let self else { return }
+            self.cameraAssistFailed = true
+            if self.phase == .guiding || self.phase == .arrived {
+                self.arHint.text = "このiPhoneでは方向を表示できません。距離と目印を頼りに探してください。"
+                self.arHint.isHidden = false
+            }
         }
         refreshDials()
         if supportsUWB {
@@ -5966,7 +5980,12 @@ final class MeetViewController: UIViewController {
         startTiltWatch()
         startARIfNeeded()
         startGroundMap()
-        if let id = activePeerID, let link = links[id] { runConfig(for: link, cameraAssist: true) }
+        if let id = activePeerID, let link = links[id] {
+            runConfig(for: link, cameraAssist: true)
+        } else if relayRanger.isActive {
+            // 中継の鍵で測っているときも、カメラ補助で向きを出す。
+            relayRanger.setCamera(cameraAssistance && !cameraAssistFailed)
+        }
         phase = .guiding
         updateGuidance()
     }
@@ -5982,6 +6001,8 @@ final class MeetViewController: UIViewController {
     }
 
     @objc private func closeAR() {
+        // 中継の鍵で測っているなら、カメラ補助をやめて距離だけに戻す（カメラを止めて電池を守る）。
+        relayRanger.setCamera(false)
         if !finding { locations.stopHeading() }
         arGroundMap.stop()
         stopTiltWatch()
@@ -6336,7 +6357,7 @@ final class MeetViewController: UIViewController {
     /// Our own ARSession, off. Not while an NISession holds it: pausing under
     /// camera assistance would stop the ranging.
     private func stopARIfIdle() {
-        guard arRunning, !activeCameraAssist else { return }
+        guard arRunning, !activeCameraAssist, !relayRanger.camera else { return }
         sceneView.session.pause()
         arRunning = false
     }
