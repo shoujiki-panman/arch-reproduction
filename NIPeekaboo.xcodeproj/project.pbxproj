@@ -37,6 +37,7 @@
 		EE00000000000000000000B7 /* Safety.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE00000000000000000000A7 /* Safety.swift */; };
 		EE000000000000000000F0B1 /* OpenPOI.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE000000000000000000F0A1 /* OpenPOI.swift */; };
 		EE000000000000000000F0B9 /* TodayWalk.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE000000000000000000F0A9 /* TodayWalk.swift */; };
+		EE000000000000000000F0BA /* RelayRanging.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE000000000000000000F0AA /* RelayRanging.swift */; };
 		EE000000000000000000F0B2 /* BackgroundRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE000000000000000000F0A2 /* BackgroundRelay.swift */; };
 		KD0000000000000000000002 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = KD0000000000000000000001 /* PrivacyInfo.xcprivacy */; };
 		KD0000000000000000000E02 /* station_exits.json in Resources */ = {isa = PBXBuildFile; fileRef = KD0000000000000000000E01 /* station_exits.json */; };
@@ -109,6 +110,7 @@
 		EE00000000000000000000A7 /* Safety.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Safety.swift; sourceTree = "<group>"; };
 		EE000000000000000000F0A1 /* OpenPOI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenPOI.swift; sourceTree = "<group>"; };
 		EE000000000000000000F0A9 /* TodayWalk.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayWalk.swift; sourceTree = "<group>"; };
+		EE000000000000000000F0AA /* RelayRanging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayRanging.swift; sourceTree = "<group>"; };
 		EE000000000000000000F0A2 /* BackgroundRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRelay.swift; sourceTree = "<group>"; };
 		KD0000000000000000000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		KD0000000000000000000E01 /* station_exits.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = station_exits.json; sourceTree = "<group>"; };
@@ -224,6 +226,7 @@
 				EE00000000000000000000A7 /* Safety.swift */,
 				EE000000000000000000F0A1 /* OpenPOI.swift */,
 				EE000000000000000000F0A9 /* TodayWalk.swift */,
+				EE000000000000000000F0AA /* RelayRanging.swift */,
 				EE000000000000000000F0A2 /* BackgroundRelay.swift */,
 				EE00000000000000000000A6 /* Agent.swift */,
 				EE00000000000000000000A5 /* HomeSheet.swift */,
@@ -399,6 +402,7 @@
 				EE00000000000000000000B7 /* Safety.swift in Sources */,
 				EE000000000000000000F0B1 /* OpenPOI.swift in Sources */,
 				EE000000000000000000F0B9 /* TodayWalk.swift in Sources */,
+				EE000000000000000000F0BA /* RelayRanging.swift in Sources */,
 				EE000000000000000000F0B2 /* BackgroundRelay.swift in Sources */,
 				EE00000000000000000000B6 /* Agent.swift in Sources */,
 				EE00000000000000000000B5 /* HomeSheet.swift in Sources */,

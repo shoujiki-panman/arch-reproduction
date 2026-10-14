@@ -356,3 +356,52 @@ final class NavCameraTests: XCTestCase {
         XCTAssertTrue(MeetMapViewController.settled(run(from, goal, frames: 120).end, goal))
     }
 }
+
+/// 10/14：電波の鍵を、そばのつなぎ（MPC）だけでなく中継の道でも渡す。
+final class RelayRangingTests: XCTestCase {
+    private func go(appActive: Bool = true, nearby: Bool = false, age: TimeInterval? = 5,
+                    metres: Double? = 80, running: Bool = false) -> Bool {
+        RelayRanger.shouldRange(supportsUWB: true, appActive: appActive, friendRoom: true, relayJoined: true,
+                                nearbyRanging: nearby, partnerFixAge: age, gpsMetres: metres, running: running)
+    }
+
+    func testStartsOnlyWhenEverythingLinesUp() {
+        XCTAssertTrue(go())
+        XCTAssertFalse(go(appActive: false), "裏では iPhone どうしは測れない")
+        XCTAssertFalse(go(nearby: true), "そばのつなぎで測れているなら、そちらを使う")
+        XCTAssertFalse(go(age: nil), "相手の位置が届いていない＝相手が部屋にいないかもしれない（呼び鈴が鳴る）")
+        XCTAssertFalse(go(age: 90), "相手の位置が古い")
+        XCTAssertFalse(go(metres: 250), "電波が届かない遠さ")
+        XCTAssertFalse(RelayRanger.shouldRange(supportsUWB: false, appActive: true, friendRoom: true, relayJoined: true,
+                                               nearbyRanging: false, partnerFixAge: 5, gpsMetres: 50))
+        XCTAssertFalse(RelayRanger.shouldRange(supportsUWB: true, appActive: true, friendRoom: false, relayJoined: true,
+                                               nearbyRanging: false, partnerFixAge: 5, gpsMetres: 50),
+                       "友だちとの2人の部屋だけ（相手が1人に決まる）")
+    }
+
+    func testDoesNotFlapAtTheEdge() {
+        // 始めるのは200m以内。いったん始めたら、300mまで・位置が2分届かないまでは続ける。
+        XCTAssertFalse(go(metres: 250))
+        XCTAssertTrue(go(metres: 250, running: true))
+        XCTAssertFalse(go(metres: 320, running: true))
+        XCTAssertTrue(go(age: 90, running: true))
+        XCTAssertFalse(go(age: 130, running: true))
+    }
+
+    func testTokenNoteRoundTrip() {
+        let token = Data((0..<300).map { UInt8($0 % 251) })
+        let note = RelayRanger.note(tokenData: token)
+        XCTAssertEqual(RelayRanger.tokenData(from: note), token)
+        // ほかの便り（合図・目印）は鍵として読まない。大きすぎるものも受け取らない。
+        XCTAssertNil(RelayRanger.tokenData(from: Data(#"{"type":"ping"}"#.utf8)))
+        XCTAssertNil(RelayRanger.tokenData(from: RelayRanger.note(tokenData: Data(count: 4_000))))
+    }
+
+    func testAnswersOnlyNewTokens() {
+        // 同じ鍵がもう一度届いても返事をしない（返事の返事で往復し続けない）。
+        let a = Data([1, 2, 3])
+        XCTAssertTrue(RelayRanger.isNew(a, stored: nil))
+        XCTAssertFalse(RelayRanger.isNew(a, stored: a))
+        XCTAssertTrue(RelayRanger.isNew(Data([4]), stored: a))
+    }
+}

@@ -1359,6 +1359,8 @@ final class MeetViewController: UIViewController {
     private let homeSheet = HomeSheetView()
     /// 今日歩いた分（板の検索の下に1行）。
     private let todayWalk = TodayWalk()
+    /// 中継の道で電波の鍵を渡して測る（そばのつなぎで測れていないときの代わり。10/14）。
+    private let relayRanger = RelayRanger()
     /// 「探す」の全画面。相手のカードの「探す」から入り、×で地図へ戻る。
     private let findScreen = FindScreen()
     private var finding = false
@@ -1533,6 +1535,12 @@ final class MeetViewController: UIViewController {
                                                name: BackgroundRelay.didWake, object: nil)
         todayWalk.onChange = { [weak self] line in self?.homeSheet.todayWalk = line }
         todayWalk.start()
+        relayRanger.send = { [weak self] note in self?.remote?.send(note: note) }
+        relayRanger.onReading = { [weak self] distance, direction in
+            // そばのつなぎで測れているあいだは、そちらを使う（2つの値を混ぜない）。
+            guard let self, self.groupPeers.isEmpty else { return }
+            self.updateMeasurement(distance: distance, direction: direction, world: nil)
+        }
         refreshDials()
         if supportsUWB {
             // A group restored from the last launch waits for the resume prompt.
@@ -2637,6 +2645,16 @@ final class MeetViewController: UIViewController {
     }
 
     /// 電波が無いときの、地図での距離。
+    /// 中継の道で電波を測るか、いまの様子から決め直す（refreshDials のたびに呼ぶ。軽い）。
+    private func updateRelayRanging() {
+        let go = RelayRanger.shouldRange(supportsUWB: supportsUWB,
+                                         appActive: UIApplication.shared.applicationState == .active,
+                                         friendRoom: isFriendRoom, relayJoined: remote?.isJoined ?? false,
+                                         nearbyRanging: !groupPeers.isEmpty, partnerFixAge: theirFix?.age,
+                                         gpsMetres: mapDistance()?.meters, running: relayRanger.isActive)
+        if go { relayRanger.start() } else if relayRanger.isActive { relayRanger.stop() }
+    }
+
     private func mapDistance() -> (meters: Double, accuracy: Double)? {
         guard let mine = locations.last, let fix = theirFix, fix.age < 90 else { return nil }
         let other = CLLocation(latitude: fix.lat, longitude: fix.lon)
@@ -4091,6 +4109,10 @@ final class MeetViewController: UIViewController {
     private func handleNote(_ data: Data) {
         guard let kind = try? JSONDecoder().decode(MessageKind.self, from: data) else { return }
         switch kind.type {
+        case "ni":
+            // 中継で届いた電波の鍵。部屋の鍵を持っている人しか流せない。
+            guard group != nil else { return }
+            relayRanger.receive(data)
         case "ping":
             // 中継から来た合図。部屋の鍵を持っている人しか入れないので、名乗りは要らない。
             guard group != nil else { return }
@@ -5356,7 +5378,9 @@ final class MeetViewController: UIViewController {
         let colour = latestDistance.map { band(for: $0).colour } ?? UIColor.white.withAlphaComponent(0.35)
         let idleColour = UIColor.white.withAlphaComponent(0.35)
         let members = groupPeers.compactMap { links[$0] }.sorted { name(of: $0.peerID) < name(of: $1.peerID) }
-        let connected = !members.isEmpty
+        updateRelayRanging()
+        // 中継で鍵を渡して測れているときも「電波でつながっている」として出す。
+        let connected = !members.isEmpty || relayRanger.isRanging
         /// 電波では繋がっていないが、中継で相手の居場所が届いている状態。
         let mapOnly = !connected && group != nil && mapDistance() != nil
         let showRadar = members.count >= 2
@@ -6516,6 +6540,8 @@ final class MeetViewController: UIViewController {
 
     @objc private func appDidEnterBackground() {
         backgroundedAt = Date()
+        // 裏では iPhone どうしの電波は測れない。開き直したら、条件がそろい次第また始める。
+        relayRanger.stop()
         // 閉じたら呼び鈴の線は iOS に切られる。開き直したときに張り直す。
         if group == nil { stopListeningForFriends() }
         locations.pauseHeading()
