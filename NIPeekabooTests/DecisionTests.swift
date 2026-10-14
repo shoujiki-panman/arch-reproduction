@@ -305,3 +305,54 @@ final class SheetShapeTests: XCTestCase {
         XCTAssertNotEqual(shape(nil, detail: "1.2km"), shape(Proactive.decide(state(apart: 1_200)), detail: "1.2km"))
     }
 }
+
+/// 10/13：案内中のカメラを、動きつきの付け直し（0.8秒ごと）から、描き直しごとに少しずつ寄せる形へ。
+final class NavCameraTests: XCTestCase {
+    private typealias Pose = MeetMapViewController.CameraPose
+    private let start = CLLocationCoordinate2D(latitude: 35.5313, longitude: 139.6966)
+
+    private func metres(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
+        CLLocation(latitude: a.latitude, longitude: a.longitude)
+            .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+    }
+
+    private func run(_ from: Pose, _ goal: Pose, frames: Int) -> (end: Pose, biggestStep: Double, biggestTurn: Double) {
+        var now = from, step = 0.0, turn = 0.0
+        for _ in 0..<frames {
+            let next = MeetMapViewController.approach(now, goal, dt: 1.0 / 60)
+            step = max(step, metres(now.center, next.center))
+            turn = max(turn, abs(MeetMapViewController.angleDiff(next.heading, now.heading)))
+            now = next
+        }
+        return (now, step, turn)
+    }
+
+    func testWalkingStepAndTurnAreSmooth() {
+        // 歩いて5m進み、向きが30度変わった。1回の描き直しで飛ぶのは1m未満・3度未満で、1.5秒で着く。
+        let from = Pose(center: start, heading: 0, pitch: 55, distance: 300)
+        let goal = Pose(center: MeetMapViewController.offset(start, bearing: 30, metres: 5), heading: 30,
+                        pitch: 55, distance: 300)
+        let r = run(from, goal, frames: 90)
+        XCTAssertLessThan(r.biggestStep, 1)
+        XCTAssertLessThan(r.biggestTurn, 3)
+        XCTAssertTrue(MeetMapViewController.settled(r.end, goal))
+    }
+
+    func testTurnsTheShortWayAcrossNorth() {
+        // 350度→10度は、北をまたいで20度だけ回る（340度ぶん逆に回らない）。
+        let from = Pose(center: start, heading: 350, pitch: 55, distance: 300)
+        let goal = Pose(center: start, heading: 10, pitch: 55, distance: 300)
+        let next = MeetMapViewController.approach(from, goal, dt: 1.0 / 60)
+        XCTAssertGreaterThan(MeetMapViewController.angleDiff(next.heading, from.heading), 0)
+        XCTAssertTrue(MeetMapViewController.settled(run(from, goal, frames: 90).end, goal))
+    }
+
+    func testStartingNavigationTiltsSmoothly() {
+        // 案内を始めた直後：真上から（傾き0・700m）→ 斜め55度・300m へ、いきなりではなく寄せる。
+        let from = Pose(center: start, heading: 0, pitch: 0, distance: 700)
+        let goal = Pose(center: start, heading: 0, pitch: 55, distance: 300)
+        let next = MeetMapViewController.approach(from, goal, dt: 1.0 / 60)
+        XCTAssertLessThan(next.pitch, 5)
+        XCTAssertTrue(MeetMapViewController.settled(run(from, goal, frames: 120).end, goal))
+    }
+}
