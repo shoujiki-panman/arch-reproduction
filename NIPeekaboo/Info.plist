@@ -35,6 +35,16 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>WiFiAwareServices</key>
+	<dict>
+		<key>_kokodayo-ni._tcp</key>
+		<dict>
+			<key>Publishable</key>
+			<dict/>
+			<key>Subscribable</key>
+			<dict/>
+		</dict>
+	</dict>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_kokodayo._tcp</string>

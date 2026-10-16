@@ -1361,6 +1361,25 @@ final class MeetViewController: UIViewController {
     private let todayWalk = TodayWalk()
     /// 中継の道で電波の鍵を渡して測る（そばのつなぎで測れていないときの代わり。10/14）。
     private let relayRanger = RelayRanger()
+    /// ネットを通さない直接のつなぎ（Wi-Fi Aware、iOS 26 以降）。型が iOS 26 からなので Any で持つ（10/17）。
+    private var directLinkStore: Any?
+    @available(iOS 26.0, *)
+    private var directLink: DirectLink {
+        if let link = directLinkStore as? DirectLink { return link }
+        let link = DirectLink()
+        link.onNote = { [weak self] note in
+            // 運ぶのは電波の鍵の便りだけ。ほかの種類は RelayRanger が読み捨てる。
+            guard self?.group != nil else { return }
+            self?.relayRanger.receive(note)
+        }
+        link.onState = { [weak self] _ in self?.refreshDials() }
+        directLinkStore = link
+        return link
+    }
+    private var directLinked: Bool {
+        guard #available(iOS 26.0, *), let link = directLinkStore as? DirectLink else { return false }
+        return link.isConnected
+    }
     /// 「探す」の全画面。相手のカードの「探す」から入り、×で地図へ戻る。
     private let findScreen = FindScreen()
     private var finding = false
@@ -1535,7 +1554,11 @@ final class MeetViewController: UIViewController {
                                                name: BackgroundRelay.didWake, object: nil)
         todayWalk.onChange = { [weak self] line in self?.homeSheet.todayWalk = line }
         todayWalk.start()
-        relayRanger.send = { [weak self] note in self?.remote?.send(note: note) }
+        relayRanger.send = { [weak self] note in
+            self?.remote?.send(note: note)
+            // ネットが無くても届くよう、直接のつなぎがあればそちらにも流す。
+            if #available(iOS 26.0, *), let link = self?.directLinkStore as? DirectLink { link.send(note) }
+        }
         relayRanger.onReading = { [weak self] distance, direction, world in
             // そばのつなぎで測れているあいだは、そちらを使う（2つの値を混ぜない）。
             guard let self, self.groupPeers.isEmpty else { return }
@@ -2101,6 +2124,12 @@ final class MeetViewController: UIViewController {
                     self?.connectToFriend(friend)
                 })
             }
+            if #available(iOS 26.0, *), supportsUWB, DirectLink.isSupported {
+                actions.append(UIAction(title: "ネットなしでつなぐ準備",
+                                        image: UIImage(systemName: "antenna.radiowaves.left.and.right")) { [weak self] _ in
+                    self?.presentDirectPairing(with: friend)
+                })
+            }
             actions.append(UIAction(title: "友だちから外す", image: UIImage(systemName: "person.crop.circle.badge.xmark"),
                                     attributes: .destructive) { [weak self] _ in
                 KnownFriends.forget(key: friend.key)
@@ -2661,12 +2690,37 @@ final class MeetViewController: UIViewController {
     /// 電波が無いときの、地図での距離。
     /// 中継の道で電波を測るか、いまの様子から決め直す（refreshDials のたびに呼ぶ。軽い）。
     private func updateRelayRanging() {
+        updateDirectLink()
         let go = RelayRanger.shouldRange(supportsUWB: supportsUWB,
                                          appActive: UIApplication.shared.applicationState == .active,
                                          friendRoom: isFriendRoom, relayJoined: remote?.isJoined ?? false,
                                          nearbyRanging: !groupPeers.isEmpty, partnerFixAge: theirFix?.age,
-                                         gpsMetres: mapDistance()?.meters, running: relayRanger.isActive)
+                                         gpsMetres: mapDistance()?.meters, running: relayRanger.isActive,
+                                         directLinked: directLinked)
         if go { relayRanger.start() } else if relayRanger.isActive { relayRanger.stop() }
+    }
+
+    /// 直接のつなぎ（Wi-Fi Aware）は、友だちとの部屋を開いているあいだだけ動かす。
+    private func updateDirectLink() {
+        guard #available(iOS 26.0, *), DirectLink.isSupported else { return }
+        let want = supportsUWB && isFriendRoom && UIApplication.shared.applicationState == .active
+        if want, let group, !directLink.isRunning {
+            directLink.start(groupID: group.id, publisher: group.isHost)
+        } else if !want, let link = directLinkStore as? DirectLink, link.isRunning {
+            link.stop()
+        }
+    }
+
+    /// 最初の1回のペアリング。主（2人の鍵の小さいほう）が見つけてもらう側、もう一方が選ぶ側。
+    @available(iOS 26.0, *)
+    private func presentDirectPairing(with friend: KnownFriend) {
+        let publisher = SelfIdentity.publicKey < friend.key
+        var sheet: UIViewController?
+        sheet = DirectLink.pairingController(friendName: friend.name, publisher: publisher) { [weak self] in
+            sheet?.dismiss(animated: true)
+            self?.refreshDials()
+        }
+        if let sheet { present(sheet, animated: true) }
     }
 
     private func mapDistance() -> (meters: Double, accuracy: Double)? {
@@ -6563,6 +6617,7 @@ final class MeetViewController: UIViewController {
         backgroundedAt = Date()
         // 裏では iPhone どうしの電波は測れない。開き直したら、条件がそろい次第また始める。
         relayRanger.stop()
+        if #available(iOS 26.0, *), let link = directLinkStore as? DirectLink { link.stop() }
         // 閉じたら呼び鈴の線は iOS に切られる。開き直したときに張り直す。
         if group == nil { stopListeningForFriends() }
         locations.pauseHeading()
