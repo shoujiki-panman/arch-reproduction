@@ -72,6 +72,11 @@ final class RemoteChannel: NSObject {
         super.init()
     }
 
+    /// 便りを包む鍵（中継と同じもの）。ネットを通さない直接のつなぎ（Wi-Fi Aware）でも、同じ鍵で包む。
+    static func noteKey(groupID: String) -> SymmetricKey {
+        SymmetricKey(data: derive(groupID, label: "key"))
+    }
+
     private static func derive(_ id: String, label: String) -> Data {
         let salt = Data("kokodayo.remote".utf8)
         let info = Data(label.utf8)

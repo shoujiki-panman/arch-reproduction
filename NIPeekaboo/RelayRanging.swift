@@ -48,10 +48,15 @@ final class RelayRanger: NSObject, NISessionDelegate {
     /// 相手の位置が1分以内に届いている＝相手も同じ部屋に入っている（入っていない相手に流すと、
     /// 相手の端末では呼び鈴として鳴ってしまう）。電波が届くのは数十m なので、GPS で200m以内から。
     /// 境目で始めたりやめたりを繰り返さないよう、やめるのは300mを超えたとき・位置が2分届かないとき。
+    /// directLinked＝ネットを通さない直接のつなぎ（Wi-Fi Aware）で相手とつながっている。
+    /// つながっていること自体が「そばにいて、同じ部屋のアプリを開いている」の証なので、
+    /// 中継・相手の位置・GPS の距離がそろわなくても始める（圏外の地下でも測れるように）。
     static func shouldRange(supportsUWB: Bool, appActive: Bool, friendRoom: Bool, relayJoined: Bool,
                             nearbyRanging: Bool, partnerFixAge: TimeInterval?, gpsMetres: Double?,
-                            running: Bool = false) -> Bool {
-        guard supportsUWB, appActive, friendRoom, relayJoined, !nearbyRanging,
+                            running: Bool = false, directLinked: Bool = false) -> Bool {
+        guard supportsUWB, appActive, friendRoom, !nearbyRanging else { return false }
+        if directLinked { return true }
+        guard relayJoined,
               let age = partnerFixAge, age < (running ? 120 : 60), let metres = gpsMetres else { return false }
         return metres <= (running ? 300 : 200)
     }

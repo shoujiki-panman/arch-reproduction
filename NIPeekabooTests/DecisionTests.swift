@@ -3,6 +3,7 @@
 // 「AIに頼む」をAIで読む部分は、iPhoneと同じ内蔵AIが要るのでここでは回さない（tools/ask-eval/run.sh を手元で）。
 import XCTest
 import CoreLocation
+import CryptoKit
 @testable import NIPeekaboo
 
 final class GPSAndDistanceTests: XCTestCase {
@@ -386,6 +387,33 @@ final class RelayRangingTests: XCTestCase {
         XCTAssertFalse(go(metres: 320, running: true))
         XCTAssertTrue(go(age: 90, running: true))
         XCTAssertFalse(go(age: 130, running: true))
+    }
+
+    func testDirectLinkStartsWithoutNetwork() {
+        // 10/17：ネットなしの直接のつなぎ（Wi-Fi Aware）でつながっていれば、中継・相手の位置・GPS が無くても測る。
+        XCTAssertTrue(RelayRanger.shouldRange(supportsUWB: true, appActive: true, friendRoom: true, relayJoined: false,
+                                              nearbyRanging: false, partnerFixAge: nil, gpsMetres: nil,
+                                              directLinked: true))
+        // それでも、裏・友だち以外の部屋・そばのつなぎで測れているときは始めない。
+        XCTAssertFalse(RelayRanger.shouldRange(supportsUWB: true, appActive: false, friendRoom: true, relayJoined: false,
+                                               nearbyRanging: false, partnerFixAge: nil, gpsMetres: nil,
+                                               directLinked: true))
+        XCTAssertFalse(RelayRanger.shouldRange(supportsUWB: true, appActive: true, friendRoom: false, relayJoined: false,
+                                               nearbyRanging: false, partnerFixAge: nil, gpsMetres: nil,
+                                               directLinked: true))
+        XCTAssertFalse(RelayRanger.shouldRange(supportsUWB: true, appActive: true, friendRoom: true, relayJoined: false,
+                                               nearbyRanging: true, partnerFixAge: nil, gpsMetres: nil,
+                                               directLinked: true))
+    }
+
+    func testDirectNotesUseTheRoomKey() {
+        // 直接のつなぎの包みは中継と同じ部屋の鍵。別の部屋の鍵では開かない（ペアリング済みの他人は読めない）。
+        let note = RelayRanger.note(tokenData: Data([9, 8, 7]))
+        let mine = RemoteChannel.noteKey(groupID: "room-a")
+        let sealed = try! AES.GCM.seal(note, using: mine).combined!
+        let box = try! AES.GCM.SealedBox(combined: sealed)
+        XCTAssertEqual(try? AES.GCM.open(box, using: RemoteChannel.noteKey(groupID: "room-a")), note)
+        XCTAssertNil(try? AES.GCM.open(box, using: RemoteChannel.noteKey(groupID: "room-b")))
     }
 
     func testTokenNoteRoundTrip() {
