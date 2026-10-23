@@ -2035,6 +2035,10 @@ final class MeetViewController: UIViewController {
         presentOnTop(alert)
     }
 
+    /// プライバシーポリシー。審査の決まり（App Review Guidelines 5.1.1(i)）で、アプリの中から開けるようにする。
+    /// 中身は公開リポジトリ shoujiki-panman/kokodayo に置く。App Store Connect にも同じURLを入れる。
+    static let privacyPolicyURL = URL(string: "https://github.com/shoujiki-panman/kokodayo/blob/main/privacy.md")!
+
     /// Built each time it opens, so the demo item says 見る or 終了 and greys out
     /// while a real meet-up is in progress.
     /// 「…」の中身。歩きながら押す道具なので、上に出すのは4つまで。
@@ -2191,7 +2195,10 @@ final class MeetViewController: UIViewController {
             self?.demoTapped()
         }
         if !demoAllowed { demo.attributes = .disabled }
-        var settings: [UIMenuElement] = [haptics, demo]
+        let privacy = UIAction(title: "プライバシーポリシー", image: UIImage(systemName: "hand.raised")) { [weak self] _ in
+            self?.presentOnTop(SFSafariViewController(url: Self.privacyPolicyURL))
+        }
+        var settings: [UIMenuElement] = [haptics, demo, privacy]
         #if DEBUG
         // 確認用: 電波（UWB）が届かない状況をその場で作る。屋外の実測前に地図側を試すため。
         let noRadio = UIAction(title: previewNoRadio ? "電波を使う（試験）" : "電波を無いことにする（試験）",
