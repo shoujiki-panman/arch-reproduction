@@ -234,7 +234,7 @@ enum PushKnock {
     /// 買い物の通知に付く「済んだ」ボタン。押すとアプリを開かずに、おつかい MCP に済んだを返す。
     static let errandCategory = "ERRAND"
     static let errandDoneAction = "ERRAND_DONE"
-    private static let errandServer = "https://otsukai-mcp.shoujiki-panman.workers.dev/errands"
+    private static let errandServer = "https://otsukai-mcp.panman.workers.dev/errands"
 
     /// 通知そのものを押して開いたとき、画面が出そろってから「済んだ？」を聞くために預けておく。
     @MainActor static var pendingErrand: (id: String, item: String)?
