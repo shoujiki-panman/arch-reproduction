@@ -1153,13 +1153,20 @@ final class AskViewController: UIViewController, UITextFieldDelegate, MKLocalSea
         header.textColor = MeetPalette.secondary
         header.text = "最近頼んだこと"
         var clearConf = UIButton.Configuration.plain()
-        clearConf.title = "消去"
+        // 押した結果が分かる動詞で。消すと戻せないので、消す前に確かめる（UI設計の基礎 第3章・第4章。11/3）。
+        clearConf.title = "履歴を消す"
         clearConf.baseForegroundColor = MeetPalette.action
         clearConf.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 0)
         let clear = UIButton(configuration: clearConf)
         clear.addAction(UIAction { [weak self] _ in
-            AskHistory.clear()
-            self?.reloadRecents()
+            let alert = UIAlertController(title: "最近頼んだことを消しますか？", message: "消すと元に戻せません。",
+                                          preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "残す", style: .cancel))
+            alert.addAction(UIAlertAction(title: "消す", style: .destructive) { _ in
+                AskHistory.clear()
+                self?.reloadRecents()
+            })
+            self?.present(alert, animated: true)
         }, for: .touchUpInside)
         let headerRow = UIStackView(arrangedSubviews: [header, clear])
         headerRow.axis = .horizontal

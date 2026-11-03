@@ -310,7 +310,8 @@ final class HomeSheetView: UIView {
                                                  symbol: "plus.circle.fill", action: onInvite, accent: true))
             }
             if canEnd {
-                body.addArrangedSubview(moreRow("やめる", symbol: "xmark.circle", action: onEnd, danger: true))
+                // つながっているときと同じ言葉にそろえる（一貫性。11/3）。
+                body.addArrangedSubview(moreRow("共有をやめる", symbol: "xmark.circle", action: onEnd, danger: true))
             }
             body.addArrangedSubview(sectionTitle("まわり"))
             body.addArrangedSubview(moreRow("まわりを見る（カフェ・ごはん・公園）", symbol: "binoculars",
@@ -1063,7 +1064,8 @@ final class NavigationOverlay: UIView {
         remainDetail.textColor = MeetPalette.secondary
 
         var endConf = UIButton.Configuration.filled()
-        endConf.title = "終了"
+        // ボタンは押した結果が分かる動詞で（11/3）。
+        endConf.title = "案内をやめる"
         endConf.baseBackgroundColor = UIColor.systemRed
         endConf.baseForegroundColor = .white
         endConf.cornerStyle = .capsule

@@ -2146,11 +2146,13 @@ final class MeetViewController: UIViewController {
 
         // ■ 知らせと先回り
         // 近くにいたら知らせる。距離は街の広さで変わるので本人が決める。
-        let toggle = UIAction(title: NearbyAlert.isOn ? "知らせを止める" : "知らせを使う",
-                              image: UIImage(systemName: NearbyAlert.isOn ? "bell.slash" : "bell")) { [weak self] _ in
+        // 状態と操作を1つの言葉に混ぜない（「止める／使う」はいまどちらか分からない）。
+        // 肯定形の項目名にチェック印で、いまの状態を見せる（UI設計の基礎 第3章・第7章。11/3）。
+        let toggle = UIAction(title: "近づいたら知らせる", image: UIImage(systemName: "bell")) { [weak self] _ in
             NearbyAlert.isOn.toggle()
             if NearbyAlert.isOn { NearbyAlert.ask() } else { self?.forgetApproach() }
         }
+        toggle.state = NearbyAlert.isOn ? .on : .off
         let distances = NearbyAlert.choices.map { metres in
             let action = UIAction(title: NearbyAlert.text(metres)) { [weak self] _ in
                 NearbyAlert.metres = metres
@@ -7229,6 +7231,9 @@ final class MeetViewController: UIViewController {
         floatingButtons.addArrangedSubview(switchButton)
         floatingButtons.isHidden = true
         recenterButton.accessibilityLabel = "元の位置に戻す"
+        // 絵だけのボタンにも言葉を付ける（UI設計の基礎 第6章「画像とアイコンに代替テキスト」。11/3）。
+        exploreButton.accessibilityLabel = "まわりを見る"
+        switchButton.accessibilityLabel = "カメラで探す"
         recenterButton.isHidden = true
 
         // 輪の中が「まわりを見る」のときだけ、輪そのものが押せる。
