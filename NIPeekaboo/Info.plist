@@ -50,6 +50,8 @@
 		<string>_kokodayo._tcp</string>
 		<string>_kokodayo._udp</string>
 	</array>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>道案内のあいだ、近くの信号機（高度化PICS）が流している歩行者信号の色を受け取るために使います。</string>
 	<key>NSCameraUsageDescription</key>
 	<string>合流ガイドで相手の方向を実空間に表示するためにカメラを使用します</string>
 	<key>NSLocalNetworkUsageDescription</key>
