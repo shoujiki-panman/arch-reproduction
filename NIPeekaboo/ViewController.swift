@@ -2024,8 +2024,8 @@ final class MeetViewController: UIViewController {
             field.autocorrectionType = .no
             field.returnKeyType = .done
         }
-        alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
-        alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "やめる", style: .cancel))
+        alert.addAction(UIAlertAction(title: "保存する", style: .default) { [weak self] _ in
             let typed = (alert.textFields?.first?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !typed.isEmpty, typed != Self.myDisplayName else { return }
             UserDefaults.standard.set(typed, forKey: Self.displayNameKey)
@@ -3847,7 +3847,7 @@ final class MeetViewController: UIViewController {
                 let where_ = best.placemark.title.map { "\n\($0)" } ?? ""
                 ui.ask(title: "「\(best.name ?? "この場所")」へ案内しますか？",
                        detail: "\(NearbyAlert.text(d))・\(NearbyAlert.walkText(d))" + where_,
-                       primary: "案内開始", secondary: "地図で見る",
+                       primary: "案内を始める", secondary: "地図で見る",
                        onPrimary: { [weak self] in
                            // 経路の通信は、閉じるのと同時に始める。
                            self?.routeToPlace(best, startNow: true)
@@ -4857,10 +4857,10 @@ final class MeetViewController: UIViewController {
         lines.append("記号が本人のものか、LINEなどで確かめてください。知らない人なら許可しないでください。")
         let alert = UIAlertController(title: "\(who)（\(Badge.of(member))）が参加を希望しています",
                                       message: lines.joined(separator: "\n"), preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "許可しない", style: .cancel) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "断る", style: .cancel) { [weak self] _ in
             self?.decideJoin(peer: peer, member: member, allow: false)
         })
-        alert.addAction(UIAlertAction(title: "許可", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "参加を許可する", style: .default) { [weak self] _ in
             self?.decideJoin(peer: peer, member: member, allow: true)
         })
         joinAlert = alert
@@ -5596,7 +5596,8 @@ final class MeetViewController: UIViewController {
         refreshErrandButton()
         refreshMapFloor()
         endButton.isHidden = group == nil && !connected
-        endButton.configuration?.title = connected ? "終了" : "やめる"
+        // どちらも合流を終える（ROADMAP の言葉にそろえる。11/4 UI設計の基礎「ボタンは動詞で結果が分かる」）。
+        endButton.configuration?.title = "合流を終える"
         // At arrival the dial already says it in mint; the headline would only
         // say it twice.
         if connected || mapOnly, case let guide = guidance(for: focusName), guide.tone != .arrived {
@@ -7015,7 +7016,8 @@ final class MeetViewController: UIViewController {
         respondOnPress(callButton)
 
         var cancelConf = UIButton.Configuration.plain()
-        cancelConf.title = "終了"
+        // 押す前のボタン「ここだよ！ 合図する」を取り消す（11/4）。
+        cancelConf.title = "合図をやめる"
         cancelConf.baseForegroundColor = UIColor.white.withAlphaComponent(0.65)
         cancelButton.configuration = cancelConf
         cancelButton.isHidden = true
@@ -7177,7 +7179,7 @@ final class MeetViewController: UIViewController {
         errandButton.isHidden = true
 
         var endConf = UIButton.Configuration.plain()
-        endConf.title = "終了"
+        endConf.title = "合流を終える"
         endConf.baseForegroundColor = MeetPalette.secondary
         endButton.configuration = endConf
         endButton.addTarget(self, action: #selector(finishMeet), for: .touchUpInside)
@@ -7499,7 +7501,7 @@ final class MeetViewController: UIViewController {
 
         let done = UIButton(type: .system)
         var doneConf = UIButton.Configuration.filled()
-        doneConf.title = "終了"
+        doneConf.title = "合流を終える"
         doneConf.baseBackgroundColor = MeetPalette.raised
         doneConf.baseForegroundColor = MeetPalette.primary
         doneConf.cornerStyle = .capsule
@@ -8349,7 +8351,7 @@ extension MeetViewController: NISessionDelegate {
             let alert = UIAlertController(title: "距離を測定できません",
                                           message: "相手との距離を測定するには、設定でアクセスを許可してください。",
                                           preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "キャンセル", style: .cancel))
+            alert.addAction(UIAlertAction(title: "やめる", style: .cancel))
             alert.addAction(UIAlertAction(title: "設定を開く", style: .default) { _ in
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
