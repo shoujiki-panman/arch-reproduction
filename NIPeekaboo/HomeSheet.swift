@@ -310,7 +310,8 @@ final class HomeSheetView: UIView {
                                                  symbol: "plus.circle.fill", action: onInvite, accent: true))
             }
             if canEnd {
-                body.addArrangedSubview(moreRow("やめる", symbol: "xmark.circle", action: onEnd, danger: true))
+                // つながっているときと同じ言葉にそろえる（一貫性。11/3）。
+                body.addArrangedSubview(moreRow("共有をやめる", symbol: "xmark.circle", action: onEnd, danger: true))
             }
             body.addArrangedSubview(sectionTitle("まわり"))
             body.addArrangedSubview(moreRow("まわりを見る（カフェ・ごはん・公園）", symbol: "binoculars",
@@ -533,7 +534,8 @@ final class HomeSheetView: UIView {
         goButton.configuration = go
         goButton.addAction(UIAction { [weak self] _ in self?.onSuggestion?() }, for: .touchUpInside)
         var no = UIButton.Configuration.plain()
-        no.title = "いい"
+        // 「いい」は「はい」とも「いりません」とも読める。押した結果の言葉にする（11/4）。
+        no.title = "閉じる"
         no.baseForegroundColor = MeetPalette.secondary
         let noButton = UIButton(type: .system)
         noButton.configuration = no
@@ -931,7 +933,7 @@ final class RouteSheetViewController: UIViewController, MapSideSheet {
 
         // 地図アプリと同じく、一覧の上にいちばん大きな「開始」を置く。
         var startConf = UIButton.Configuration.filled()
-        startConf.title = "案内開始"
+        startConf.title = "案内を始める"
         startConf.image = UIImage(systemName: "location.north.fill")
         startConf.imagePadding = 8
         startConf.baseBackgroundColor = MeetPalette.action
@@ -1066,7 +1068,8 @@ final class NavigationOverlay: UIView {
         remainDetail.textColor = MeetPalette.secondary
 
         var endConf = UIButton.Configuration.filled()
-        endConf.title = "終了"
+        // ボタンは押した結果が分かる動詞で（11/3）。
+        endConf.title = "案内をやめる"
         endConf.baseBackgroundColor = UIColor.systemRed
         endConf.baseForegroundColor = .white
         endConf.cornerStyle = .capsule
