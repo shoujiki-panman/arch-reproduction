@@ -9,3 +9,7 @@ Enable devices to access relative positioning information.
 ## Configure the Sample Code Project
 
 Before you run the sample code project in Xcode, set the run destination to a device with an Ultra Wideband chip or iOS Simulator. You can run the sample app on two devices that have an Ultra Wideband chip, or on multiple iOS Simulators.
+
+## 発表資料
+
+- [ここだよ 発表資料（PDF）](<slides/ここだよ 発表資料.pdf>)：BootCamp での発表（2026年10月）
