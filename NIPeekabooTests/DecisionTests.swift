@@ -433,3 +433,88 @@ final class RelayRangingTests: XCTestCase {
         XCTAssertTrue(RelayRanger.isNew(Data([4]), stored: a))
     }
 }
+
+/// 11/3：信号機（高度化PICS）の電波の読み方。ble-pics-viewer の web/tests/pics.test.mjs と同じ確かめを移した。
+final class TrafficSignalTests: XCTestCase {
+    private func packet(_ type: UInt8, length: Int = 24) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: length)
+        bytes[2] = type
+        bytes[3] = 42
+        bytes.replaceSubrange(6..<10, with: [0x12, 0x34, 0xAB, 0xCD])
+        return bytes
+    }
+
+    func testNameMessage() throws {
+        var bytes = packet(0)
+        let name = Array("交差点A".utf8)
+        bytes.replaceSubrange(10..<10 + name.count, with: name)
+        let message = try PICS.parse(Data(bytes))
+        XCTAssertEqual(message, .name(PICS.Header(type: 0, messageID: 42, intersection: "1234ABCD"), identifier: "交差点A"))
+    }
+
+    func testPositionReadsSignedBigEndian() throws {
+        var bytes = packet(1, length: 18)
+        func put(_ value: Int32, at offset: Int) {
+            let u = UInt32(bitPattern: value)
+            bytes.replaceSubrange(offset..<offset + 4, with: [UInt8(u >> 24), UInt8(u >> 16 & 0xFF), UInt8(u >> 8 & 0xFF), UInt8(u & 0xFF)])
+        }
+        put(-35_123_456, at: 10)
+        put(139_654_321, at: 14)
+        guard case let .position(_, lat, lon) = try PICS.parse(Data(bytes)) else { return XCTFail("位置にならない") }
+        XCTAssertEqual(lat, -35.123456, accuracy: 1e-9)
+        XCTAssertEqual(lon, 139.654321, accuracy: 1e-9)
+    }
+
+    func testSignalsDecodeEveryStateAndRemainingBoundaries() throws {
+        var bytes = packet(2)
+        bytes.replaceSubrange(10..<17, with: [0x00, 0x71, 0x82, 0xF3, 0x24, 0x0F, 0x33])
+        guard case let .signals(_, signals) = try PICS.parse(Data(bytes)) else { return XCTFail("信号にならない") }
+        XCTAssertEqual(signals, [
+            .init(remaining: 1, state: .noSignal), .init(remaining: 8, state: .red),
+            .init(remaining: -1, state: .blinkGreen), .init(remaining: -1, state: .green),
+            .init(remaining: 3, state: .none), .init(remaining: 1, state: .unknown),
+        ], "最大6つまで")
+    }
+
+    func testPartialSignalsAndShortPackets() throws {
+        var bytes = packet(2, length: 11)
+        bytes[10] = 0x13
+        guard case let .signals(_, signals) = try PICS.parse(Data(bytes)) else { return XCTFail() }
+        XCTAssertEqual(signals.count, 1)
+        for length in [0, 2, 6, 9] { XCTAssertThrowsError(try PICS.parse(Data(count: length))) }
+        for (type, length) in [(UInt8(0), 23), (1, 17), (2, 10)] {
+            XCTAssertThrowsError(try PICS.parse(Data(packet(type, length: length))))
+        }
+        XCTAssertEqual(try PICS.parse(Data(packet(99, length: 10))),
+                       .other(PICS.Header(type: 99, messageID: 42, intersection: "1234ABCD")))
+    }
+
+    func testManufacturerDataStripsCompanyID() {
+        // iPhone はメーカー番号を小さい順（CE 01）で先頭に付けて渡す。ほかのメーカーは読まない。
+        XCTAssertEqual(PICS.payload(fromManufacturerData: Data([0xCE, 0x01, 0xAA, 0xBB])), Data([0xAA, 0xBB]))
+        XCTAssertNil(PICS.payload(fromManufacturerData: Data([0x4C, 0x00, 0xAA])))
+        XCTAssertNil(PICS.payload(fromManufacturerData: Data([0xCE])))
+    }
+
+    func testLineShowsOnlyRealSignalsAndNoCountdown() {
+        // 出すのは色だけ。信号なし・対象なしの番号は出さない。残り時間の数字は出さない（単位が確定していない）。
+        let line = PICS.line(name: "神宮前", signals: [
+            .init(remaining: 3, state: .green), .init(remaining: 5, state: .red), .init(remaining: 1, state: .none),
+        ])
+        XCTAssertEqual(line, "信号（神宮前）：1 青・2 赤")
+        XCTAssertNil(PICS.line(name: "X", signals: [.init(remaining: 1, state: .noSignal)]))
+        XCTAssertEqual(PICS.line(name: nil, signals: [.init(remaining: 1, state: .blinkGreen)]), "信号：1 青点滅")
+    }
+
+    func testRemainingShownOnlyAfterItChanges() {
+        // 11/4：残りは秒ではなく信号機の目盛り。入っていない信号もあるので、値が変わるのを見た信号だけに付ける。
+        let first: [PICS.PedestrianSignal] = [.init(remaining: 6, state: .green), .init(remaining: 3, state: .red)]
+        let second: [PICS.PedestrianSignal] = [.init(remaining: 5, state: .green), .init(remaining: 3, state: .red)]
+        let live = PICS.changedRemaining(from: first, to: second)
+        XCTAssertEqual(live, [0])
+        XCTAssertEqual(PICS.line(name: "神宮前", signals: second, live: live), "信号（神宮前）：1 青（残り目盛り5）・2 赤")
+        XCTAssertEqual(PICS.line(name: "神宮前", signals: second), "信号（神宮前）：1 青・2 赤", "見ていなければ付けない")
+        // 分からない値（-1）からの変化は、変化として数えない。
+        XCTAssertEqual(PICS.changedRemaining(from: [.init(remaining: -1, state: .red)], to: [.init(remaining: 4, state: .red)]), [])
+    }
+}

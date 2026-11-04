@@ -1361,6 +1361,8 @@ final class MeetViewController: UIViewController {
     private let todayWalk = TodayWalk()
     /// 中継の道で電波の鍵を渡して測る（そばのつなぎで測れていないときの代わり。10/14）。
     private let relayRanger = RelayRanger()
+    /// 道案内中に、近くの信号機（高度化PICS）の歩行者信号を受け取る（11/3）。
+    private let signalWatcher = SignalWatcher()
     /// ネットを通さない直接のつなぎ（Wi-Fi Aware、iOS 26 以降）。型が iOS 26 からなので Any で持つ（10/17）。
     private var directLinkStore: Any?
     @available(iOS 26.0, *)
@@ -1554,6 +1556,7 @@ final class MeetViewController: UIViewController {
                                                name: BackgroundRelay.didWake, object: nil)
         todayWalk.onChange = { [weak self] line in self?.homeSheet.todayWalk = line }
         todayWalk.start()
+        signalWatcher.onChange = { [weak self] line in self?.navOverlay.setSignal(line) }
         relayRanger.send = { [weak self] note in
             self?.remote?.send(note: note)
             // ネットが無くても届くよう、直接のつなぎがあればそちらにも流す。
@@ -2339,6 +2342,7 @@ final class MeetViewController: UIViewController {
     }
 
     @objc private func appWillEnterForeground() {
+        if navRoute != nil { signalWatcher.start() }
         locations.resume()
         loadLastFix()
         mapFloor?.followSystemAppearance()
@@ -3073,6 +3077,8 @@ final class MeetViewController: UIViewController {
     /// 案内中は、地図の上を帯2本だけにする（板も丸ボタンも引っ込める）。
     private func navigationMode(_ on: Bool) {
         navOverlay.isHidden = !on
+        // 信号機の電波は、道案内のあいだだけ受け取る（電池のため）。
+        if on { signalWatcher.start() } else { signalWatcher.stop() }
         homeSheet.alpha = on ? 0 : 1
         homeSheet.isUserInteractionEnabled = !on
         floatingButtons.alpha = on ? 0 : 1
@@ -6618,6 +6624,7 @@ final class MeetViewController: UIViewController {
         // 裏では iPhone どうしの電波は測れない。開き直したら、条件がそろい次第また始める。
         relayRanger.stop()
         if #available(iOS 26.0, *), let link = directLinkStore as? DirectLink { link.stop() }
+        signalWatcher.stop()
         // 閉じたら呼び鈴の線は iOS に切られる。開き直したときに張り直す。
         if group == nil { stopListeningForFriends() }
         locations.pauseHeading()

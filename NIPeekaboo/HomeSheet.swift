@@ -1039,6 +1039,9 @@ final class NavigationOverlay: UIView {
     private let remain = UILabel()
     private let remainDetail = UILabel()
     private let endButton = UIButton(type: .system)
+    /// 近くの信号機（高度化PICS）の歩行者信号の色。受け取れたときだけ出す（11/3）。
+    private let signalPill = UIView()
+    private let signalLabel = UILabel()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -1117,11 +1120,27 @@ final class NavigationOverlay: UIView {
         recenterButton.isHidden = true
         recenterButton.addAction(UIAction { [weak self] _ in self?.onRecenter?() }, for: .touchUpInside)
 
-        for (parent, child) in [(banner, turnRow), (bar, barRow), (facing, facingRow)] as [(UIView, UIView)] {
+        signalPill.backgroundColor = UIColor(white: 0.08, alpha: 0.85)
+        signalPill.layer.cornerRadius = 18
+        signalPill.layer.cornerCurve = .continuous
+        signalPill.isHidden = true
+        let signalIcon = UIImageView(image: UIImage(systemName: "figure.walk.circle.fill"))
+        signalIcon.tintColor = .white
+        signalIcon.setContentHuggingPriority(.required, for: .horizontal)
+        signalLabel.font = Type.font(15, .bold, .subheadline)
+        signalLabel.textColor = .white
+        signalLabel.numberOfLines = 2
+        let signalRow = UIStackView(arrangedSubviews: [signalIcon, signalLabel])
+        signalRow.axis = .horizontal
+        signalRow.alignment = .center
+        signalRow.spacing = 8
+
+        for (parent, child) in [(banner, turnRow), (bar, barRow), (facing, facingRow), (signalPill, signalRow)]
+            as [(UIView, UIView)] {
             parent.addSubview(child)
             child.translatesAutoresizingMaskIntoConstraints = false
         }
-        for v in [banner, bar, facing, recenterButton] {
+        for v in [banner, bar, facing, recenterButton, signalPill] {
             addSubview(v)
             v.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -1156,6 +1175,14 @@ final class NavigationOverlay: UIView {
 
             recenterButton.bottomAnchor.constraint(equalTo: bar.topAnchor, constant: -14),
             recenterButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+
+            signalPill.bottomAnchor.constraint(equalTo: bar.topAnchor, constant: -14),
+            signalPill.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            signalPill.leadingAnchor.constraint(greaterThanOrEqualTo: recenterButton.trailingAnchor, constant: 8),
+            signalRow.topAnchor.constraint(equalTo: signalPill.topAnchor, constant: 8),
+            signalRow.bottomAnchor.constraint(equalTo: signalPill.bottomAnchor, constant: -8),
+            signalRow.leadingAnchor.constraint(equalTo: signalPill.leadingAnchor, constant: 12),
+            signalRow.trailingAnchor.constraint(equalTo: signalPill.trailingAnchor, constant: -14),
         ])
     }
 
@@ -1178,6 +1205,12 @@ final class NavigationOverlay: UIView {
 
     func setRecenterVisible(_ visible: Bool) {
         recenterButton.isHidden = !visible
+    }
+
+    /// 近くの信号機の歩行者信号（「信号（○○）：1 青・2 赤」）。nil で隠す。
+    func setSignal(_ text: String?) {
+        signalLabel.text = text
+        signalPill.isHidden = text == nil
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
