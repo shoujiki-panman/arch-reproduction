@@ -40,7 +40,9 @@ import CoreBluetooth
 /// 公式の通信仕様は見つからなかったので、公開されている ble-pics-viewer の読み方に従う。
 ///
 /// 決めごと（正直な表示）:
-///  - 出すのは色だけ。残り時間は、元のプログラムでも単位が秒と確定していないので出さない。
+///  - 残りは秒ではない。信号機の待ち時間の目盛り（減っていく棒）と同じ段階の値で、目盛りが付いた信号
+///    （ゆとりシグナル）でしか入っていない（デイリーポータルZ「信号の時刻表をつくる 2025」で筆者が実物と照合）。
+///    入っていないときの値は分からないので、同じ信号の値が変わるのを一度見てから「残り目盛り」として出す。
 ///  - 1つの交差点に歩行者信号は最大6つあり、どれが自分の渡る方向かは分かっていない。並べて出し、断定しない。
 ///  - 「渡ってよい」とは言わない。自分の目で信号を見るのが先。
 enum PICS {
@@ -143,17 +145,29 @@ enum PICS {
         }
     }
 
+    /// 前の信号と比べて、目盛りの値が変わった番号（どちらも分かる値のときだけ）。
+    static func changedRemaining(from old: [PedestrianSignal], to new: [PedestrianSignal]) -> Set<Int> {
+        Set(zip(old, new).enumerated().compactMap { index, pair in
+            pair.0.remaining > 0 && pair.1.remaining > 0 && pair.0.remaining != pair.1.remaining ? index : nil
+        })
+    }
+
     /// 大きい順（ビッグエンディアン）の符号つき32ビット。
     private static func int32(_ bytes: [UInt8], at offset: Int) -> Int32 {
         let raw = bytes[offset..<offset + 4].reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
         return Int32(bitPattern: raw)
     }
 
-    /// 案内の帯に出す1行。「信号（神宮前一丁目）：1 青・2 赤」。出す信号が無ければ nil。
-    static func line(name: String?, signals: [PedestrianSignal]) -> String? {
+    /// 案内の帯に出す1行。「信号（神宮前一丁目）：1 青（残り目盛り5）・2 赤」。出す信号が無ければ nil。
+    /// live は、目盛りの値が変わるのを見た信号の番号（0始まり）。ほかの信号には目盛りを付けない。
+    static func line(name: String?, signals: [PedestrianSignal], live: Set<Int> = []) -> String? {
         let shown = signals.enumerated().filter { $0.element.state.isShown }
         guard !shown.isEmpty else { return nil }
-        let states = shown.map { "\($0.offset + 1) \($0.element.state.label)" }.joined(separator: "・")
+        let states = shown.map { item -> String in
+            let base = "\(item.offset + 1) \(item.element.state.label)"
+            guard live.contains(item.offset), item.element.remaining > 0 else { return base }
+            return base + "（残り目盛り\(item.element.remaining)）"
+        }.joined(separator: "・")
         let place = name.flatMap { $0.isEmpty ? nil : "（\($0)）" } ?? ""
         return "信号\(place)：\(states)"
     }
@@ -170,6 +184,8 @@ final class SignalWatcher: NSObject, CBCentralManagerDelegate {
         var signals: [PICS.PedestrianSignal] = []
         var signalAt: Date?
         var rssi = -127
+        /// 目盛りの値が変わるのを見た信号の番号（目盛りが本当に入っている証）。
+        var live: Set<Int> = []
     }
 
     private var central: CBCentralManager?
@@ -221,6 +237,7 @@ final class SignalWatcher: NSObject, CBCentralManagerDelegate {
         switch message {
         case let .name(_, identifier): entry.name = identifier
         case let .signals(_, signals):
+            entry.live.formUnion(PICS.changedRemaining(from: entry.signals, to: signals))
             entry.signals = signals
             entry.signalAt = Date()
         case .position, .other: break
@@ -233,7 +250,7 @@ final class SignalWatcher: NSObject, CBCentralManagerDelegate {
         let now = Date()
         let fresh = entries.values.filter { $0.signalAt.map { now.timeIntervalSince($0) <= Self.staleAfter } ?? false }
         let nearest = fresh.max { $0.rssi < $1.rssi }
-        publish(nearest.flatMap { PICS.line(name: $0.name, signals: $0.signals) })
+        publish(nearest.flatMap { PICS.line(name: $0.name, signals: $0.signals, live: $0.live) })
     }
 
     private func publish(_ line: String?) {

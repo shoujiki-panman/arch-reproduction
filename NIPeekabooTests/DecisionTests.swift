@@ -505,4 +505,16 @@ final class TrafficSignalTests: XCTestCase {
         XCTAssertNil(PICS.line(name: "X", signals: [.init(remaining: 1, state: .noSignal)]))
         XCTAssertEqual(PICS.line(name: nil, signals: [.init(remaining: 1, state: .blinkGreen)]), "信号：1 青点滅")
     }
+
+    func testRemainingShownOnlyAfterItChanges() {
+        // 11/4：残りは秒ではなく信号機の目盛り。入っていない信号もあるので、値が変わるのを見た信号だけに付ける。
+        let first: [PICS.PedestrianSignal] = [.init(remaining: 6, state: .green), .init(remaining: 3, state: .red)]
+        let second: [PICS.PedestrianSignal] = [.init(remaining: 5, state: .green), .init(remaining: 3, state: .red)]
+        let live = PICS.changedRemaining(from: first, to: second)
+        XCTAssertEqual(live, [0])
+        XCTAssertEqual(PICS.line(name: "神宮前", signals: second, live: live), "信号（神宮前）：1 青（残り目盛り5）・2 赤")
+        XCTAssertEqual(PICS.line(name: "神宮前", signals: second), "信号（神宮前）：1 青・2 赤", "見ていなければ付けない")
+        // 分からない値（-1）からの変化は、変化として数えない。
+        XCTAssertEqual(PICS.changedRemaining(from: [.init(remaining: -1, state: .red)], to: [.init(remaining: 4, state: .red)]), [])
+    }
 }
